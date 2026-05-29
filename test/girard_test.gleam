@@ -643,6 +643,32 @@ pub fn discarded_import_does_not_shadow_test() {
   |> should.equal("fn() -> Int")
 }
 
+pub fn local_value_field_shadows_module_test() {
+  // A local value named like an imported module: a bare `dep.value` reads the
+  // record field (the value shadows the module here), since the field type fits
+  // and it is not a call. This is mist's `compression.deflate`.
+  let dep =
+    "pub type Box(a) {\n  Box(value: a)\n}\npub fn value(b: Box(a)) -> a { b.value }"
+  let source =
+    "import dep.{type Box, Box}\n"
+    <> "pub fn run() -> Int {\n  let dep = Box(1)\n  dep.value\n}"
+  signature_with(source, [#("dep", dep)], "run")
+  |> should.equal("fn() -> Int")
+}
+
+pub fn module_call_beats_field_test() {
+  // The same name in *call position*: `dep.value(dep)` calls the module's
+  // `value` function, not the (non-callable) `value` record field of the local
+  // `dep` value. This is lustre's `cache.events(cache)`.
+  let dep =
+    "pub type Box(a) {\n  Box(value: a)\n}\npub fn value(b: Box(a)) -> a { b.value }"
+  let source =
+    "import dep.{type Box, Box}\n"
+    <> "pub fn run() -> Int {\n  let dep = Box(1)\n  dep.value(dep)\n}"
+  signature_with(source, [#("dep", dep)], "run")
+  |> should.equal("fn() -> Int")
+}
+
 pub fn transitive_import_test() {
   // `mid` re-exports a function that itself depends on `base`.
   let base = "pub fn inc(x: Int) -> Int { x + 1 }"

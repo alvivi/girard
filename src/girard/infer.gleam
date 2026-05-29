@@ -708,23 +708,6 @@ fn infer_field_access(
   container: glance.Expression,
   label: String,
 ) -> Result(#(Type, State), Error) {
-  // `module.value` (qualified access) takes precedence over record field
-  // access when the container names an imported module that exports `label`.
-  // A module name and a value can share a spelling (e.g. `gleam/dynamic` and a
-  // `dynamic` constant), so we disambiguate on whether the module exports the
-  // accessed name rather than on the presence of a same-named value.
-  let module_access = case container {
-    glance.Variable(_, name) ->
-      case dict.get(env.modules, name) {
-        Ok(interface) ->
-          case dict.get(interface.values, label) {
-            Ok(scheme) -> Ok(scheme)
-            Error(_) -> Error(Nil)
-          }
-        Error(_) -> Error(Nil)
-      }
-    _ -> Error(Nil)
-  }
   // A variable narrowed to a variant by a pattern (`Ctor(..) as v`) resolves
   // `v.field` from that variant's recorded fields, reaching fields not shared
   // by every variant.
@@ -736,14 +719,85 @@ fn infer_field_access(
       }
     _ -> Error(Nil)
   }
+  // `module.value` qualified access. This is only a *candidate*: a local value
+  // of the same spelling shadows the module (lexical scoping), so a value whose
+  // type is a record exposing `label` wins. A value that is not such a record
+  // (e.g. a `dynamic` constant beside a `gleam/dynamic` import) falls through to
+  // the module export.
+  let module_access = case container {
+    glance.Variable(_, name) ->
+      case dict.get(env.modules, name) {
+        Ok(interface) -> dict.get(interface.values, label)
+        Error(_) -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
   case variant_field {
     Ok(field) -> Ok(#(field, st))
     Error(_) ->
-      infer_field_access_general(env, st, container, label, module_access)
+      case container {
+        // A bound value whose type is a record exposing `label` resolves to
+        // that field, even when its name also spells an imported module (a
+        // `compression` parameter beside a `compression` module). A value whose
+        // type lacks the field (a `dict` parameter beside the `gleam/dict`
+        // module, accessing `dict.fold`) falls through to the module export.
+        glance.Variable(_, name) ->
+          case dict.has_key(env.values, name) {
+            True -> value_field(env, st, container, label, module_access)
+            False -> module_or_record(env, st, container, label, module_access)
+          }
+        _ -> module_or_record(env, st, container, label, module_access)
+      }
   }
 }
 
-fn infer_field_access_general(
+/// Field access where the container names a bound value: prefer a record field
+/// when the value's type has it, else a same-named module export.
+fn value_field(
+  env: Env,
+  st: State,
+  container: glance.Expression,
+  label: String,
+  module_access: Result(Scheme, Nil),
+) -> Result(#(Type, State), Error) {
+  use #(container_type, st) <- result.try(infer_expr(env, st, container))
+  case resolve(st, container_type) {
+    Named(_, _, _) as record ->
+      case accessor(env, record, label) {
+        Ok(_) -> field_type(env, st, record, label)
+        // Not a field of this record; a same-named module may export it.
+        Error(field_error) ->
+          case module_access {
+            Ok(scheme) -> Ok(instantiate(st, scheme))
+            Error(_) -> Error(field_error)
+          }
+      }
+    // The record type is not known yet. Prefer a same-named module export;
+    // otherwise defer until inference fixes the type.
+    Var(_) ->
+      case module_access {
+        Ok(scheme) -> Ok(instantiate(st, scheme))
+        Error(_) -> {
+          let #(field, st) = fresh(st)
+          let st =
+            State(..st, pending: [
+              PendingField(container_type, label, field),
+              ..st.pending
+            ])
+          Ok(#(field, st))
+        }
+      }
+    _ ->
+      case module_access {
+        Ok(scheme) -> Ok(instantiate(st, scheme))
+        Error(_) -> Error(NotARecord)
+      }
+  }
+}
+
+/// Field access where the container is not a bound value: a qualified module
+/// export takes precedence, else it is a record field on the container's value.
+fn module_or_record(
   env: Env,
   st: State,
   container: glance.Expression,
@@ -759,7 +813,6 @@ fn infer_field_access_general(
           use #(field, st) <- result.try(field_type(env, st, record, label))
           Ok(#(field, st))
         }
-        // The record type is not known yet; defer until inference fixes it.
         Var(_) -> {
           let #(field, st) = fresh(st)
           let st =
@@ -1015,6 +1068,33 @@ fn infer_lambda(
   Ok(#(Fn(param_types, body_type), st))
 }
 
+/// Infer the callee of a call. In call position a same-named module export
+/// wins over a record field of a shadowing value: `cache.events(cache)` calls
+/// the module's `events` function even though the `cache` value has an `events`
+/// field (the field is not callable). Outside call position the field wins
+/// (`compression.deflate` reads the field), handled by `infer_field_access`.
+fn infer_callee(
+  env: Env,
+  st: State,
+  function: glance.Expression,
+) -> Result(#(Type, State), Error) {
+  let module_export = case function {
+    glance.FieldAccess(_, glance.Variable(_, name), label) ->
+      case dict.get(env.modules, name) {
+        Ok(interface) -> dict.get(interface.values, label)
+        Error(_) -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+  case module_export {
+    Ok(scheme) -> {
+      let #(type_, st) = instantiate(st, scheme)
+      Ok(#(type_, record(st, span(function), type_)))
+    }
+    Error(_) -> infer_expr(env, st, function)
+  }
+}
+
 fn infer_call(
   env: Env,
   st: State,
@@ -1022,7 +1102,7 @@ fn infer_call(
   function: glance.Expression,
   arguments: List(glance.Field(glance.Expression)),
 ) -> Result(#(Type, State), Error) {
-  use #(fn_type, st) <- result.try(infer_expr(env, st, function))
+  use #(fn_type, st) <- result.try(infer_callee(env, st, function))
   use ordered <- result.try(
     order_fields(env, function, arguments, fn(label, location) {
       glance.Variable(location, label)
