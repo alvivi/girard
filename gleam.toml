@@ -29,10 +29,6 @@ gleam_json = ">= 3.1.0 and < 4.0.0"
 include = ["src/"]
 
 [tools.glinter.rules]
-# girard intentionally fails fast (panic / let assert) instead of reporting
-# errors — see the module docs — so these design-level rules don't apply.
-avoid_panic = "off"
-assert_ok_pattern = "off"
 # Dict.get and friends return Result(_, Nil); the discarded error carries no
 # information and is handled in the Error(_) case, so this is a false positive.
 thrown_away_error = "off"

@@ -5,14 +5,15 @@
 //// source span) along with each top-level definition's signature.
 ////
 //// Imported modules are resolved through a `Resolver` and inferred to obtain
-//// their public interfaces. Errors are not reported: invalid or unsupported
-//// input `panic`s.
+//// their public interfaces. Inference is total: `annotate` returns a `Result`
+//// describing why a module could not be typed rather than crashing.
 
 import gleam/dict
 import gleam/int
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{type Option, None, Some}
 import gleam/order
+import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import glance
@@ -22,6 +23,10 @@ import girard/printer
 import girard/references
 import girard/scc
 import girard/types.{type Scheme, type Type, Scheme}
+
+/// Why a module could not be typed (re-exported from `girard/infer`).
+pub type Error =
+  infer.Error
 
 /// The inferred type of a single expression, identified by its source span.
 pub type Annotation {
@@ -68,7 +73,7 @@ fn infer_def(
   env: infer.Env,
   st: infer.State,
   def: Def,
-) -> #(Type, infer.State) {
+) -> Result(#(Type, infer.State), Error) {
   case def {
     FunctionDef(f) -> infer.infer_function(env, st, f)
     ConstantDef(c) -> infer.infer_constant(env, st, c)
@@ -76,15 +81,20 @@ fn infer_def(
 }
 
 /// Annotate a Gleam source string, resolving imports from disk.
-pub fn annotate(source: String) -> Annotated {
+pub fn annotate(source: String) -> Result(Annotated, Error) {
   annotate_with(source, disk_resolver)
 }
 
 /// Annotate a Gleam source string, resolving imports with a custom resolver.
-pub fn annotate_with(source: String, resolver: Resolver) -> Annotated {
-  let module = parse(source)
-  let #(env, st) = infer_module(resolver, set.new(), "", module).0
-  render(module, env, st)
+pub fn annotate_with(
+  source: String,
+  resolver: Resolver,
+) -> Result(Annotated, Error) {
+  use module <- result.try(parse(source))
+  use #(#(env, st), _interface) <- result.try(
+    infer_module(resolver, set.new(), "", module),
+  )
+  Ok(render(module, env, st))
 }
 
 // --- Module inference ------------------------------------------------------
@@ -97,12 +107,12 @@ fn infer_module(
   loading: Set(String),
   module_name: String,
   module: glance.Module,
-) -> #(#(infer.Env, infer.State), ModuleInterface) {
+) -> Result(#(#(infer.Env, infer.State), ModuleInterface), Error) {
   let #(prelude_env, st) = infer.prelude()
   let env = infer.set_module(prelude_env, module_name)
 
   // 1. Imports.
-  let env = process_imports(resolver, loading, env, module.imports)
+  use env <- result.try(process_imports(resolver, loading, env, module.imports))
 
   // 2. Pre-declare local type names so forward references resolve, then
   //    register aliases, custom-type constructors/accessors, and field maps.
@@ -132,7 +142,7 @@ fn infer_module(
   let functions = list.map(module.functions, fn(d) { FunctionDef(d.definition) })
   let constants = list.map(module.constants, fn(d) { ConstantDef(d.definition) })
   let defs = list.append(functions, constants)
-  let #(final_env, st) = infer_defs(env, st, defs)
+  use #(final_env, st) <- result.try(infer_defs(env, st, defs))
 
   let interface =
     infer.build_interface(
@@ -141,14 +151,14 @@ fn infer_module(
       public_value_names(module),
       public_type_names(module),
     )
-  #(#(final_env, st), interface)
+  Ok(#(#(final_env, st), interface))
 }
 
 fn infer_defs(
   env: infer.Env,
   st: infer.State,
   defs: List(Def),
-) -> #(infer.Env, infer.State) {
+) -> Result(#(infer.Env, infer.State), Error) {
   let by_name = dict.from_list(list.map(defs, fn(d) { #(def_name(d), d) }))
   let names = list.map(defs, def_name)
   let name_set = set.from_list(names)
@@ -158,32 +168,41 @@ fn infer_defs(
         #(def_name(d), list.filter(def_refs(d), set.contains(name_set, _)))
       }),
     )
-  let order = scc.components(names, edges)
+  // Each component is a group of mutually recursive definitions, in dependency
+  // order. Resolve the names back to definitions up front.
+  let groups =
+    list.map(scc.components(names, edges), fn(group) {
+      list.filter_map(group, dict.get(by_name, _))
+    })
 
-  // Members of a component are mutually recursive and inferred monomorphically
-  // together; afterwards each is generalized against the surrounding
-  // environment and added back for later components.
-  list.fold(order, #(env, st), fn(acc, group) {
+  // Members of a component are inferred monomorphically together; afterwards
+  // each is generalized against the surrounding environment and added back for
+  // later components.
+  list.try_fold(groups, #(env, st), fn(acc, group) {
     let #(env, st) = acc
     let #(group_env, group_vars, st) =
-      list.fold(group, #(env, [], st), fn(acc, name) {
+      list.fold(group, #(env, [], st), fn(acc, def) {
         let #(env, vars, st) = acc
         let #(var, st) = infer.fresh_var(st)
-        #(infer.define(env, name, Scheme([], var)), [#(name, var), ..vars], st)
+        #(
+          infer.define(env, def_name(def), Scheme([], var)),
+          [#(def, var), ..vars],
+          st,
+        )
       })
-    let st =
-      list.fold(group_vars, st, fn(st, pair) {
-        let #(name, var) = pair
-        let assert Ok(def) = dict.get(by_name, name)
-        let #(inferred, st) = infer_def(group_env, st, def)
+    use st <- result.try(
+      list.try_fold(group_vars, st, fn(st, pair) {
+        let #(def, var) = pair
+        use #(inferred, st) <- result.try(infer_def(group_env, st, def))
         infer.unify(st, var, inferred)
-      })
+      }),
+    )
     let env =
       list.fold(group_vars, env, fn(env, pair) {
-        let #(name, var) = pair
-        infer.define(env, name, infer.generalize(st, env, var))
+        let #(def, var) = pair
+        infer.define(env, def_name(def), infer.generalize(st, env, var))
       })
-    #(env, st)
+    Ok(#(env, st))
   })
 }
 
@@ -194,34 +213,46 @@ fn process_imports(
   loading: Set(String),
   env: infer.Env,
   imports: List(glance.Definition(glance.Import)),
-) -> infer.Env {
-  list.fold(imports, env, fn(env, definition) {
+) -> Result(infer.Env, Error) {
+  list.try_fold(imports, env, fn(env, definition) {
     let import_ = definition.definition
     let path = import_.module
-    case set.contains(loading, path), resolve_interface(resolver, loading, path) {
-      False, Ok(interface) -> {
-        let alias = import_alias(import_)
-        let env = infer.import_qualified(env, alias, interface)
-        let env =
-          list.fold(import_.unqualified_values, env, fn(env, u) {
-            infer.import_value(
-              env,
-              option.unwrap(u.alias, u.name),
-              interface,
-              u.name,
+    case set.contains(loading, path) {
+      // Cyclic import: break the cycle by skipping.
+      True -> Ok(env)
+      False -> {
+        use maybe_interface <- result.try(
+          resolve_interface(resolver, loading, path),
+        )
+        case maybe_interface {
+          // Unresolvable or unparsable: best effort, skip (uses of it surface
+          // later as unbound variables).
+          None -> Ok(env)
+          Some(interface) -> {
+            let alias = import_alias(import_)
+            let env = infer.import_qualified(env, alias, interface)
+            let env =
+              list.fold(import_.unqualified_values, env, fn(env, u) {
+                infer.import_value(
+                  env,
+                  option.unwrap(u.alias, u.name),
+                  interface,
+                  u.name,
+                )
+              })
+            Ok(
+              list.fold(import_.unqualified_types, env, fn(env, u) {
+                infer.import_type(
+                  env,
+                  option.unwrap(u.alias, u.name),
+                  interface,
+                  u.name,
+                )
+              }),
             )
-          })
-        list.fold(import_.unqualified_types, env, fn(env, u) {
-          infer.import_type(
-            env,
-            option.unwrap(u.alias, u.name),
-            interface,
-            u.name,
-          )
-        })
+          }
+        }
       }
-      // Unresolvable or cyclic import: skip (best effort, no diagnostics).
-      _, _ -> env
     }
   })
 }
@@ -230,18 +261,19 @@ fn resolve_interface(
   resolver: Resolver,
   loading: Set(String),
   path: String,
-) -> Result(ModuleInterface, Nil) {
+) -> Result(Option(ModuleInterface), Error) {
   case resolver(path) {
+    Error(_) -> Ok(None)
     Ok(source) ->
       case glance.module(source) {
+        Error(_) -> Ok(None)
         Ok(module) -> {
-          let #(_, interface) =
-            infer_module(resolver, set.insert(loading, path), path, module)
-          Ok(interface)
+          use #(_, interface) <- result.try(
+            infer_module(resolver, set.insert(loading, path), path, module),
+          )
+          Ok(Some(interface))
         }
-        Error(_) -> Error(Nil)
       }
-    Error(_) -> Error(Nil)
   }
 }
 
@@ -309,11 +341,7 @@ fn public_type_names(module: glance.Module) -> List(String) {
 /// Look for an imported module's source under `src/` and the `build/packages`
 /// dependency sources, relative to the current working directory.
 fn disk_resolver(path: String) -> Result(String, Nil) {
-  let candidates = [
-    "src/" <> path <> ".gleam",
-    ..dependency_candidates(path)
-  ]
-  first_readable(candidates)
+  first_readable(["src/" <> path <> ".gleam", ..dependency_candidates(path)])
 }
 
 fn dependency_candidates(path: String) -> List(String) {
@@ -339,11 +367,7 @@ fn first_readable(paths: List(String)) -> Result(String, Nil) {
 
 // --- Rendering -------------------------------------------------------------
 
-fn render(
-  module: glance.Module,
-  env: infer.Env,
-  st: infer.State,
-) -> Annotated {
+fn render(module: glance.Module, env: infer.Env, st: infer.State) -> Annotated {
   let functions = list.map(module.functions, fn(d) { FunctionDef(d.definition) })
   let constants = list.map(module.constants, fn(d) { ConstantDef(d.definition) })
 
@@ -373,7 +397,8 @@ fn render(
 }
 
 /// Render the inferred signature of each definition, in source order, keeping
-/// type-variable names stable across the shared printer context.
+/// type-variable names stable across the shared printer context. Definitions
+/// the environment somehow lacks are skipped.
 fn collect_signatures(
   defs: List(Def),
   env: infer.Env,
@@ -383,36 +408,69 @@ fn collect_signatures(
     list.fold(defs, #([], printer_names), fn(acc, def) {
       let #(sigs, printer_names) = acc
       let name = def_name(def)
-      let assert Ok(scheme) = infer.lookup(env, name)
-      let #(rendered, printer_names) = print_scheme(printer_names, scheme)
-      #([#(name, rendered), ..sigs], printer_names)
+      case infer.lookup(env, name) {
+        Ok(scheme) -> {
+          let #(rendered, printer_names) = print_scheme(printer_names, scheme)
+          #([#(name, rendered), ..sigs], printer_names)
+        }
+        Error(_) -> #(sigs, printer_names)
+      }
     })
   #(list.reverse(rev), printer_names)
 }
 
-/// Render an annotated module as text (the human-facing report).
+/// Render an annotated module as text (the human-facing report). On failure the
+/// report is a single `// error:` line.
 pub fn format(source: String) -> String {
-  let annotated = annotate(source)
-  let signatures =
-    list.map(list.append(annotated.functions, annotated.constants), fn(f) {
-      f.0 <> ": " <> f.1
-    })
-  let expressions =
-    list.map(annotated.expressions, fn(a) {
-      int.to_string(a.span.start)
-      <> "-"
-      <> int.to_string(a.span.end)
-      <> ": "
-      <> a.type_
-    })
-  string.join(list.append(signatures, expressions), "\n")
+  case annotate(source) {
+    Error(error) -> "// error: " <> describe_error(error)
+    Ok(annotated) -> {
+      let signatures =
+        list.map(list.append(annotated.functions, annotated.constants), fn(f) {
+          f.0 <> ": " <> f.1
+        })
+      let expressions =
+        list.map(annotated.expressions, fn(a) {
+          int.to_string(a.span.start)
+          <> "-"
+          <> int.to_string(a.span.end)
+          <> ": "
+          <> a.type_
+        })
+      string.join(list.append(signatures, expressions), "\n")
+    }
+  }
 }
 
-fn parse(source: String) -> glance.Module {
-  case glance.module(source) {
-    Ok(module) -> module
-    Error(_) -> panic as "failed to parse source"
+/// A short human description of an inference error.
+pub fn describe_error(error: Error) -> String {
+  case error {
+    infer.TypeMismatch(a, b) ->
+      "type mismatch: " <> printer.to_string(a) <> " vs " <> printer.to_string(b)
+    infer.ArityMismatch -> "wrong number of arguments"
+    infer.RecursiveType(_, type_) ->
+      "recursive type: " <> printer.to_string(type_)
+    infer.UnboundVariable(name) -> "unbound variable: " <> name
+    infer.UnknownConstructor(name) -> "unknown constructor: " <> name
+    infer.UnknownModule(alias) -> "unknown module: " <> alias
+    infer.NoSuchExport(module, name) ->
+      "module `" <> module <> "` has no `" <> name <> "`"
+    infer.NoSuchField(type_name, label) ->
+      "type `" <> type_name <> "` has no field `" <> label <> "`"
+    infer.NotARecord -> "field access or update on a non-record value"
+    infer.NotATuple -> "tuple index on a non-tuple value"
+    infer.TupleIndexOutOfRange(index) ->
+      "tuple index out of range: " <> int.to_string(index)
+    infer.UnknownLabel(label) -> "unknown argument label: " <> label
+    infer.AmbiguousCall -> "labelled arguments to an unknown callable"
+    infer.MissingArgument -> "missing argument"
+    infer.Unsupported(feature) -> "unsupported: " <> feature
+    infer.ParseFailed(_) -> "could not parse source"
   }
+}
+
+fn parse(source: String) -> Result(glance.Module, Error) {
+  glance.module(source) |> result.map_error(infer.ParseFailed)
 }
 
 fn print_scheme(names: printer.Names, scheme: Scheme) -> #(String, printer.Names) {

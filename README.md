@@ -7,8 +7,10 @@ signature.
 
 It deliberately replicates the inference performed by the real Gleam compiler
 (the Rust `compiler-core/src/type_/` crate) rather than inventing its own type
-system. It is **not** a full type checker: it does not produce diagnostics. If
-the input is invalid or uses an unsupported construct, it simply `panic`s.
+system. It is **not** a full type checker: it does not aim for rich diagnostics.
+Inference is total — `annotate` returns `Result(Annotated, Error)`, where
+`Error` explains why a module could not be typed (type mismatch, unbound
+variable, unknown field, …) rather than crashing.
 
 Parsing is delegated to [`glance`](https://hexdocs.pm/glance/), a pure-Gleam
 Gleam parser, so `girard` only implements the inference layer.

@@ -4,6 +4,7 @@ import gleam/string
 import gleeunit
 import gleeunit/should
 import girard
+import girard/infer
 
 pub fn main() {
   gleeunit.main()
@@ -13,7 +14,7 @@ pub fn main() {
 
 /// The inferred signature of the named top-level function.
 fn signature(source: String, name: String) -> String {
-  let annotated = girard.annotate(source)
+  let assert Ok(annotated) = girard.annotate(source)
   case list.key_find(annotated.functions, name) {
     Ok(sig) -> sig
     Error(_) -> panic as { "no function named " <> name }
@@ -29,7 +30,7 @@ fn signature_with(
 ) -> String {
   let table = dict.from_list(modules)
   let resolver = fn(path) { dict.get(table, path) }
-  let annotated = girard.annotate_with(source, resolver)
+  let assert Ok(annotated) = girard.annotate_with(source, resolver)
   case list.key_find(annotated.functions, name) {
     Ok(sig) -> sig
     Error(_) -> panic as { "no function named " <> name }
@@ -38,7 +39,7 @@ fn signature_with(
 
 /// The inferred type of the named top-level constant.
 fn constant_type(source: String, name: String) -> String {
-  let annotated = girard.annotate(source)
+  let assert Ok(annotated) = girard.annotate(source)
   case list.key_find(annotated.constants, name) {
     Ok(type_) -> type_
     Error(_) -> panic as { "no constant named " <> name }
@@ -50,7 +51,7 @@ fn constant_type(source: String, name: String) -> String {
 fn type_of(source: String, snippet: String) -> String {
   let assert Ok(start) = first_index(source, snippet)
   let end = start + string.byte_size(snippet)
-  let annotated = girard.annotate(source)
+  let assert Ok(annotated) = girard.annotate(source)
   let matches =
     list.filter_map(annotated.expressions, fn(a) {
       case a.span.start == start && a.span.end == end {
@@ -69,6 +70,31 @@ fn first_index(haystack: String, needle: String) -> Result(Int, Nil) {
     Ok(#(before, _)) -> Ok(string.byte_size(before))
     Error(_) -> Error(Nil)
   }
+}
+
+// --- Ill-typed input is reported, not crashed -------------------------------
+
+pub fn unbound_variable_is_error_test() {
+  let assert Error(infer.UnboundVariable("x")) =
+    girard.annotate("pub fn f() { x }")
+}
+
+pub fn type_mismatch_is_error_test() {
+  // `+.` is float addition, so an Int operand does not unify.
+  let assert Error(infer.TypeMismatch(_, _)) =
+    girard.annotate("pub fn f() { 1 +. 2.0 }")
+}
+
+pub fn unknown_field_is_error_test() {
+  let source =
+    "pub type User { User(name: String) }\npub fn f(u: User) { u.age }"
+  let assert Error(infer.NoSuchField("User", "age")) = girard.annotate(source)
+}
+
+pub fn occurs_check_is_error_test() {
+  // `fn(f) { f(f) }` has no finite type.
+  let assert Error(infer.RecursiveType(_, _)) =
+    girard.annotate("pub fn f(g) { g(g) }")
 }
 
 // --- Function signature inference ------------------------------------------
