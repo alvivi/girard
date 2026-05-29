@@ -47,9 +47,11 @@ Toolchain is pinned in `.tool-versions` (gleam 1.16.0, erlang 28.4.2).
 | Module                  | Responsibility                                                              |
 | ----------------------- | --------------------------------------------------------------------------- |
 | `girard/types`          | The internal `Type` model (`Named`/`Fn`/`Var`/`Tuple`), prelude constructors, `Scheme` |
-| `girard/infer`          | Threaded `State` (substitution + fresh-var counter + span→type map), unification, generalize/instantiate, inference of expressions/statements/patterns, annotation hydration |
+| `girard/infer`          | Threaded `State` (substitution + fresh-var counter + span→type map), unification, generalize/instantiate, inference of expressions/statements/patterns, hydration, module interfaces & imports |
+| `girard/scc`            | Tarjan strongly-connected components, for dependency-ordered inference       |
+| `girard/references`     | Collect the names a definition refers to, to build the call graph            |
 | `girard/printer`        | Rendering a `Type` back to Gleam syntax with `a, b, c …` variable naming     |
-| `girard`                | The driver: parse → register types → infer → generalize → emit annotations   |
+| `girard`                | The driver: parse → resolve imports → register types → infer in SCC order → emit annotations |
 
 **Mutability model.** The real compiler mutates type variables in place via
 `Arc<RefCell<TypeVar>>`. Since Gleam-the-language is pure, a `Var(id)` instead
@@ -99,13 +101,18 @@ official compiler infers. We get there in milestones.
 - Type-variable sharing within a single signature (a written `fn(a) -> a` ties
   the occurrences of `a` together).
 
-### ⏳ Milestone 4 — Imports, prelude & standard library
-- Resolve `import` statements (qualified, aliased, and unqualified imports).
-- Read module interfaces so external functions/types/constructors get correct
-  types — starting with `gleam_stdlib`, by loading published package interfaces
-  or by inferring dependency modules ourselves.
-- Qualified calls (`list.map`), unqualified imported constructors, module-level
-  type references across files.
+### ✅ Milestone 4 — Imports, prelude & standard library
+- Resolve `import` statements (qualified, aliased, and unqualified value/type
+  imports) through a `Resolver`; the default resolver reads `src/` and
+  `build/packages/*/src` from disk, and `annotate_with` accepts a custom one.
+- Imported modules are inferred to a public `ModuleInterface`; cyclic imports
+  are broken with a loading set. Types carry their origin module so cross-module
+  identity is correct, including qualified type annotations (`opt.Maybe`).
+- Qualified calls (`list.map`), qualified constructor patterns (`order.Gt`),
+  unqualified imported values/types/constructors, and `@external` functions.
+- Verified end-to-end against the real `gleam_stdlib`: e.g. `list.map` infers
+  `fn(List(Int)) -> List(Int)` and `result.map` preserves the polymorphic error
+  type `fn(Result(Int, a)) -> Result(Int, a)`.
 
 ### ⏳ Milestone 5 — Fidelity & ergonomics
 - Match the compiler's `inferred_variant` tracking and variant-aware inference.
