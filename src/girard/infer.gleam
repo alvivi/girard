@@ -41,13 +41,31 @@ pub type Env {
     /// Record field accessors: type name -> label -> a scheme for
     /// `fn(record) -> field`, generalized over the type's parameters.
     accessors: Dict(String, Dict(String, Scheme)),
-    /// Names of types defined in the current module (mapped to their arity).
-    /// Used during hydration to give local types the current module ("")
-    /// rather than the prelude module.
-    local_types: Dict(String, Int),
+    /// In-scope type names -> (origin module, arity). Covers types defined in
+    /// the current module and types brought in by unqualified imports. Used
+    /// during hydration to resolve a bare type name to its module.
+    local_types: Dict(String, #(String, Int)),
     /// Field maps for callables (functions and constructors): name -> the
     /// label of each positional parameter (`None` where unlabelled). Used to
     /// reorder labelled and shorthand arguments at call/pattern sites.
+    field_maps: Dict(String, List(Option(String))),
+    /// The name of the module currently being inferred. Local types are minted
+    /// with this module so they stay distinct from imported types.
+    current_module: String,
+    /// Imported modules available for qualified access, keyed by the alias used
+    /// in source (e.g. `list` for `import gleam/list`).
+    modules: Dict(String, ModuleInterface),
+  )
+}
+
+/// The public surface of a module, used when importing it elsewhere.
+pub type ModuleInterface {
+  ModuleInterface(
+    name: String,
+    values: Dict(String, Scheme),
+    types: Dict(String, #(String, Int)),
+    aliases: Dict(String, #(List(String), glance.Type)),
+    accessors: Dict(String, Dict(String, Scheme)),
     field_maps: Dict(String, List(Option(String))),
   )
 }
@@ -63,7 +81,14 @@ pub fn new_env() -> Env {
     accessors: dict.new(),
     local_types: dict.new(),
     field_maps: dict.new(),
+    current_module: "",
+    modules: dict.new(),
   )
+}
+
+/// Set the name of the module currently being inferred.
+pub fn set_module(env: Env, name: String) -> Env {
+  Env(..env, current_module: name)
 }
 
 /// Register the field map (per-position labels) of a callable.
@@ -83,7 +108,10 @@ pub fn register_field_map(
 /// resolve to the current module. Call this for every custom type before
 /// registering any of them, so forward references resolve correctly.
 pub fn declare_type(env: Env, name: String, arity: Int) -> Env {
-  Env(..env, local_types: dict.insert(env.local_types, name, arity))
+  Env(
+    ..env,
+    local_types: dict.insert(env.local_types, name, #(env.current_module, arity)),
+  )
 }
 
 /// Register a type alias so references to it expand during hydration.
@@ -162,6 +190,80 @@ fn bind_value(env: Env, name: String, scheme: Scheme) -> Env {
 /// Look up a value's scheme in the environment.
 pub fn lookup(env: Env, name: String) -> Result(Scheme, Nil) {
   dict.get(env.values, name)
+}
+
+// --- Module interfaces & imports -------------------------------------------
+
+/// Build the public interface of an inferred module by keeping only the named
+/// public values and types.
+pub fn build_interface(
+  env: Env,
+  name: String,
+  value_names: List(String),
+  type_names: List(String),
+) -> ModuleInterface {
+  ModuleInterface(
+    name: name,
+    values: take(env.values, value_names),
+    types: take(env.local_types, type_names),
+    aliases: take(env.aliases, type_names),
+    accessors: take(env.accessors, type_names),
+    field_maps: take(env.field_maps, value_names),
+  )
+}
+
+fn take(d: Dict(String, v), keys: List(String)) -> Dict(String, v) {
+  list.fold(keys, dict.new(), fn(acc, key) {
+    case dict.get(d, key) {
+      Ok(value) -> dict.insert(acc, key, value)
+      Error(_) -> acc
+    }
+  })
+}
+
+/// Make a module available for qualified access (`alias.value`/`alias.Type`).
+pub fn import_qualified(env: Env, alias: String, interface: ModuleInterface) -> Env {
+  Env(..env, modules: dict.insert(env.modules, alias, interface))
+}
+
+/// Bring a single value (function/constant/constructor) into scope unqualified.
+pub fn import_value(
+  env: Env,
+  local: String,
+  interface: ModuleInterface,
+  original: String,
+) -> Env {
+  let env = case dict.get(interface.values, original) {
+    Ok(scheme) -> bind_value(env, local, scheme)
+    Error(_) -> env
+  }
+  case dict.get(interface.field_maps, original) {
+    Ok(field_map) ->
+      Env(..env, field_maps: dict.insert(env.field_maps, local, field_map))
+    Error(_) -> env
+  }
+}
+
+/// Bring a single type into scope unqualified.
+pub fn import_type(
+  env: Env,
+  local: String,
+  interface: ModuleInterface,
+  original: String,
+) -> Env {
+  let env = case dict.get(interface.types, original) {
+    Ok(info) -> Env(..env, local_types: dict.insert(env.local_types, local, info))
+    Error(_) -> env
+  }
+  let env = case dict.get(interface.aliases, original) {
+    Ok(alias) -> Env(..env, aliases: dict.insert(env.aliases, local, alias))
+    Error(_) -> env
+  }
+  case dict.get(interface.accessors, original) {
+    Ok(accessors) ->
+      Env(..env, accessors: dict.insert(env.accessors, local, accessors))
+    Error(_) -> env
+  }
 }
 
 fn record(st: State, span: glance.Span, type_: Type) -> State {
@@ -394,16 +496,37 @@ fn infer_expr_inner(
       }
 
     glance.FieldAccess(_, container, label) -> {
-      let #(container_type, st) = infer_expr(env, st, container)
-      case resolve(st, container_type) {
-        Named(_, type_name, _) -> {
-          let #(accessor_type, st) =
-            instantiate(st, accessor(env, type_name, label))
-          let #(field, st) = fresh(st)
-          let st = unify(st, accessor_type, Fn([container_type], field))
-          #(field, st)
+      // `module.value` (qualified access) takes precedence over record field
+      // access when the container names an imported module not shadowed by a
+      // local value.
+      let module_access = case container {
+        glance.Variable(_, name) ->
+          case !dict.has_key(env.values, name), dict.get(env.modules, name) {
+            True, Ok(interface) -> Ok(interface)
+            _, _ -> Error(Nil)
+          }
+        _ -> Error(Nil)
+      }
+      case module_access {
+        Ok(interface) ->
+          case dict.get(interface.values, label) {
+            Ok(scheme) -> instantiate(st, scheme)
+            Error(_) ->
+              panic as { "module has no value `" <> label <> "`" }
+          }
+        Error(_) -> {
+          let #(container_type, st) = infer_expr(env, st, container)
+          case resolve(st, container_type) {
+            Named(_, type_name, _) -> {
+              let #(accessor_type, st) =
+                instantiate(st, accessor(env, type_name, label))
+              let #(field, st) = fresh(st)
+              let st = unify(st, accessor_type, Fn([container_type], field))
+              #(field, st)
+            }
+            _ -> panic as "field access on a value of unknown type"
+          }
         }
-        _ -> panic as "field access on a value of unknown type"
       }
     }
 
@@ -1083,13 +1206,28 @@ fn hydrate_with(
           let #(#(t, st), _) = hydrate_with(env, alias_names, st, aliased)
           #(#(t, st), names)
         }
-        // A local custom type lives in the current module ("").
+        // A bare type name: resolve it to its origin module if known,
+        // otherwise assume it is a prelude type.
         None, _ ->
-          case dict.has_key(env.local_types, name) {
-            True -> #(#(Named("", name, arg_types), st), names)
-            False -> #(#(Named(types.prelude_module, name, arg_types), st), names)
+          case dict.get(env.local_types, name) {
+            Ok(#(origin, _arity)) -> #(#(Named(origin, name, arg_types), st), names)
+            Error(_) -> #(
+              #(Named(types.prelude_module, name, arg_types), st),
+              names,
+            )
           }
-        Some(m), _ -> #(#(Named(m, name, arg_types), st), names)
+        // A qualified type name `alias.Name`: resolve via the imported module.
+        Some(alias), _ -> {
+          let origin = case dict.get(env.modules, alias) {
+            Ok(interface) ->
+              case dict.get(interface.types, name) {
+                Ok(#(origin, _arity)) -> origin
+                Error(_) -> alias
+              }
+            Error(_) -> alias
+          }
+          #(#(Named(origin, name, arg_types), st), names)
+        }
       }
     }
 
@@ -1156,15 +1294,32 @@ pub fn infer_function(
       }
       #([t, ..types_], env, st, names)
     })
-  let #(body_type, st) = infer_statements(body_env, st, function.body)
-  let st = case function.return {
-    Some(ann) -> {
-      let #(t, st, _names) = hydrate_threaded(env, names, st, ann)
-      unify(st, body_type, t)
+  let param_types = list.reverse(rev_param_types)
+  case function.body {
+    // External functions (e.g. `@external`) have no body; their type comes
+    // entirely from the signature annotations.
+    [] -> {
+      let #(return_type, st) = case function.return {
+        Some(ann) -> {
+          let #(t, st, _names) = hydrate_threaded(env, names, st, ann)
+          #(t, st)
+        }
+        None -> fresh(st)
+      }
+      #(Fn(param_types, return_type), st)
     }
-    None -> st
+    _ -> {
+      let #(body_type, st) = infer_statements(body_env, st, function.body)
+      let st = case function.return {
+        Some(ann) -> {
+          let #(t, st, _names) = hydrate_threaded(env, names, st, ann)
+          unify(st, body_type, t)
+        }
+        None -> st
+      }
+      #(Fn(param_types, body_type), st)
+    }
   }
-  #(Fn(list.reverse(rev_param_types), body_type), st)
 }
 
 /// Infer a module constant, returning its type (an annotation, if present, is
@@ -1192,15 +1347,7 @@ pub fn register_custom_type(
   custom_type: glance.CustomType,
 ) -> #(Env, State) {
   // Record the type as local first so its own fields can refer to it.
-  let env =
-    Env(
-      ..env,
-      local_types: dict.insert(
-        env.local_types,
-        custom_type.name,
-        list.length(custom_type.parameters),
-      ),
-    )
+  let env = declare_type(env, custom_type.name, list.length(custom_type.parameters))
   let #(rev_param_vars, st) =
     list.fold(custom_type.parameters, #([], st), fn(acc, _name) {
       let #(vars, st) = acc
@@ -1216,7 +1363,7 @@ pub fn register_custom_type(
         _ -> panic as "expected fresh var"
       }
     })
-  let return_type = Named("", custom_type.name, param_vars)
+  let return_type = Named(env.current_module, custom_type.name, param_vars)
 
   let #(env, st) =
     list.fold(custom_type.variants, #(env, st), fn(acc, variant) {

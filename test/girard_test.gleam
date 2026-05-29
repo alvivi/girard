@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/list
 import gleam/string
 import gleeunit
@@ -13,6 +14,22 @@ pub fn main() {
 /// The inferred signature of the named top-level function.
 fn signature(source: String, name: String) -> String {
   let annotated = girard.annotate(source)
+  case list.key_find(annotated.functions, name) {
+    Ok(sig) -> sig
+    Error(_) -> panic as { "no function named " <> name }
+  }
+}
+
+/// The inferred signature of `name` in `source`, resolving imports from the
+/// given in-memory modules (path -> source).
+fn signature_with(
+  source: String,
+  modules: List(#(String, String)),
+  name: String,
+) -> String {
+  let table = dict.from_list(modules)
+  let resolver = fn(path) { dict.get(table, path) }
+  let annotated = girard.annotate_with(source, resolver)
   case list.key_find(annotated.functions, name) {
     Ok(sig) -> sig
     Error(_) -> panic as { "no function named " <> name }
@@ -307,4 +324,52 @@ pub fn bit_array_pattern_test() {
     "pub fn first_byte(b) { case b { <<x, _:bytes>> -> x\n_ -> 0 } }"
   signature(source, "first_byte")
   |> should.equal("fn(BitArray) -> Int")
+}
+
+// --- Imports (M4) -----------------------------------------------------------
+
+pub fn qualified_import_test() {
+  let other = "pub fn double(x: Int) -> Int { x + x }"
+  let source = "import other\npub fn use_it() { other.double(21) }"
+  signature_with(source, [#("other", other)], "use_it")
+  |> should.equal("fn() -> Int")
+}
+
+pub fn unqualified_value_import_test() {
+  let other = "pub fn double(x: Int) -> Int { x + x }"
+  let source = "import other.{double}\npub fn use_it() { double(21) }"
+  signature_with(source, [#("other", other)], "use_it")
+  |> should.equal("fn() -> Int")
+}
+
+pub fn cross_module_polymorphism_test() {
+  // An imported generic helper stays polymorphic and is usable at two types.
+  let other = "pub fn id(x) { x }"
+  let source = "import other.{id}\npub fn use_it() { #(id(1), id(\"a\")) }"
+  signature_with(source, [#("other", other)], "use_it")
+  |> should.equal("fn() -> #(Int, String)")
+}
+
+pub fn imported_type_and_constructor_test() {
+  let opt = "pub type Maybe(a) { Just(a)\nNothing }"
+  let source = "import opt.{type Maybe, Just}\npub fn get() { Just(5) }"
+  signature_with(source, [#("opt", opt)], "get")
+  |> should.equal("fn() -> Maybe(Int)")
+}
+
+pub fn qualified_type_annotation_test() {
+  let opt = "pub type Maybe(a) { Just(a)\nNothing }"
+  let source =
+    "import opt\npub fn wrap(x: a) -> opt.Maybe(a) { opt.Just(x) }"
+  signature_with(source, [#("opt", opt)], "wrap")
+  |> should.equal("fn(a) -> Maybe(a)")
+}
+
+pub fn transitive_import_test() {
+  // `mid` re-exports a function that itself depends on `base`.
+  let base = "pub fn inc(x: Int) -> Int { x + 1 }"
+  let mid = "import base\npub fn inc2(x) { base.inc(base.inc(x)) }"
+  let source = "import mid\npub fn run() { mid.inc2(0) }"
+  signature_with(source, [#("base", base), #("mid", mid)], "run")
+  |> should.equal("fn() -> Int")
 }
