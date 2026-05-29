@@ -19,3 +19,21 @@ simplifile = ">= 2.4.0 and < 3.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
+glinter = ">= 2.19.0 and < 3.0.0"
+
+# Linter config. Run with `gleam run -m glinter`.
+# We lint the library (src/) only: gleeunit tests are public, un-annotated, and
+# unused by other modules by convention, which trips several rules.
+[tools.glinter]
+include = ["src/"]
+
+[tools.glinter.rules]
+# girard intentionally fails fast (panic / let assert) instead of reporting
+# errors — see the module docs — so these design-level rules don't apply.
+avoid_panic = "off"
+assert_ok_pattern = "off"
+# Dict.get and friends return Result(_, Nil); the discarded error carries no
+# information and is handled in the Error(_) case, so this is a false positive.
+thrown_away_error = "off"
+# Labels are stylistic here; flagging every multi-argument call is too noisy.
+label_possible = "off"

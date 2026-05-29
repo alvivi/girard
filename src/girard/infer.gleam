@@ -70,11 +70,11 @@ pub type ModuleInterface {
   )
 }
 
-pub fn new_state() -> State {
+fn new_state() -> State {
   State(next_id: 0, subst: dict.new(), annotations: [])
 }
 
-pub fn new_env() -> Env {
+fn new_env() -> Env {
   Env(
     values: dict.new(),
     aliases: dict.new(),
@@ -273,7 +273,7 @@ fn record(st: State, span: glance.Span, type_: Type) -> State {
 // --- Substitution: resolve / zonk / free variables -------------------------
 
 /// Follow bound variables one level to expose the head constructor.
-pub fn resolve(st: State, type_: Type) -> Type {
+fn resolve(st: State, type_: Type) -> Type {
   case type_ {
     Var(id) ->
       case dict.get(st.subst, id) {
@@ -378,7 +378,7 @@ pub fn generalize(st: State, env: Env, type_: Type) -> Scheme {
 }
 
 /// Instantiate a scheme by replacing each quantified variable with a fresh one.
-pub fn instantiate(st: State, scheme: Scheme) -> #(Type, State) {
+fn instantiate(st: State, scheme: Scheme) -> #(Type, State) {
   let #(mapping, st) =
     list.fold(scheme.vars, #(dict.new(), st), fn(acc, old) {
       let #(mapping, st) = acc
@@ -405,7 +405,7 @@ fn substitute(mapping: Dict(Int, Type), type_: Type) -> Type {
 
 // --- Expression inference --------------------------------------------------
 
-pub fn infer_expr(env: Env, st: State, expr: glance.Expression) -> #(Type, State) {
+fn infer_expr(env: Env, st: State, expr: glance.Expression) -> #(Type, State) {
   let #(type_, st) = infer_expr_inner(env, st, expr)
   #(type_, record(st, span(expr), type_))
 }
@@ -1217,7 +1217,7 @@ fn indices_loop(i: Int, acc: List(Int)) -> List(Int) {
 /// Convert a written type annotation into an internal `Type`. Type-variable
 /// names introduced here all become fresh unbound variables (sufficient for
 /// milestone 1; named-variable sharing across one signature is a refinement).
-pub fn hydrate(env: Env, st: State, ast: glance.Type) -> #(Type, State) {
+fn hydrate(env: Env, st: State, ast: glance.Type) -> #(Type, State) {
   hydrate_with(env, dict.new(), st, ast).0
 }
 
