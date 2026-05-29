@@ -547,11 +547,16 @@ fn infer_expr_inner(
       use st <- result.try(
         list.try_fold(segments, st, fn(st, segment) {
           let #(value, options) = segment
+          let default = case value {
+            glance.String(..) -> types.string()
+            glance.Float(..) -> types.float()
+            _ -> types.int()
+          }
           use st <- result.try(check(
             env,
             st,
             value,
-            segment_value_type(options),
+            segment_value_type(options, default),
           ))
           list.try_fold(options, st, fn(st, option) {
             case option {
@@ -1390,11 +1395,16 @@ fn infer_pattern(
       list.try_fold(segments, #(env, st), fn(acc, segment) {
         let #(env, st) = acc
         let #(pattern, options) = segment
+        let default = case pattern {
+          glance.PatternString(..) -> types.string()
+          glance.PatternFloat(..) -> types.float()
+          _ -> types.int()
+        }
         use #(env, st) <- result.try(infer_pattern(
           env,
           st,
           pattern,
-          segment_value_type(options),
+          segment_value_type(options, default),
         ))
         list.try_fold(options, #(env, st), fn(acc, option) {
           let #(env, st) = acc
@@ -1441,10 +1451,14 @@ fn constructor_scheme(
   }
 }
 
-/// The value type of a bit-array segment, inferred from its options
-/// (defaulting to `Int`).
-fn segment_value_type(options: List(glance.BitStringSegmentOption(t))) -> Type {
-  list.fold(options, types.int(), fn(acc, option) {
+/// The value type of a bit-array segment given its options and the default to
+/// use when no type option is present (`Int` for numeric segments, `String`
+/// for string-literal segments, etc.).
+fn segment_value_type(
+  options: List(glance.BitStringSegmentOption(t)),
+  default: Type,
+) -> Type {
+  list.fold(options, default, fn(acc, option) {
     case option {
       glance.FloatOption -> types.float()
       glance.Utf8Option | glance.Utf16Option | glance.Utf32Option ->

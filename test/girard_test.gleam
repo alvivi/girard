@@ -346,6 +346,19 @@ pub fn bit_array_string_segment_test() {
   |> should.equal("fn(String) -> BitArray")
 }
 
+pub fn bit_array_string_literal_test() {
+  signature("pub fn dot() { <<\".\">> }", "dot")
+  |> should.equal("fn() -> BitArray")
+}
+
+pub fn bit_array_string_literal_pattern_test() {
+  // `"."` is a string-literal segment (utf8), not an Int segment.
+  let source =
+    "pub fn rest(b) { case b { <<\".\", tail:bytes>> -> tail\n_ -> b } }"
+  signature(source, "rest")
+  |> should.equal("fn(BitArray) -> BitArray")
+}
+
 pub fn bit_array_pattern_test() {
   let source = "pub fn first_byte(b) { case b { <<x, _:bytes>> -> x\n_ -> 0 } }"
   signature(source, "first_byte")
