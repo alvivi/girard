@@ -97,6 +97,18 @@ pub fn occurs_check_is_error_test() {
     girard.annotate("pub fn f(g) { g(g) }")
 }
 
+// --- format (the CLI's rendered report) -------------------------------------
+
+pub fn format_report_test() {
+  girard.format("pub fn double(x) { x + x }")
+  |> should.equal("double: fn(Int) -> Int\n19-20: Int\n19-24: Int\n23-24: Int")
+}
+
+pub fn format_error_test() {
+  girard.format("pub fn f() { 1 +. 2 }")
+  |> should.equal("// error: type mismatch: Int vs Float")
+}
+
 // --- Function signature inference ------------------------------------------
 
 pub fn identity_test() {

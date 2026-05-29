@@ -36,6 +36,18 @@ double: fn(Int) -> Int
 (`functions: List(#(name, signature))` and `expressions: List(Annotation)`);
 `girard.format(source)` renders the report above.
 
+## Command line
+
+```sh
+gleam run -- path/to/file.gleam   # annotate a file
+gleam run -- -                    # annotate stdin
+cat file.gleam | gleam run        # annotate stdin
+gleam run -- --help               # usage
+```
+
+Imports are resolved from `src/` and `build/packages` (so `import gleam/list`
+works); ill-typed input prints a single `// error: …` line.
+
 ## Development
 
 ```sh

@@ -8,6 +8,7 @@
 //// their public interfaces. Inference is total: `annotate` returns a `Result`
 //// describing why a module could not be typed rather than crashing.
 
+import argv
 import girard/infer.{type ModuleInterface}
 import girard/printer
 import girard/references
@@ -16,6 +17,7 @@ import girard/types.{type Scheme, type Type, Scheme}
 import glance
 import gleam/dict
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order
@@ -508,4 +510,49 @@ fn sort_by_span(annotations: List(Annotation)) -> List(Annotation) {
       other -> other
     }
   })
+}
+
+// --- CLI -------------------------------------------------------------------
+
+/// `gleam run -- <file.gleam>` annotates a file; `gleam run -- -` (or no
+/// arguments, or piped input) annotates stdin. Imports are resolved from disk.
+pub fn main() -> Nil {
+  case argv.load().arguments {
+    ["--help"] | ["-h"] -> io.println(usage())
+    [] | ["-"] -> emit(read_stdin())
+    [path] -> emit(read_file(path))
+    _ -> {
+      io.println_error("error: expected a single file path, `-`, or no input")
+      io.println_error(usage())
+    }
+  }
+}
+
+fn emit(source: Result(String, String)) -> Nil {
+  case source {
+    Ok(text) -> io.println(format(text))
+    Error(message) -> io.println_error("error: " <> message)
+  }
+}
+
+fn read_file(path: String) -> Result(String, String) {
+  simplifile.read(path)
+  |> result.replace_error("could not read file: " <> path)
+}
+
+fn read_stdin() -> Result(String, String) {
+  simplifile.read("/dev/stdin")
+  |> result.replace_error("could not read stdin")
+}
+
+fn usage() -> String {
+  "girard — a type annotator for Gleam
+
+Usage:
+  gleam run -- <file.gleam>     annotate a file
+  gleam run -- -                annotate stdin
+  cat file.gleam | gleam run    annotate stdin
+
+Output: each top-level definition's inferred signature, then one
+`<start>-<end>: <type>` line per expression (by source byte span)."
 }
