@@ -410,6 +410,18 @@ pub fn labelled_reorder_with_pipe_test() {
   |> should.equal("fn(List(a)) -> a")
 }
 
+pub fn module_and_value_share_name_test() {
+  // `m.thing` must resolve to the module export even though a value `m` also
+  // exists in scope (mirrors gleam/dynamic's `dynamic` constant + module).
+  let m = "pub fn thing(x: Int) -> String { todo }"
+  let source =
+    "import m\n"
+    <> "pub const m = 1\n"
+    <> "pub fn f() { m.thing(1) }"
+  signature_with(source, [#("m", m)], "f")
+  |> should.equal("fn() -> String")
+}
+
 pub fn transitive_import_test() {
   // `mid` re-exports a function that itself depends on `base`.
   let base = "pub fn inc(x: Int) -> Int { x + 1 }"

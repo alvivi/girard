@@ -558,21 +558,24 @@ fn infer_field_access(
   label: String,
 ) -> Result(#(Type, State), Error) {
   // `module.value` (qualified access) takes precedence over record field
-  // access when the container names an imported module not shadowed by a local.
+  // access when the container names an imported module that exports `label`.
+  // A module name and a value can share a spelling (e.g. `gleam/dynamic` and a
+  // `dynamic` constant), so we disambiguate on whether the module exports the
+  // accessed name rather than on the presence of a same-named value.
   let module_access = case container {
     glance.Variable(_, name) ->
-      case !dict.has_key(env.values, name), dict.get(env.modules, name) {
-        True, Ok(interface) -> Ok(#(name, interface))
-        _, _ -> Error(Nil)
+      case dict.get(env.modules, name) {
+        Ok(interface) ->
+          case dict.get(interface.values, label) {
+            Ok(scheme) -> Ok(scheme)
+            Error(_) -> Error(Nil)
+          }
+        Error(_) -> Error(Nil)
       }
     _ -> Error(Nil)
   }
   case module_access {
-    Ok(#(alias, interface)) ->
-      case dict.get(interface.values, label) {
-        Ok(scheme) -> Ok(instantiate(st, scheme))
-        Error(_) -> Error(NoSuchExport(alias, label))
-      }
+    Ok(scheme) -> Ok(instantiate(st, scheme))
     Error(_) -> {
       use #(container_type, st) <- result.try(infer_expr(env, st, container))
       case resolve(st, container_type) {
