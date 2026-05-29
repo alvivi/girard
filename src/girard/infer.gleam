@@ -45,6 +45,10 @@ pub type Env {
     /// Used during hydration to give local types the current module ("")
     /// rather than the prelude module.
     local_types: Dict(String, Int),
+    /// Field maps for callables (functions and constructors): name -> the
+    /// label of each positional parameter (`None` where unlabelled). Used to
+    /// reorder labelled and shorthand arguments at call/pattern sites.
+    field_maps: Dict(String, List(Option(String))),
   )
 }
 
@@ -58,7 +62,21 @@ pub fn new_env() -> Env {
     aliases: dict.new(),
     accessors: dict.new(),
     local_types: dict.new(),
+    field_maps: dict.new(),
   )
+}
+
+/// Register the field map (per-position labels) of a callable.
+pub fn register_field_map(
+  env: Env,
+  name: String,
+  labels: List(Option(String)),
+) -> Env {
+  // Only worth recording if at least one position is labelled.
+  case list.any(labels, fn(l) { l != None }) {
+    True -> Env(..env, field_maps: dict.insert(env.field_maps, name, labels))
+    False -> env
+  }
 }
 
 /// Declare a local type name (and arity) so references to it during hydration
@@ -474,7 +492,11 @@ fn infer_call(
   arguments: List(glance.Field(glance.Expression)),
 ) -> #(Type, State) {
   let #(fn_type, st) = infer_expr(env, st, function)
-  let #(arg_types, st) = infer_each(env, st, list.map(arguments, field_item))
+  let ordered =
+    order_fields(env, function, arguments, fn(label, location) {
+      glance.Variable(location, label)
+    })
+  let #(arg_types, st) = infer_each(env, st, ordered)
   let #(result, st) = fresh(st)
   let st = unify(st, fn_type, Fn(arg_types, result))
   // Record the result type at the call span too.
@@ -486,6 +508,90 @@ fn field_item(field: glance.Field(glance.Expression)) -> glance.Expression {
     glance.UnlabelledField(item) -> item
     glance.LabelledField(_, _, item) -> item
     glance.ShorthandField(label, location) -> glance.Variable(location, label)
+  }
+}
+
+/// Reorder labelled/shorthand call or pattern arguments into positional order
+/// using the callee's field map. If every argument is positional we don't need
+/// the field map (this also covers calls to anonymous functions).
+fn order_fields(
+  env: Env,
+  callee: glance.Expression,
+  fields: List(glance.Field(t)),
+  shorthand: fn(String, glance.Span) -> t,
+) -> List(t) {
+  case list.all(fields, is_unlabelled) {
+    True -> list.map(fields, unlabelled_item)
+    False -> {
+      let labels = case callee {
+        glance.Variable(_, name) -> dict.get(env.field_maps, name)
+        glance.FieldAccess(_, _, name) -> dict.get(env.field_maps, name)
+        _ -> Error(Nil)
+      }
+      case labels {
+        Ok(labels) -> reorder(fields, labels, shorthand)
+        Error(_) -> panic as "labelled arguments to an unknown callable"
+      }
+    }
+  }
+}
+
+fn is_unlabelled(field: glance.Field(t)) -> Bool {
+  case field {
+    glance.UnlabelledField(..) -> True
+    _ -> False
+  }
+}
+
+fn unlabelled_item(field: glance.Field(t)) -> t {
+  case field {
+    glance.UnlabelledField(item) -> item
+    _ -> panic as "expected an unlabelled field"
+  }
+}
+
+fn reorder(
+  fields: List(glance.Field(t)),
+  labels: List(Option(String)),
+  shorthand: fn(String, glance.Span) -> t,
+) -> List(t) {
+  let index_of =
+    list.index_fold(labels, dict.new(), fn(acc, label, index) {
+      case label {
+        Some(name) -> dict.insert(acc, name, index)
+        None -> acc
+      }
+    })
+  let #(placed, _next) =
+    list.fold(fields, #(dict.new(), 0), fn(acc, field) {
+      let #(placed, next) = acc
+      case field {
+        glance.UnlabelledField(item) -> #(dict.insert(placed, next, item), next + 1)
+        glance.LabelledField(label, _, item) -> #(
+          dict.insert(placed, label_index(index_of, label), item),
+          next,
+        )
+        glance.ShorthandField(label, location) -> #(
+          dict.insert(placed, label_index(index_of, label), shorthand(
+            label,
+            location,
+          )),
+          next,
+        )
+      }
+    })
+  list.index_map(labels, fn(_label, index) {
+    case dict.get(placed, index) {
+      Ok(item) -> item
+      Error(_) -> panic as "missing argument when reordering labelled fields"
+    }
+  })
+}
+
+fn label_index(index_of: Dict(String, Int), label: String) -> Int {
+  case dict.get(index_of, label) {
+    Ok(index) -> index
+    Error(_) -> panic as { "unknown argument label: " <> label }
   }
 }
 
@@ -777,7 +883,8 @@ fn infer_pattern(
         other -> #([], other)
       }
       let st = unify(st, expected, ret)
-      let arg_patterns = list.map(arguments, field_pattern)
+      let arg_patterns =
+        order_pattern_args(env, constructor, arguments, list.length(field_types))
       list.fold(list.zip(arg_patterns, field_types), #(env, st), fn(acc, pair) {
         let #(env, st) = acc
         let #(pattern, t) = pair
@@ -790,12 +897,63 @@ fn infer_pattern(
   }
 }
 
-fn field_pattern(field: glance.Field(glance.Pattern)) -> glance.Pattern {
-  case field {
-    glance.UnlabelledField(item) -> item
-    glance.LabelledField(_, _, item) -> item
-    glance.ShorthandField(label, location) ->
-      glance.PatternVariable(location, label)
+/// Place constructor-pattern arguments into positional order, reordering by the
+/// constructor's field map and filling positions omitted via `..` with
+/// discards.
+fn order_pattern_args(
+  env: Env,
+  constructor: String,
+  arguments: List(glance.Field(glance.Pattern)),
+  arity: Int,
+) -> List(glance.Pattern) {
+  let labels = case dict.get(env.field_maps, constructor) {
+    Ok(labels) -> labels
+    Error(_) -> []
+  }
+  let index_of =
+    list.index_fold(labels, dict.new(), fn(acc, label, index) {
+      case label {
+        Some(name) -> dict.insert(acc, name, index)
+        None -> acc
+      }
+    })
+  let #(placed, _next) =
+    list.fold(arguments, #(dict.new(), 0), fn(acc, field) {
+      let #(placed, next) = acc
+      case field {
+        glance.UnlabelledField(item) -> #(dict.insert(placed, next, item), next + 1)
+        glance.LabelledField(label, _, item) -> #(
+          dict.insert(placed, label_index(index_of, label), item),
+          next,
+        )
+        glance.ShorthandField(label, location) -> #(
+          dict.insert(
+            placed,
+            label_index(index_of, label),
+            glance.PatternVariable(location, label),
+          ),
+          next,
+        )
+      }
+    })
+  list.map(indices(arity), fn(index) {
+    case dict.get(placed, index) {
+      Ok(pattern) -> pattern
+      // Omitted via `..`: bind nothing.
+      Error(_) -> glance.PatternDiscard(glance.Span(0, 0), "_")
+    }
+  })
+}
+
+/// `[0, 1, ..., n - 1]`.
+fn indices(n: Int) -> List(Int) {
+  indices_loop(n - 1, [])
+}
+
+fn indices_loop(i: Int, acc: List(Int)) -> List(Int) {
+  case i < 0 {
+    True -> acc
+    False -> indices_loop(i - 1, [i, ..acc])
   }
 }
 
@@ -979,6 +1137,13 @@ pub fn register_custom_type(
         [] -> return_type
         _ -> Fn(field_types, return_type)
       }
+      let env =
+        register_field_map(env, variant.name, list.map(variant.fields, fn(f) {
+          case f {
+            glance.LabelledVariantField(_, label) -> Some(label)
+            glance.UnlabelledVariantField(..) -> None
+          }
+        }))
       #(bind_value(env, variant.name, Scheme(param_ids, ctor_type)), st)
     })
 

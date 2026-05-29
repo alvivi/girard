@@ -88,6 +88,16 @@ pub fn annotate(source: String) -> Annotated {
       let #(env, st) = acc
       infer.register_custom_type(env, st, definition.definition)
     })
+  // Register field maps for top-level functions so labelled calls reorder.
+  let base_env =
+    list.fold(module.functions, base_env, fn(env, definition) {
+      let f = definition.definition
+      infer.register_field_map(
+        env,
+        f.name,
+        list.map(f.parameters, fn(p) { p.label }),
+      )
+    })
 
   // 2. Order top-level definitions (functions and constants) by dependency:
   //    build the call graph and group it into strongly-connected components so

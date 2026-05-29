@@ -244,3 +244,30 @@ pub fn record_update_test() {
   signature(source, "birthday")
   |> should.equal("fn(User) -> User")
 }
+
+// --- Labelled arguments (M3) ------------------------------------------------
+
+pub fn labelled_constructor_test() {
+  // Labels supplied out of declaration order must still type-check.
+  let source =
+    "pub type User { User(name: String, age: Int) }\n"
+    <> "pub fn make() { User(age: 1, name: \"a\") }"
+  signature(source, "make")
+  |> should.equal("fn() -> User")
+}
+
+pub fn labelled_function_call_test() {
+  let source =
+    "pub fn divide(a a: Int, b b: Int) { a / b }\n"
+    <> "pub fn half(n) { divide(b: 2, a: n) }"
+  signature(source, "half")
+  |> should.equal("fn(Int) -> Int")
+}
+
+pub fn spread_pattern_test() {
+  let source =
+    "pub type User { User(name: String, age: Int) }\n"
+    <> "pub fn name_of(u: User) { case u { User(name:, ..) -> name } }"
+  signature(source, "name_of")
+  |> should.equal("fn(User) -> String")
+}
