@@ -1,0 +1,176 @@
+{
+  "modules": {
+    "variants": [
+      {
+        "start": 133,
+        "end": 139,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 133,
+        "end": 134,
+        "type": {
+          "kind": "named",
+          "name": "Shape",
+          "package": "variants",
+          "module": "variants",
+          "parameters": []
+        }
+      },
+      {
+        "start": 193,
+        "end": 307,
+        "type": {
+          "kind": "named",
+          "name": "Shape",
+          "package": "variants",
+          "module": "variants",
+          "parameters": []
+        }
+      },
+      {
+        "start": 198,
+        "end": 199,
+        "type": {
+          "kind": "named",
+          "name": "Shape",
+          "package": "variants",
+          "module": "variants",
+          "parameters": []
+        }
+      },
+      {
+        "start": 229,
+        "end": 254,
+        "type": {
+          "kind": "named",
+          "name": "Shape",
+          "package": "variants",
+          "module": "variants",
+          "parameters": []
+        }
+      },
+      {
+        "start": 229,
+        "end": 235,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Float",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            },
+            {
+              "kind": "named",
+              "name": "String",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Shape",
+            "package": "variants",
+            "module": "variants",
+            "parameters": []
+          }
+        }
+      },
+      {
+        "start": 236,
+        "end": 243,
+        "type": {
+          "kind": "named",
+          "name": "Float",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 251,
+        "end": 253,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 280,
+        "end": 303,
+        "type": {
+          "kind": "named",
+          "name": "Shape",
+          "package": "variants",
+          "module": "variants",
+          "parameters": []
+        }
+      },
+      {
+        "start": 280,
+        "end": 286,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Float",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            },
+            {
+              "kind": "named",
+              "name": "String",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Shape",
+            "package": "variants",
+            "module": "variants",
+            "parameters": []
+          }
+        }
+      },
+      {
+        "start": 287,
+        "end": 292,
+        "type": {
+          "kind": "named",
+          "name": "Float",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 300,
+        "end": 302,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      }
+    ]
+  }
+}

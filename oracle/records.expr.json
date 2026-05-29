@@ -1,0 +1,198 @@
+{
+  "modules": {
+    "records": [
+      {
+        "start": 88,
+        "end": 94,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 88,
+        "end": 89,
+        "type": {
+          "kind": "named",
+          "name": "User",
+          "package": "records",
+          "module": "records",
+          "parameters": []
+        }
+      },
+      {
+        "start": 135,
+        "end": 160,
+        "type": {
+          "kind": "named",
+          "name": "User",
+          "package": "records",
+          "module": "records",
+          "parameters": []
+        }
+      },
+      {
+        "start": 135,
+        "end": 139,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "String",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            },
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "User",
+            "package": "records",
+            "module": "records",
+            "parameters": []
+          }
+        }
+      },
+      {
+        "start": 142,
+        "end": 143,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 142,
+        "end": 143,
+        "type": {
+          "kind": "named",
+          "name": "User",
+          "package": "records",
+          "module": "records",
+          "parameters": []
+        }
+      },
+      {
+        "start": 150,
+        "end": 159,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 150,
+        "end": 155,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 150,
+        "end": 151,
+        "type": {
+          "kind": "named",
+          "name": "User",
+          "package": "records",
+          "module": "records",
+          "parameters": []
+        }
+      },
+      {
+        "start": 158,
+        "end": 159,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 183,
+        "end": 204,
+        "type": {
+          "kind": "named",
+          "name": "User",
+          "package": "records",
+          "module": "records",
+          "parameters": []
+        }
+      },
+      {
+        "start": 183,
+        "end": 187,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "String",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            },
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "User",
+            "package": "records",
+            "module": "records",
+            "parameters": []
+          }
+        }
+      },
+      {
+        "start": 194,
+        "end": 195,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 202,
+        "end": 203,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      }
+    ]
+  }
+}

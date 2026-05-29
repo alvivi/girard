@@ -293,6 +293,16 @@ pub fn generic_field_access_test() {
   |> should.equal("fn(Box(a)) -> a")
 }
 
+pub fn record_update_changes_type_parameter_test() {
+  // `Box(..b, value:)` replaces the only field using `a`, so the result type's
+  // parameter changes (a -> c), like gleam_http's `set_body`.
+  let source =
+    "pub type Box(a) { Box(value: a) }\n"
+    <> "pub fn replace(b: Box(a), v: c) -> Box(c) { Box(..b, value: v) }"
+  signature(source, "replace")
+  |> should.equal("fn(Box(a), b) -> Box(b)")
+}
+
 pub fn record_update_test() {
   let source =
     "pub type User { User(name: String, age: Int) }\n"

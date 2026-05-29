@@ -1,0 +1,98 @@
+{
+  "modules": {
+    "customtypes": [
+      {
+        "start": 90,
+        "end": 96,
+        "type": {
+          "kind": "named",
+          "name": "Box",
+          "package": "customtypes",
+          "module": "customtypes",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 90,
+        "end": 93,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Box",
+            "package": "customtypes",
+            "module": "customtypes",
+            "parameters": [
+              {
+                "kind": "variable",
+                "id": 0
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 94,
+        "end": 95,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 121,
+        "end": 149,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 126,
+        "end": 127,
+        "type": {
+          "kind": "named",
+          "name": "Box",
+          "package": "customtypes",
+          "module": "customtypes",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 144,
+        "end": 145,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 176,
+        "end": 181,
+        "type": {
+          "kind": "named",
+          "name": "Color",
+          "package": "customtypes",
+          "module": "customtypes",
+          "parameters": []
+        }
+      }
+    ]
+  }
+}

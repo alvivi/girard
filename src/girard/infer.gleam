@@ -649,18 +649,40 @@ fn infer_record_update(
   record: glance.Expression,
   fields: List(glance.RecordUpdateField(glance.Expression)),
 ) -> Result(#(Type, State), Error) {
-  // The updated type is determined by the constructor, so this works even when
-  // the record expression's own type is not yet known.
+  // A record update produces a *fresh* value of the type: updated fields take
+  // their new value's type and kept fields are copied from the record. This is
+  // what lets an update change a type parameter, as in
+  // `Request(..req, body:)` : `fn(Request(a), b) -> Request(b)` — the kept
+  // fields tie only the parameters they share, not all of them.
   use scheme <- result.try(constructor_scheme(env, module, constructor))
   let #(ctor_type, st) = instantiate(st, scheme)
-  let record_type = case ctor_type {
-    Fn(_, return) -> return
-    other -> other
+  let #(field_types, return_type) = case ctor_type {
+    Fn(arguments, return) -> #(arguments, return)
+    other -> #([], other)
   }
-  use #(value_type, st) <- result.try(infer_expr(env, st, record))
-  use st <- result.try(unify(st, value_type, record_type))
-  case resolve(st, record_type) {
-    Named(_, _, _) as record -> {
+  case return_type {
+    Named(type_module, type_name, type_parameters) -> {
+      let labels = constructor_field_map(env, module, constructor)
+      let label_types =
+        list.fold(list.zip(labels, field_types), dict.new(), fn(acc, pair) {
+          case pair.0 {
+            Some(label) -> dict.insert(acc, label, pair.1)
+            None -> acc
+          }
+        })
+      let updated = list.map(fields, fn(field) { field.label })
+
+      // Fix the record's head to this type with independent parameters, so its
+      // own type variables aren't conflated with the result's.
+      let #(record_parameters, st) = fresh_n(st, list.length(type_parameters))
+      use #(record_type, st) <- result.try(infer_expr(env, st, record))
+      use st <- result.try(unify(
+        st,
+        record_type,
+        Named(type_module, type_name, record_parameters),
+      ))
+
+      // Updated fields take their new value's type.
       use st <- result.try(
         list.try_fold(fields, st, fn(st, field) {
           use #(value_type, st) <- result.try(case field.item {
@@ -672,18 +694,56 @@ fn infer_record_update(
                 Error(_) -> Error(UnboundVariable(field.label))
               }
           })
-          use #(expected, st) <- result.try(field_type(
-            env,
-            st,
-            record,
-            field.label,
-          ))
-          unify(st, value_type, expected)
+          case dict.get(label_types, field.label) {
+            Ok(expected) -> unify(st, value_type, expected)
+            Error(_) -> Error(NoSuchField(type_name, field.label))
+          }
         }),
       )
-      Ok(#(record_type, st))
+
+      // Kept fields are copied from the record.
+      use st <- result.try(
+        list.try_fold(dict.to_list(label_types), st, fn(st, pair) {
+          let #(label, expected) = pair
+          case list.contains(updated, label) {
+            True -> Ok(st)
+            False -> {
+              use #(field, st) <- result.try(field_type(
+                env,
+                st,
+                record_type,
+                label,
+              ))
+              unify(st, field, expected)
+            }
+          }
+        }),
+      )
+
+      Ok(#(return_type, st))
     }
     _ -> Error(NotARecord)
+  }
+}
+
+/// The per-position labels of a constructor, looked up locally or in the module
+/// that defines it.
+fn constructor_field_map(
+  env: Env,
+  module: Option(String),
+  constructor: String,
+) -> List(Option(String)) {
+  let maps = case module {
+    Some(alias) ->
+      case dict.get(env.modules, alias) {
+        Ok(interface) -> interface.field_maps
+        Error(_) -> env.field_maps
+      }
+    None -> env.field_maps
+  }
+  case dict.get(maps, constructor) {
+    Ok(labels) -> labels
+    Error(_) -> []
   }
 }
 

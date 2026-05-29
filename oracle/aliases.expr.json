@@ -1,0 +1,50 @@
+{
+  "modules": {
+    "aliases": [
+      {
+        "start": 84,
+        "end": 85,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 113,
+        "end": 120,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 115,
+        "end": 116,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 118,
+        "end": 119,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      }
+    ]
+  }
+}

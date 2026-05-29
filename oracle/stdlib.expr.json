@@ -1,0 +1,454 @@
+{
+  "modules": {
+    "stdlib": [
+      {
+        "start": 82,
+        "end": 111,
+        "type": {
+          "kind": "named",
+          "name": "List",
+          "package": "",
+          "module": "gleam",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ]
+        }
+      },
+      {
+        "start": 82,
+        "end": 90,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "List",
+              "package": "",
+              "module": "gleam",
+              "parameters": [
+                {
+                  "kind": "named",
+                  "name": "Int",
+                  "package": "",
+                  "module": "gleam",
+                  "parameters": []
+                }
+              ]
+            },
+            {
+              "kind": "fn",
+              "parameters": [
+                {
+                  "kind": "named",
+                  "name": "Int",
+                  "package": "",
+                  "module": "gleam",
+                  "parameters": []
+                }
+              ],
+              "return": {
+                "kind": "named",
+                "name": "Int",
+                "package": "",
+                "module": "gleam",
+                "parameters": []
+              }
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "List",
+            "package": "",
+            "module": "gleam",
+            "parameters": [
+              {
+                "kind": "named",
+                "name": "Int",
+                "package": "",
+                "module": "gleam",
+                "parameters": []
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 91,
+        "end": 93,
+        "type": {
+          "kind": "named",
+          "name": "List",
+          "package": "",
+          "module": "gleam",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ]
+        }
+      },
+      {
+        "start": 95,
+        "end": 110,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Int",
+            "package": "",
+            "module": "gleam",
+            "parameters": []
+          }
+        }
+      },
+      {
+        "start": 103,
+        "end": 108,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 103,
+        "end": 104,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 107,
+        "end": 108,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 135,
+        "end": 149,
+        "type": {
+          "kind": "named",
+          "name": "Result",
+          "package": "",
+          "module": "gleam",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "named",
+              "name": "Nil",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ]
+        }
+      },
+      {
+        "start": 135,
+        "end": 145,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "List",
+              "package": "",
+              "module": "gleam",
+              "parameters": [
+                {
+                  "kind": "variable",
+                  "id": 0
+                }
+              ]
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Result",
+            "package": "",
+            "module": "gleam",
+            "parameters": [
+              {
+                "kind": "variable",
+                "id": 0
+              },
+              {
+                "kind": "named",
+                "name": "Nil",
+                "package": "",
+                "module": "gleam",
+                "parameters": []
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 146,
+        "end": 148,
+        "type": {
+          "kind": "named",
+          "name": "List",
+          "package": "",
+          "module": "gleam",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 185,
+        "end": 192,
+        "type": {
+          "kind": "named",
+          "name": "Option",
+          "package": "gleam_stdlib",
+          "module": "gleam/option",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 185,
+        "end": 189,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Option",
+            "package": "gleam_stdlib",
+            "module": "gleam/option",
+            "parameters": [
+              {
+                "kind": "variable",
+                "id": 0
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 190,
+        "end": 191,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 220,
+        "end": 260,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 220,
+        "end": 229,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "List",
+              "package": "",
+              "module": "gleam",
+              "parameters": [
+                {
+                  "kind": "named",
+                  "name": "Int",
+                  "package": "",
+                  "module": "gleam",
+                  "parameters": []
+                }
+              ]
+            },
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            },
+            {
+              "kind": "fn",
+              "parameters": [
+                {
+                  "kind": "named",
+                  "name": "Int",
+                  "package": "",
+                  "module": "gleam",
+                  "parameters": []
+                },
+                {
+                  "kind": "named",
+                  "name": "Int",
+                  "package": "",
+                  "module": "gleam",
+                  "parameters": []
+                }
+              ],
+              "return": {
+                "kind": "named",
+                "name": "Int",
+                "package": "",
+                "module": "gleam",
+                "parameters": []
+              }
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Int",
+            "package": "",
+            "module": "gleam",
+            "parameters": []
+          }
+        }
+      },
+      {
+        "start": 230,
+        "end": 232,
+        "type": {
+          "kind": "named",
+          "name": "List",
+          "package": "",
+          "module": "gleam",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ]
+        }
+      },
+      {
+        "start": 234,
+        "end": 235,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 237,
+        "end": 259,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            },
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Int",
+            "package": "",
+            "module": "gleam",
+            "parameters": []
+          }
+        }
+      },
+      {
+        "start": 250,
+        "end": 257,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 250,
+        "end": 253,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 256,
+        "end": 257,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      }
+    ]
+  }
+}

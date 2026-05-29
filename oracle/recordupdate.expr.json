@@ -1,0 +1,172 @@
+{
+  "modules": {
+    "recordupdate": [
+      {
+        "start": 96,
+        "end": 114,
+        "type": {
+          "kind": "named",
+          "name": "Box",
+          "package": "recordupdate",
+          "module": "recordupdate",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 96,
+        "end": 99,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "named",
+              "name": "String",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Box",
+            "package": "recordupdate",
+            "module": "recordupdate",
+            "parameters": [
+              {
+                "kind": "variable",
+                "id": 0
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 112,
+        "end": 113,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 102,
+        "end": 103,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 102,
+        "end": 103,
+        "type": {
+          "kind": "named",
+          "name": "Box",
+          "package": "recordupdate",
+          "module": "recordupdate",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 156,
+        "end": 174,
+        "type": {
+          "kind": "named",
+          "name": "Box",
+          "package": "recordupdate",
+          "module": "recordupdate",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 156,
+        "end": 159,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "named",
+              "name": "String",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Box",
+            "package": "recordupdate",
+            "module": "recordupdate",
+            "parameters": [
+              {
+                "kind": "variable",
+                "id": 0
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 162,
+        "end": 163,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 162,
+        "end": 163,
+        "type": {
+          "kind": "named",
+          "name": "Box",
+          "package": "recordupdate",
+          "module": "recordupdate",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 170,
+        "end": 173,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      }
+    ]
+  }
+}

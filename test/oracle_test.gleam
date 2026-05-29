@@ -16,6 +16,8 @@ import gleam/dynamic/decode.{type Decoder}
 import gleam/int
 import gleam/json
 import gleam/list
+import gleam/option
+import gleam/set
 import gleam/string
 import simplifile
 
@@ -54,6 +56,72 @@ fn check_sample(name: String) -> Nil {
     let assert Ok(ours) = list.key_find(annotated.constants, const_name)
     check(name <> "." <> const_name, ours, oracle_type)
   })
+
+  check_expressions(name, annotated)
+}
+
+/// Compare girard's per-expression types against the compiler's, on the spans
+/// both sides report (the compiler desugars pipes/`use`, so it emits some spans
+/// girard does not; we only require agreement where the spans coincide).
+fn check_expressions(name: String, annotated: girard.Annotated) -> Nil {
+  let assert Ok(expr_json) = simplifile.read("oracle/" <> name <> ".expr.json")
+  let assert Ok(oracle_exprs) =
+    json.parse(
+      expr_json,
+      decode.at(["modules", name], decode.list(expression_decoder())),
+    )
+
+  let ours =
+    list.fold(annotated.expressions, dict.new(), fn(acc, a) {
+      dict.insert(acc, #(a.span.start, a.span.end), canonicalize(a.type_))
+    })
+
+  // The compiler can overlay several types on one span when it desugars (e.g.
+  // `Foo(..r, ...)` emits both the record and an implicit copy of each kept
+  // field at the record's span). Only compare spans where it reports a single
+  // type, so we diff genuine source expressions, not desugaring artifacts.
+  let theirs =
+    list.fold(oracle_exprs, dict.new(), fn(acc, entry) {
+      let #(start, end, oracle_type) = entry
+      let rendered = canonicalize(printer.to_string(oracle_type))
+      dict.upsert(acc, #(start, end), fn(existing) {
+        case existing {
+          option.Some(set) -> set.insert(set, rendered)
+          option.None -> set.from_list([rendered])
+        }
+      })
+    })
+
+  list.each(dict.to_list(theirs), fn(entry) {
+    let #(span, rendered_types) = entry
+    case set.to_list(rendered_types), dict.get(ours, span) {
+      [expected], Ok(actual) ->
+        case actual == expected {
+          True -> Nil
+          False ->
+            panic as {
+              name
+              <> " "
+              <> int.to_string(span.0)
+              <> "-"
+              <> int.to_string(span.1)
+              <> ": girard `"
+              <> actual
+              <> "` but the compiler says `"
+              <> expected
+              <> "`"
+            }
+        }
+      _, _ -> Nil
+    }
+  })
+}
+
+fn expression_decoder() -> Decoder(#(Int, Int, Type)) {
+  use start <- decode.field("start", decode.int)
+  use end <- decode.field("end", decode.int)
+  use type_ <- decode.field("type", type_decoder())
+  decode.success(#(start, end, type_))
 }
 
 /// Compare girard's rendered signature string against the compiler's type,
