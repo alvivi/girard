@@ -716,6 +716,9 @@ fn infer_statements(
 ) -> #(Type, State) {
   case statements {
     [] -> #(types.nil(), st)
+    // `use pats <- rhs` turns the remaining statements into a trailing callback.
+    [glance.Use(_, patterns, function), ..rest] ->
+      infer_use(env, st, patterns, function, rest)
     [last] -> {
       let #(t, _env, st) = infer_statement(env, st, last)
       #(t, st)
@@ -725,6 +728,52 @@ fn infer_statements(
       infer_statements(env, st, rest)
     }
   }
+}
+
+/// Desugar `use a, b <- rhs` followed by `rest` into `rhs(.., fn(a, b) { rest })`
+/// and infer the resulting call.
+fn infer_use(
+  env: Env,
+  st: State,
+  use_patterns: List(glance.UsePattern),
+  function: glance.Expression,
+  rest: List(glance.Statement),
+) -> #(Type, State) {
+  // Build the callback: its parameters are the use patterns, its body is the
+  // rest of the block.
+  let #(rev_param_types, callback_env, st) =
+    list.fold(use_patterns, #([], env, st), fn(acc, use_pattern) {
+      let #(types_, env, st) = acc
+      let #(param, st) = case use_pattern.annotation {
+        Some(ann) -> hydrate(env, st, ann)
+        None -> fresh(st)
+      }
+      let #(env, st) = infer_pattern(env, st, use_pattern.pattern, param)
+      #([param, ..types_], env, st)
+    })
+  let param_types = list.reverse(rev_param_types)
+  let #(body_type, st) = infer_statements(callback_env, st, rest)
+  let callback_type = Fn(param_types, body_type)
+
+  // The right-hand side is called with the callback appended as its last
+  // argument.
+  let #(result, st) = fresh(st)
+  let st = case function {
+    glance.Call(_, callee, arguments) -> {
+      let #(callee_type, st) = infer_expr(env, st, callee)
+      let ordered =
+        order_fields(env, callee, arguments, fn(label, location) {
+          glance.Variable(location, label)
+        })
+      let #(arg_types, st) = infer_each(env, st, ordered)
+      unify(st, callee_type, Fn(list.append(arg_types, [callback_type]), result))
+    }
+    other -> {
+      let #(callee_type, st) = infer_expr(env, st, other)
+      unify(st, callee_type, Fn([callback_type], result))
+    }
+  }
+  #(result, st)
 }
 
 /// Infer one statement, returning its type and the (possibly extended)

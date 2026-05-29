@@ -271,3 +271,21 @@ pub fn spread_pattern_test() {
   signature(source, "name_of")
   |> should.equal("fn(User) -> String")
 }
+
+// --- use expressions (M3) ---------------------------------------------------
+
+pub fn use_test() {
+  let source =
+    "pub fn with(x, f) { f(x) }\npub fn run() { use a <- with(5)\na + 1 }"
+  signature(source, "run")
+  |> should.equal("fn() -> Int")
+}
+
+pub fn use_chain_test() {
+  let source =
+    "pub type Res(a) { Good(a)\nBad }\n"
+    <> "pub fn try(r, f) { case r { Good(x) -> f(x)\nBad -> Bad } }\n"
+    <> "pub fn chain() { use x <- try(Good(1))\nGood(x + 1) }"
+  signature(source, "chain")
+  |> should.equal("fn() -> Res(Int)")
+}
