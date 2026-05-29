@@ -661,7 +661,12 @@ fn order_fields(
     False -> {
       let labels = case callee {
         glance.Variable(_, name) -> dict.get(env.field_maps, name)
-        glance.FieldAccess(_, _, name) -> dict.get(env.field_maps, name)
+        // Qualified call `module.fn`: take the field map from the module.
+        glance.FieldAccess(_, glance.Variable(_, alias), name) ->
+          case dict.get(env.modules, alias) {
+            Ok(interface) -> dict.get(interface.field_maps, name)
+            Error(_) -> dict.get(env.field_maps, name)
+          }
         _ -> Error(Nil)
       }
       case labels {
@@ -698,23 +703,34 @@ fn reorder(
         None -> acc
       }
     })
-  let #(placed, _next) =
-    list.fold(fields, #(dict.new(), 0), fn(acc, field) {
-      let #(placed, next) = acc
+  // Labelled and shorthand arguments are placed at their declared index;
+  // positional arguments then fill the remaining positions in order.
+  let labelled =
+    list.fold(fields, dict.new(), fn(placed, field) {
       case field {
-        glance.UnlabelledField(item) -> #(dict.insert(placed, next, item), next + 1)
-        glance.LabelledField(label, _, item) -> #(
-          dict.insert(placed, label_index(index_of, label), item),
-          next,
-        )
-        glance.ShorthandField(label, location) -> #(
+        glance.UnlabelledField(..) -> placed
+        glance.LabelledField(label, _, item) ->
+          dict.insert(placed, label_index(index_of, label), item)
+        glance.ShorthandField(label, location) ->
           dict.insert(placed, label_index(index_of, label), shorthand(
             label,
             location,
-          )),
-          next,
-        )
+          ))
       }
+    })
+  let positional =
+    list.filter_map(fields, fn(field) {
+      case field {
+        glance.UnlabelledField(item) -> Ok(item)
+        _ -> Error(Nil)
+      }
+    })
+  let free = list.filter(indices(list.length(labels)), fn(i) {
+    !dict.has_key(labelled, i)
+  })
+  let placed =
+    list.fold(list.zip(free, positional), labelled, fn(placed, pair) {
+      dict.insert(placed, pair.0, pair.1)
     })
   list.index_map(labels, fn(_label, index) {
     case dict.get(placed, index) {
@@ -1056,10 +1072,24 @@ fn infer_pattern(
       #(env, st)
     }
 
-    glance.PatternVariant(_, _module, constructor, arguments, _spread) -> {
-      let scheme = case dict.get(env.values, constructor) {
-        Ok(scheme) -> scheme
-        Error(_) -> panic as { "unknown constructor: " <> constructor }
+    glance.PatternVariant(_, module, constructor, arguments, _spread) -> {
+      let scheme = case module {
+        // Qualified constructor pattern `module.Ctor`.
+        Some(alias) ->
+          case dict.get(env.modules, alias) {
+            Ok(interface) ->
+              case dict.get(interface.values, constructor) {
+                Ok(scheme) -> scheme
+                Error(_) ->
+                  panic as { "module has no constructor: " <> constructor }
+              }
+            Error(_) -> panic as { "unknown module: " <> alias }
+          }
+        None ->
+          case dict.get(env.values, constructor) {
+            Ok(scheme) -> scheme
+            Error(_) -> panic as { "unknown constructor: " <> constructor }
+          }
       }
       let #(ctor_type, st) = instantiate(st, scheme)
       // A constructor with fields is a function; one without is the value.
@@ -1135,24 +1165,31 @@ fn order_pattern_args(
         None -> acc
       }
     })
-  let #(placed, _next) =
-    list.fold(arguments, #(dict.new(), 0), fn(acc, field) {
-      let #(placed, next) = acc
+  let labelled =
+    list.fold(arguments, dict.new(), fn(placed, field) {
       case field {
-        glance.UnlabelledField(item) -> #(dict.insert(placed, next, item), next + 1)
-        glance.LabelledField(label, _, item) -> #(
-          dict.insert(placed, label_index(index_of, label), item),
-          next,
-        )
-        glance.ShorthandField(label, location) -> #(
+        glance.UnlabelledField(..) -> placed
+        glance.LabelledField(label, _, item) ->
+          dict.insert(placed, label_index(index_of, label), item)
+        glance.ShorthandField(label, location) ->
           dict.insert(
             placed,
             label_index(index_of, label),
             glance.PatternVariable(location, label),
-          ),
-          next,
-        )
+          )
       }
+    })
+  let positional =
+    list.filter_map(arguments, fn(field) {
+      case field {
+        glance.UnlabelledField(item) -> Ok(item)
+        _ -> Error(Nil)
+      }
+    })
+  let free = list.filter(indices(arity), fn(i) { !dict.has_key(labelled, i) })
+  let placed =
+    list.fold(list.zip(free, positional), labelled, fn(placed, pair) {
+      dict.insert(placed, pair.0, pair.1)
     })
   list.map(indices(arity), fn(index) {
     case dict.get(placed, index) {

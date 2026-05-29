@@ -365,6 +365,25 @@ pub fn qualified_type_annotation_test() {
   |> should.equal("fn(a) -> Maybe(a)")
 }
 
+pub fn qualified_constructor_pattern_test() {
+  // Match on `ord.Gt` etc. — a module-qualified constructor in a pattern.
+  let ord = "pub type Order { Lt\nEq\nGt }"
+  let source =
+    "import ord\n"
+    <> "pub fn is_gt(o) { case o { ord.Gt -> True\nord.Lt -> False\nord.Eq -> False } }"
+  signature_with(source, [#("ord", ord)], "is_gt")
+  |> should.equal("fn(Order) -> Bool")
+}
+
+pub fn labelled_reorder_with_pipe_test() {
+  // Positional args fill the slots not claimed by labels (a pipe prepends the
+  // subject as the first positional argument).
+  let m = "pub fn at(in list: List(a), get index: Int) -> a { todo }"
+  let source = "import m\npub fn third(xs) { xs |> m.at(get: 2) }"
+  signature_with(source, [#("m", m)], "third")
+  |> should.equal("fn(List(a)) -> a")
+}
+
 pub fn transitive_import_test() {
   // `mid` re-exports a function that itself depends on `base`.
   let base = "pub fn inc(x: Int) -> Int { x + 1 }"
