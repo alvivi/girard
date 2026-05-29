@@ -6,13 +6,17 @@
 ////
 //// Errors are not reported: invalid or unsupported input `panic`s.
 
+import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/order
+import gleam/set
 import gleam/string
 import glance
 import girard/infer
 import girard/printer
+import girard/references
+import girard/scc
 import girard/types.{type Scheme, Scheme}
 
 /// The inferred type of a single expression, identified by its source span.
@@ -48,37 +52,60 @@ pub fn annotate(source: String) -> Annotated {
       },
     )
 
-  // 2. Bind every top-level function to a fresh variable so the whole module
-  //    can be inferred as one (mutually recursive) group.
+  // 2. Order top-level functions by dependency: build the call graph and group
+  //    it into strongly-connected components so each function is inferred and
+  //    generalized before its dependents (letting helpers stay polymorphic).
   let functions = list.map(module.functions, fn(d) { d.definition })
-  let #(group_env, fn_vars, st) =
-    list.fold(functions, #(base_env, [], st), fn(acc, function) {
-      let #(env, vars, st) = acc
-      let #(var, st) = infer.fresh_var(st)
-      let env = infer.define(env, function.name, Scheme([], var))
-      #(env, [#(function.name, var), ..vars], st)
-    })
-  let fn_vars = list.reverse(fn_vars)
+  let by_name = dict.from_list(list.map(functions, fn(f) { #(f.name, f) }))
+  let names = list.map(functions, fn(f) { f.name })
+  let name_set = set.from_list(names)
+  let edges =
+    dict.from_list(
+      list.map(functions, fn(f) {
+        let referenced =
+          list.filter(references.in_function(f), set.contains(name_set, _))
+        #(f.name, referenced)
+      }),
+    )
+  let order = scc.components(names, edges)
 
-  // 3. Infer each function body, tying it to its variable.
-  let st =
-    list.fold(list.zip(functions, fn_vars), st, fn(st, pair) {
-      let #(function, #(_name, var)) = pair
-      let #(inferred, st) = infer.infer_function(group_env, st, function)
-      infer.unify(st, var, inferred)
+  // 3. Infer each component. Members of a component are mutually recursive and
+  //    inferred monomorphically together; afterwards each is generalized
+  //    against the surrounding environment and added back for later components.
+  let #(final_env, st) =
+    list.fold(order, #(base_env, st), fn(acc, group) {
+      let #(env, st) = acc
+      let #(group_env, group_vars, st) =
+        list.fold(group, #(env, [], st), fn(acc, name) {
+          let #(env, vars, st) = acc
+          let #(var, st) = infer.fresh_var(st)
+          #(infer.define(env, name, Scheme([], var)), [#(name, var), ..vars], st)
+        })
+      let st =
+        list.fold(group_vars, st, fn(st, pair) {
+          let #(name, var) = pair
+          let assert Ok(function) = dict.get(by_name, name)
+          let #(inferred, st) = infer.infer_function(group_env, st, function)
+          infer.unify(st, var, inferred)
+        })
+      let env =
+        list.fold(group_vars, env, fn(env, pair) {
+          let #(name, var) = pair
+          infer.define(env, name, infer.generalize(st, env, var))
+        })
+      #(env, st)
     })
 
-  // 4. Generalize each function against the base environment (constructors
-  //    only) so signatures come out fully polymorphic.
-  let names = printer.new_names()
-  let #(signatures, names) =
-    list.fold(fn_vars, #([], names), fn(acc, pair) {
-      let #(sigs, names) = acc
-      let #(name, var) = pair
-      let scheme = infer.generalize(st, base_env, var)
-      let #(rendered, names) = print_scheme(names, scheme)
-      #([#(name, rendered), ..sigs], names)
+  // 4. Collect signatures in source order from the final environment.
+  let printer_names = printer.new_names()
+  let #(signatures, printer_names) =
+    list.fold(functions, #([], printer_names), fn(acc, function) {
+      let #(sigs, printer_names) = acc
+      let assert Ok(scheme) = infer.lookup(final_env, function.name)
+      let #(rendered, printer_names) = print_scheme(printer_names, scheme)
+      #([#(function.name, rendered), ..sigs], printer_names)
     })
+  let names = printer_names
 
   // 5. Render every recorded expression annotation, keeping variable names
   //    consistent across the whole module.

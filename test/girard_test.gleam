@@ -150,3 +150,26 @@ pub fn pipe_test() {
   signature(source, "quad")
   |> should.equal("fn(Int) -> Int")
 }
+
+// --- Module-level polymorphism (M2: dependency-ordered inference) -----------
+
+pub fn polymorphic_helper_test() {
+  // `id` must stay generic so it can be used at two different types.
+  let source = "pub fn id(x) { x }\npub fn use_it() { #(id(1), id(\"a\")) }"
+  signature(source, "use_it")
+  |> should.equal("fn() -> #(Int, String)")
+}
+
+pub fn dependency_does_not_pollute_test() {
+  let source = "pub fn id(x) { x }\npub fn one() { id(1) }"
+  signature(source, "id")
+  |> should.equal("fn(a) -> a")
+}
+
+pub fn mutual_recursion_test() {
+  let source =
+    "pub fn is_even(n) { case n { 0 -> True\n_ -> is_odd(n - 1) } }\n"
+    <> "pub fn is_odd(n) { case n { 0 -> False\n_ -> is_even(n - 1) } }"
+  signature(source, "is_even")
+  |> should.equal("fn(Int) -> Bool")
+}

@@ -108,6 +108,11 @@ fn bind_value(env: Env, name: String, scheme: Scheme) -> Env {
   Env(values: dict.insert(env.values, name, scheme))
 }
 
+/// Look up a value's scheme in the environment.
+pub fn lookup(env: Env, name: String) -> Result(Scheme, Nil) {
+  dict.get(env.values, name)
+}
+
 fn record(st: State, span: glance.Span, type_: Type) -> State {
   State(..st, annotations: [#(span, type_), ..st.annotations])
 }
