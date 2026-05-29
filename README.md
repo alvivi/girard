@@ -39,10 +39,16 @@ double: fn(Int) -> Int
 ## Development
 
 ```sh
-gleam test               # run the test suite (the primary workflow for now)
-gleam run -m glinter     # lint src/ (config under [tools.glinter] in gleam.toml)
+gleam test                  # run the test suite (the primary workflow for now)
+gleam run -m glinter        # lint src/ (config under [tools.glinter] in gleam.toml)
+gleam run -m girard/sweep   # run girard over every gleam_stdlib module
 bash scripts/gen-oracle.sh  # regenerate the differential-testing fixtures
 ```
+
+The **package sweep** (`gleam run -m girard/sweep [package]`) runs girard over
+every module of an installed dependency and buckets each as fully typed or by
+error reason — a coverage report and a prioritised backlog of inference gaps.
+girard currently fully types 18 of 19 `gleam_stdlib` modules.
 
 Toolchain is pinned in `.tool-versions` (gleam 1.16.0, erlang 28.4.2).
 
