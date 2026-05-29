@@ -113,8 +113,8 @@ official compiler infers. We get there in milestones.
 - Module constants and `type` aliases (including parametric aliases), expanded
   during hydration; constants join functions in the dependency graph.
 - Record field access (`record.field`) and record update (`Foo(..r, x: 1)`)
-  via per-type accessors (single-variant records for now; shared fields across
-  variants remain a refinement).
+  via per-type accessors, including labels shared across all variants of a
+  multi-variant type (with a consistent field type).
 - **Labelled arguments**: field maps for functions and constructors, with
   argument and pattern reordering plus `..` spread in patterns.
 - `use` expressions (desugaring to a callback-passing call).
