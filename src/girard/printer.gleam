@@ -62,12 +62,40 @@ fn var_name(names: Names, id: Int) -> #(String, Names) {
   case dict.get(names.map, id) {
     Ok(name) -> #(name, names)
     Error(_) -> {
-      let name = letters(names.next)
-      #(
-        name,
-        Names(map: dict.insert(names.map, id, name), next: names.next + 1),
-      )
+      let #(name, next) = next_name(names.next)
+      #(name, Names(map: dict.insert(names.map, id, name), next: next))
     }
+  }
+}
+
+/// The next type-variable name, skipping Gleam reserved words (so a variable is
+/// never spelled like a keyword, e.g. `fn`), matching the compiler.
+fn next_name(n: Int) -> #(String, Int) {
+  let name = letters(n)
+  case is_reserved(name) {
+    True -> next_name(n + 1)
+    False -> #(name, n + 1)
+  }
+}
+
+fn is_reserved(name: String) -> Bool {
+  case name {
+    "as"
+    | "assert"
+    | "case"
+    | "const"
+    | "echo"
+    | "fn"
+    | "if"
+    | "import"
+    | "let"
+    | "opaque"
+    | "panic"
+    | "pub"
+    | "todo"
+    | "type"
+    | "use" -> True
+    _ -> False
   }
 }
 

@@ -1,5 +1,7 @@
 import girard
 import girard/infer
+import girard/printer
+import girard/types
 import gleam/dict
 import gleam/list
 import gleam/string
@@ -95,6 +97,22 @@ pub fn occurs_check_is_error_test() {
   // `fn(f) { f(f) }` has no finite type.
   let assert Error(infer.RecursiveType(_, _)) =
     girard.annotate("pub fn f(g) { g(g) }")
+}
+
+// --- printer ----------------------------------------------------------------
+
+pub fn printer_skips_reserved_words_test() {
+  // Type-variable names must never collide with a Gleam keyword (e.g. the 169th
+  // name would otherwise be `fn`), or the type reads ambiguously.
+  let vars = list.index_map(list.repeat(Nil, 200), fn(_, i) { types.Var(i) })
+  let rendered = printer.to_string(types.Tuple(vars))
+  let names =
+    rendered
+    |> string.drop_start(2)
+    |> string.drop_end(1)
+    |> string.split(", ")
+  ["fn", "as", "if", "let", "use", "type", "case", "pub", "todo", "panic"]
+  |> list.each(fn(keyword) { should.be_false(list.contains(names, keyword)) })
 }
 
 // --- format (the CLI's rendered report) -------------------------------------
