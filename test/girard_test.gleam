@@ -19,6 +19,15 @@ fn signature(source: String, name: String) -> String {
   }
 }
 
+/// The inferred type of the named top-level constant.
+fn constant_type(source: String, name: String) -> String {
+  let annotated = girard.annotate(source)
+  case list.key_find(annotated.constants, name) {
+    Ok(type_) -> type_
+    Error(_) -> panic as { "no constant named " <> name }
+  }
+}
+
 /// The inferred type of the first occurrence of `snippet` in `source`,
 /// matched by its exact byte span.
 fn type_of(source: String, snippet: String) -> String {
@@ -172,4 +181,40 @@ pub fn mutual_recursion_test() {
     <> "pub fn is_odd(n) { case n { 0 -> False\n_ -> is_even(n - 1) } }"
   signature(source, "is_even")
   |> should.equal("fn(Int) -> Bool")
+}
+
+// --- Annotations, constants, type aliases (M3) ------------------------------
+
+pub fn shared_type_variable_test() {
+  // The `a` in the return must be the same variable as the parameter `a`.
+  signature("pub fn first(x: a, y: b) -> a { x }", "first")
+  |> should.equal("fn(a, b) -> a")
+}
+
+pub fn constant_test() {
+  constant_type("pub const answer = 42", "answer")
+  |> should.equal("Int")
+}
+
+pub fn constant_list_test() {
+  constant_type("pub const names = [\"a\", \"b\"]", "names")
+  |> should.equal("List(String)")
+}
+
+pub fn constant_references_function_test() {
+  let source = "pub fn double(x) { x + x }\npub const four = double(2)"
+  constant_type(source, "four")
+  |> should.equal("Int")
+}
+
+pub fn type_alias_test() {
+  let source = "pub type Id = Int\npub fn identity(x: Id) -> Id { x }"
+  signature(source, "identity")
+  |> should.equal("fn(Int) -> Int")
+}
+
+pub fn parametric_alias_test() {
+  let source = "pub type Pair(a) = #(a, a)\npub fn mk(x: a) -> Pair(a) { #(x, x) }"
+  signature(source, "mk")
+  |> should.equal("fn(a) -> #(a, a)")
 }

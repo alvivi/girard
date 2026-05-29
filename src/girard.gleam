@@ -17,7 +17,7 @@ import girard/infer
 import girard/printer
 import girard/references
 import girard/scc
-import girard/types.{type Scheme, Scheme}
+import girard/types.{type Scheme, type Type, Scheme}
 
 /// The inferred type of a single expression, identified by its source span.
 pub type Annotation {
@@ -29,9 +29,38 @@ pub type Annotated {
   Annotated(
     /// Top-level function name to inferred signature, in source order.
     functions: List(#(String, String)),
+    /// Top-level constant name to inferred type, in source order.
+    constants: List(#(String, String)),
     /// Expression span to inferred type, sorted by start offset.
     expressions: List(Annotation),
   )
+}
+
+/// A top-level definition that participates in the dependency graph.
+type Def {
+  FunctionDef(glance.Function)
+  ConstantDef(glance.Constant)
+}
+
+fn def_name(def: Def) -> String {
+  case def {
+    FunctionDef(f) -> f.name
+    ConstantDef(c) -> c.name
+  }
+}
+
+fn def_refs(def: Def) -> List(String) {
+  case def {
+    FunctionDef(f) -> references.in_function(f)
+    ConstantDef(c) -> references.in_constant(c)
+  }
+}
+
+fn infer_def(env: infer.Env, st: infer.State, def: Def) -> #(Type, infer.State) {
+  case def {
+    FunctionDef(f) -> infer.infer_function(env, st, f)
+    ConstantDef(c) -> infer.infer_constant(env, st, c)
+  }
 }
 
 /// Annotate a Gleam source string.
@@ -41,30 +70,32 @@ pub fn annotate(source: String) -> Annotated {
     Error(_) -> panic as "failed to parse source"
   }
 
-  // 1. Register custom-type constructors into the base environment.
+  // 1. Register type aliases and custom-type constructors into the base
+  //    environment.
+  let #(prelude_env, prelude_st) = infer.prelude()
+  let base_env =
+    list.fold(module.type_aliases, prelude_env, fn(env, definition) {
+      infer.register_type_alias(env, definition.definition)
+    })
   let #(base_env, st) =
-    list.fold(
-      module.custom_types,
-      infer.prelude(),
-      fn(acc, definition) {
-        let #(env, st) = acc
-        infer.register_custom_type(env, st, definition.definition)
-      },
-    )
+    list.fold(module.custom_types, #(base_env, prelude_st), fn(acc, definition) {
+      let #(env, st) = acc
+      infer.register_custom_type(env, st, definition.definition)
+    })
 
-  // 2. Order top-level functions by dependency: build the call graph and group
-  //    it into strongly-connected components so each function is inferred and
-  //    generalized before its dependents (letting helpers stay polymorphic).
-  let functions = list.map(module.functions, fn(d) { d.definition })
-  let by_name = dict.from_list(list.map(functions, fn(f) { #(f.name, f) }))
-  let names = list.map(functions, fn(f) { f.name })
+  // 2. Order top-level definitions (functions and constants) by dependency:
+  //    build the call graph and group it into strongly-connected components so
+  //    each definition is inferred and generalized before its dependents.
+  let functions = list.map(module.functions, fn(d) { FunctionDef(d.definition) })
+  let constants = list.map(module.constants, fn(d) { ConstantDef(d.definition) })
+  let defs = list.append(functions, constants)
+  let by_name = dict.from_list(list.map(defs, fn(d) { #(def_name(d), d) }))
+  let names = list.map(defs, def_name)
   let name_set = set.from_list(names)
   let edges =
     dict.from_list(
-      list.map(functions, fn(f) {
-        let referenced =
-          list.filter(references.in_function(f), set.contains(name_set, _))
-        #(f.name, referenced)
+      list.map(defs, fn(d) {
+        #(def_name(d), list.filter(def_refs(d), set.contains(name_set, _)))
       }),
     )
   let order = scc.components(names, edges)
@@ -84,8 +115,8 @@ pub fn annotate(source: String) -> Annotated {
       let st =
         list.fold(group_vars, st, fn(st, pair) {
           let #(name, var) = pair
-          let assert Ok(function) = dict.get(by_name, name)
-          let #(inferred, st) = infer.infer_function(group_env, st, function)
+          let assert Ok(def) = dict.get(by_name, name)
+          let #(inferred, st) = infer_def(group_env, st, def)
           infer.unify(st, var, inferred)
         })
       let env =
@@ -99,12 +130,9 @@ pub fn annotate(source: String) -> Annotated {
   // 4. Collect signatures in source order from the final environment.
   let printer_names = printer.new_names()
   let #(signatures, printer_names) =
-    list.fold(functions, #([], printer_names), fn(acc, function) {
-      let #(sigs, printer_names) = acc
-      let assert Ok(scheme) = infer.lookup(final_env, function.name)
-      let #(rendered, printer_names) = print_scheme(printer_names, scheme)
-      #([#(function.name, rendered), ..sigs], printer_names)
-    })
+    collect_signatures(functions, final_env, printer_names)
+  let #(constant_types, printer_names) =
+    collect_signatures(constants, final_env, printer_names)
   let names = printer_names
 
   // 5. Render every recorded expression annotation, keeping variable names
@@ -118,15 +146,38 @@ pub fn annotate(source: String) -> Annotated {
     })
 
   Annotated(
-    functions: list.reverse(signatures),
+    functions: signatures,
+    constants: constant_types,
     expressions: sort_by_span(list.reverse(expressions)),
   )
+}
+
+/// Render the inferred signature of each definition, in source order, keeping
+/// type-variable names stable across the shared printer context.
+fn collect_signatures(
+  defs: List(Def),
+  env: infer.Env,
+  printer_names: printer.Names,
+) -> #(List(#(String, String)), printer.Names) {
+  let #(rev, printer_names) =
+    list.fold(defs, #([], printer_names), fn(acc, def) {
+      let #(sigs, printer_names) = acc
+      let name = def_name(def)
+      let assert Ok(scheme) = infer.lookup(env, name)
+      let #(rendered, printer_names) = print_scheme(printer_names, scheme)
+      #([#(name, rendered), ..sigs], printer_names)
+    })
+  #(list.reverse(rev), printer_names)
 }
 
 /// Render an annotated module as text (the human-facing report).
 pub fn format(source: String) -> String {
   let annotated = annotate(source)
-  let signatures = list.map(annotated.functions, fn(f) { f.0 <> ": " <> f.1 })
+  let signatures =
+    list.map(
+      list.append(annotated.functions, annotated.constants),
+      fn(f) { f.0 <> ": " <> f.1 },
+    )
   let expressions =
     list.map(annotated.expressions, fn(a) {
       int.to_string(a.span.start)

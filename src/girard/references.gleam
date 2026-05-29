@@ -13,6 +13,11 @@ pub fn in_function(function: glance.Function) -> List(String) {
   in_statements(function.body, [])
 }
 
+/// All variable names referenced in a constant's value.
+pub fn in_constant(constant: glance.Constant) -> List(String) {
+  in_expr(constant.value, [])
+}
+
 fn in_statements(
   statements: List(glance.Statement),
   acc: List(String),

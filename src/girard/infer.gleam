@@ -35,6 +35,9 @@ pub type Env {
     /// Value bindings in scope: locals, parameters, top-level functions and
     /// custom-type constructors.
     values: Dict(String, Scheme),
+    /// Type aliases: name -> (parameter names, aliased type AST), expanded
+    /// during hydration.
+    aliases: Dict(String, #(List(String), glance.Type)),
   )
 }
 
@@ -43,7 +46,18 @@ pub fn new_state() -> State {
 }
 
 pub fn new_env() -> Env {
-  Env(values: dict.new())
+  Env(values: dict.new(), aliases: dict.new())
+}
+
+/// Register a type alias so references to it expand during hydration.
+pub fn register_type_alias(env: Env, alias: glance.TypeAlias) -> Env {
+  Env(
+    ..env,
+    aliases: dict.insert(env.aliases, alias.name, #(
+      alias.parameters,
+      alias.aliased,
+    )),
+  )
 }
 
 fn fresh(st: State) -> #(Type, State) {
@@ -105,7 +119,7 @@ fn var_id(type_: Type) -> Int {
 }
 
 fn bind_value(env: Env, name: String, scheme: Scheme) -> Env {
-  Env(values: dict.insert(env.values, name, scheme))
+  Env(..env, values: dict.insert(env.values, name, scheme))
 }
 
 /// Look up a value's scheme in the environment.
@@ -373,7 +387,7 @@ fn infer_fn(
     list.fold(params, #([], env, st), fn(acc, param) {
       let #(types_, env, st) = acc
       let #(t, st) = case param.type_ {
-        Some(ann) -> hydrate(st, ann)
+        Some(ann) -> hydrate(env, st, ann)
         None -> fresh(st)
       }
       let env = case param.name {
@@ -385,7 +399,7 @@ fn infer_fn(
   let #(body_type, st) = infer_statements(body_env, st, body)
   let st = case return_annotation {
     Some(ann) -> {
-      let #(t, st) = hydrate(st, ann)
+      let #(t, st) = hydrate(env, st, ann)
       unify(st, body_type, t)
     }
     None -> st
@@ -565,7 +579,7 @@ fn infer_statement(
       let #(value_type, st) = infer_expr(env, st, value)
       let st = case annotation {
         Some(ann) -> {
-          let #(t, st) = hydrate(st, ann)
+          let #(t, st) = hydrate(env, st, ann)
           unify(st, value_type, t)
         }
         None -> st
@@ -731,11 +745,12 @@ fn field_pattern(field: glance.Field(glance.Pattern)) -> glance.Pattern {
 /// Convert a written type annotation into an internal `Type`. Type-variable
 /// names introduced here all become fresh unbound variables (sufficient for
 /// milestone 1; named-variable sharing across one signature is a refinement).
-pub fn hydrate(st: State, ast: glance.Type) -> #(Type, State) {
-  hydrate_with(dict.new(), st, ast).0
+pub fn hydrate(env: Env, st: State, ast: glance.Type) -> #(Type, State) {
+  hydrate_with(env, dict.new(), st, ast).0
 }
 
 fn hydrate_with(
+  env: Env,
   names: Dict(String, Type),
   st: State,
   ast: glance.Type,
@@ -745,18 +760,29 @@ fn hydrate_with(
       let #(arg_types, st, names) =
         list.fold(parameters, #([], st, names), fn(acc, p) {
           let #(types_, st, names) = acc
-          let #(#(t, st), names) = hydrate_with(names, st, p)
+          let #(#(t, st), names) = hydrate_with(env, names, st, p)
           #([t, ..types_], st, names)
         })
-      let module = option.unwrap(module, types.prelude_module)
-      #(#(Named(module, name, list.reverse(arg_types)), st), names)
+      let arg_types = list.reverse(arg_types)
+      // A local reference to a type alias is expanded to its definition.
+      case module, dict.get(env.aliases, name) {
+        None, Ok(#(params, aliased)) -> {
+          let alias_names = dict.from_list(list.zip(params, arg_types))
+          let #(#(t, st), _) = hydrate_with(env, alias_names, st, aliased)
+          #(#(t, st), names)
+        }
+        _, _ -> {
+          let module = option.unwrap(module, types.prelude_module)
+          #(#(Named(module, name, arg_types), st), names)
+        }
+      }
     }
 
     glance.TupleType(_, elements) -> {
       let #(elem_types, st, names) =
         list.fold(elements, #([], st, names), fn(acc, e) {
           let #(types_, st, names) = acc
-          let #(#(t, st), names) = hydrate_with(names, st, e)
+          let #(#(t, st), names) = hydrate_with(env, names, st, e)
           #([t, ..types_], st, names)
         })
       #(#(Tuple(list.reverse(elem_types)), st), names)
@@ -766,10 +792,10 @@ fn hydrate_with(
       let #(param_types, st, names) =
         list.fold(parameters, #([], st, names), fn(acc, p) {
           let #(types_, st, names) = acc
-          let #(#(t, st), names) = hydrate_with(names, st, p)
+          let #(#(t, st), names) = hydrate_with(env, names, st, p)
           #([t, ..types_], st, names)
         })
-      let #(#(ret, st), names) = hydrate_with(names, st, return)
+      let #(#(ret, st), names) = hydrate_with(env, names, st, return)
       #(#(Fn(list.reverse(param_types), ret), st), names)
     }
 
@@ -797,28 +823,50 @@ pub fn infer_function(
   st: State,
   function: glance.Function,
 ) -> #(Type, State) {
-  let #(rev_param_types, body_env, st) =
-    list.fold(function.parameters, #([], env, st), fn(acc, param) {
-      let #(types_, env, st) = acc
-      let #(t, st) = case param.type_ {
-        Some(ann) -> hydrate(st, ann)
-        None -> fresh(st)
+  // Type-variable names are shared across the whole signature so that, e.g.,
+  // a parameter `a` and the return `a` refer to the same variable.
+  let #(rev_param_types, body_env, st, names) =
+    list.fold(function.parameters, #([], env, st, dict.new()), fn(acc, param) {
+      let #(types_, env, st, names) = acc
+      let #(t, st, names) = case param.type_ {
+        Some(ann) -> hydrate_threaded(env, names, st, ann)
+        None -> {
+          let #(t, st) = fresh(st)
+          #(t, st, names)
+        }
       }
       let env = case param.name {
         glance.Named(name) -> bind_value(env, name, Scheme([], t))
         glance.Discarded(_) -> env
       }
-      #([t, ..types_], env, st)
+      #([t, ..types_], env, st, names)
     })
   let #(body_type, st) = infer_statements(body_env, st, function.body)
   let st = case function.return {
     Some(ann) -> {
-      let #(t, st) = hydrate(st, ann)
+      let #(t, st, _names) = hydrate_threaded(env, names, st, ann)
       unify(st, body_type, t)
     }
     None -> st
   }
   #(Fn(list.reverse(rev_param_types), body_type), st)
+}
+
+/// Infer a module constant, returning its type (an annotation, if present, is
+/// applied).
+pub fn infer_constant(
+  env: Env,
+  st: State,
+  constant: glance.Constant,
+) -> #(Type, State) {
+  let #(value_type, st) = infer_expr(env, st, constant.value)
+  case constant.annotation {
+    Some(ann) -> {
+      let #(t, st) = hydrate(env, st, ann)
+      #(value_type, unify(st, value_type, t))
+    }
+    None -> #(value_type, st)
+  }
 }
 
 /// Register a custom type's constructors as value schemes in the environment,
@@ -850,7 +898,7 @@ pub fn register_custom_type(
     let #(rev_field_types, st) =
       list.fold(variant.fields, #([], st), fn(acc, field) {
         let #(types_, st) = acc
-        let #(t, st) = hydrate_in(names, st, variant_field_type(field))
+        let #(t, st) = hydrate_in(env, names, st, variant_field_type(field))
         #([t, ..types_], st)
       })
     let field_types = list.reverse(rev_field_types)
@@ -871,11 +919,24 @@ fn variant_field_type(field: glance.VariantField) -> glance.Type {
 
 /// Hydrate using (and threading) a fixed type-variable name map.
 fn hydrate_in(
+  env: Env,
   names: Dict(String, Type),
   st: State,
   ast: glance.Type,
 ) -> #(Type, State) {
-  hydrate_with(names, st, ast).0
+  hydrate_with(env, names, st, ast).0
+}
+
+/// Hydrate while threading the type-variable name map so repeated names within
+/// one signature resolve to the same variable.
+fn hydrate_threaded(
+  env: Env,
+  names: Dict(String, Type),
+  st: State,
+  ast: glance.Type,
+) -> #(Type, State, Dict(String, Type)) {
+  let #(#(t, st), names) = hydrate_with(env, names, st, ast)
+  #(t, st, names)
 }
 
 // --- Small helpers ---------------------------------------------------------
