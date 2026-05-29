@@ -410,6 +410,18 @@ pub fn labelled_reorder_with_pipe_test() {
   |> should.equal("fn(List(a)) -> a")
 }
 
+pub fn bidirectional_lambda_field_access_test() {
+  // The lambda parameter `x` has no annotation; its type is only known from the
+  // call's expected argument type. Bidirectional checking seeds it so `x.value`
+  // type-checks (this is the pattern that made list.map over records fail).
+  let source =
+    "pub type Box(a) { Box(value: a) }\n"
+    <> "pub fn apply_to(b: Box(a), f) { f(b) }\n"
+    <> "pub fn unwrap(b: Box(a)) { apply_to(b, fn(x) { x.value }) }"
+  signature(source, "unwrap")
+  |> should.equal("fn(Box(a)) -> a")
+}
+
 pub fn module_and_value_share_name_test() {
   // `m.thing` must resolve to the module export even though a value `m` also
   // exists in scope (mirrors gleam/dynamic's `dynamic` constant + module).

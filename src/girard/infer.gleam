@@ -647,19 +647,47 @@ fn infer_fn(
   return_annotation: Option(glance.Type),
   body: List(glance.Statement),
 ) -> Result(#(Type, State), Error) {
-  let #(param_types, body_env, st) =
-    list.fold(params, #([], env, st), fn(acc, param) {
-      let #(types_, env, st) = acc
-      let #(t, st) = case param.type_ {
-        Some(ann) -> hydrate(env, st, ann)
-        None -> fresh(st)
-      }
-      let env = case param.name {
-        glance.Named(name) -> bind_value(env, name, Scheme([], t))
-        glance.Discarded(_) -> env
-      }
-      #([t, ..types_], env, st)
-    })
+  // No expected type: each parameter starts as a fresh variable.
+  let #(seeds, st) = fresh_n(st, list.length(params))
+  infer_lambda(env, st, params, return_annotation, body, seeds, None)
+}
+
+/// Infer a lambda whose parameters are seeded with `seed_params` (the expected
+/// argument types when known, otherwise fresh variables) and whose body is
+/// optionally checked against `expected_return`.
+fn infer_lambda(
+  env: Env,
+  st: State,
+  params: List(glance.FnParameter),
+  return_annotation: Option(glance.Type),
+  body: List(glance.Statement),
+  seed_params: List(Type),
+  expected_return: Option(Type),
+) -> Result(#(Type, State), Error) {
+  use #(rev_param_types, body_env, st) <- result.try(
+    list.try_fold(
+      list.zip(params, seed_params),
+      #([], env, st),
+      fn(acc, pair) {
+        let #(types_, env, st) = acc
+        let #(param, seed) = pair
+        use #(t, st) <- result.try(case param.type_ {
+          Some(ann) -> {
+            let #(annotated, st) = hydrate(env, st, ann)
+            use st <- result.try(unify(st, annotated, seed))
+            Ok(#(seed, st))
+          }
+          None -> Ok(#(seed, st))
+        })
+        let env = case param.name {
+          glance.Named(name) -> bind_value(env, name, Scheme([], t))
+          glance.Discarded(_) -> env
+        }
+        Ok(#([t, ..types_], env, st))
+      },
+    ),
+  )
+  let param_types = list.reverse(rev_param_types)
   use #(body_type, st) <- result.try(infer_statements(body_env, st, body))
   use st <- result.try(case return_annotation {
     Some(ann) -> {
@@ -668,7 +696,11 @@ fn infer_fn(
     }
     None -> Ok(st)
   })
-  Ok(#(Fn(list.reverse(param_types), body_type), st))
+  use st <- result.try(case expected_return {
+    Some(expected) -> unify(st, body_type, expected)
+    None -> Ok(st)
+  })
+  Ok(#(Fn(param_types, body_type), st))
 }
 
 fn infer_call(
@@ -684,11 +716,32 @@ fn infer_call(
       glance.Variable(location, label)
     }),
   )
-  use #(arg_types, st) <- result.try(infer_each(env, st, ordered))
+  // Unify the callee with a function shape first, so each argument's expected
+  // type is known before it is checked. This lets a lambda argument's body see
+  // the types of its parameters (bidirectional checking) — e.g. the callback
+  // in `list.map(rows, fn(row) { row.field })`.
+  let #(arg_holes, st) = fresh_n(st, list.length(ordered))
   let #(result, st) = fresh(st)
-  use st <- result.try(unify(st, fn_type, Fn(arg_types, result)))
-  // Record the result type at the call span too.
+  use st <- result.try(unify(st, fn_type, Fn(arg_holes, result)))
+  // Arguments are checked left to right, so types flowing from earlier
+  // arguments (e.g. the list element type) constrain later ones (the callback).
+  use st <- result.try(
+    list.try_fold(list.zip(ordered, arg_holes), st, fn(st, pair) {
+      check(env, st, pair.0, pair.1)
+    }),
+  )
   Ok(#(result, record(st, span, result)))
+}
+
+fn fresh_n(st: State, n: Int) -> #(List(Type), State) {
+  case n <= 0 {
+    True -> #([], st)
+    False -> {
+      let #(t, st) = fresh(st)
+      let #(rest, st) = fresh_n(st, n - 1)
+      #([t, ..rest], st)
+    }
+  }
 }
 
 fn field_item(field: glance.Field(glance.Expression)) -> glance.Expression {
@@ -911,15 +964,46 @@ fn infer_pipe(
   }
 }
 
-/// Infer an expression and unify it against an expected type.
+/// Infer an expression and unify it against an expected type. A lambda is
+/// checked against the expected type so its parameters are seeded from the
+/// expected argument types before its body is inferred.
 fn check(
   env: Env,
   st: State,
   expr: glance.Expression,
   expected: Type,
 ) -> Result(State, Error) {
-  use #(t, st) <- result.try(infer_expr(env, st, expr))
-  unify(st, t, expected)
+  let seeded = case expr {
+    glance.Fn(_, params, _, _) ->
+      case resolve(st, expected) {
+        Fn(expected_params, expected_return) ->
+          case list.length(expected_params) == list.length(params) {
+            True -> Ok(#(expected_params, expected_return))
+            False -> Error(Nil)
+          }
+        _ -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+  case expr, seeded {
+    glance.Fn(span, params, return_annotation, body), Ok(#(seeds, ret)) -> {
+      use #(fn_type, st) <- result.try(infer_lambda(
+        env,
+        st,
+        params,
+        return_annotation,
+        body,
+        seeds,
+        Some(ret),
+      ))
+      let st = record(st, span, fn_type)
+      unify(st, fn_type, expected)
+    }
+    _, _ -> {
+      use #(t, st) <- result.try(infer_expr(env, st, expr))
+      unify(st, t, expected)
+    }
+  }
 }
 
 // --- Statements ------------------------------------------------------------
