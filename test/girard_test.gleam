@@ -410,6 +410,34 @@ pub fn labelled_reorder_with_pipe_test() {
   |> should.equal("fn(List(a)) -> a")
 }
 
+pub fn shared_variant_field_test() {
+  // `name` appears in both variants with type String, so it is accessible.
+  let source =
+    "pub type Shape { Circle(radius: Float, name: String)\n"
+    <> "Square(side: Float, name: String) }\n"
+    <> "pub fn name_of(s: Shape) { s.name }"
+  signature(source, "name_of")
+  |> should.equal("fn(Shape) -> String")
+}
+
+pub fn unshared_variant_field_is_error_test() {
+  // `radius` is only in Circle, so it is not an accessor on Shape.
+  let source =
+    "pub type Shape { Circle(radius: Float, name: String)\n"
+    <> "Square(side: Float, name: String) }\n"
+    <> "pub fn get(s: Shape) { s.radius }"
+  let assert Error(infer.NoSuchField("Shape", "radius")) =
+    girard.annotate(source)
+}
+
+pub fn inconsistent_variant_field_is_error_test() {
+  // `value` exists in both variants but with different types, so no accessor.
+  let source =
+    "pub type Mix { A(value: Int)\nB(value: String) }\n"
+    <> "pub fn get(m: Mix) { m.value }"
+  let assert Error(infer.NoSuchField("Mix", "value")) = girard.annotate(source)
+}
+
 pub fn bidirectional_lambda_field_access_test() {
   // The lambda parameter `x` has no annotation; its type is only known from the
   // call's expected argument type. Bidirectional checking seeds it so `x.value`

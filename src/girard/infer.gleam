@@ -1568,14 +1568,21 @@ pub fn register_custom_type(
   let names = dict.from_list(list.zip(custom_type.parameters, param_vars))
   let return_type = Named(env.current_module, custom_type.name, param_vars)
 
-  let #(env, st) =
-    list.fold(custom_type.variants, #(env, st), fn(acc, variant) {
-      let #(env, st) = acc
-      let #(rev_field_types, st) =
-        list.fold(variant.fields, #([], st), fn(acc, field) {
-          let #(types_, st) = acc
+  // Build constructors, collecting each variant's labelled-field types so we
+  // can later expose accessors for labels shared across all variants.
+  let #(env, st, rev_variant_labels) =
+    list.fold(custom_type.variants, #(env, st, []), fn(acc, variant) {
+      let #(env, st, variant_labels) = acc
+      let #(rev_field_types, labelled, st) =
+        list.fold(variant.fields, #([], dict.new(), st), fn(acc, field) {
+          let #(types_, labelled, st) = acc
           let #(t, st) = hydrate_in(env, names, st, variant_field_type(field))
-          #([t, ..types_], st)
+          let labelled = case field {
+            glance.LabelledVariantField(_, label) ->
+              dict.insert(labelled, label, t)
+            glance.UnlabelledVariantField(..) -> labelled
+          }
+          #([t, ..types_], labelled, st)
         })
       let field_types = list.reverse(rev_field_types)
       let ctor_type = case field_types {
@@ -1589,33 +1596,44 @@ pub fn register_custom_type(
             glance.UnlabelledVariantField(..) -> None
           }
         }))
-      #(bind_value(env, variant.name, Scheme(param_ids, ctor_type)), st)
+      let env = bind_value(env, variant.name, Scheme(param_ids, ctor_type))
+      #(env, st, [labelled, ..variant_labels])
     })
 
-  // Register field accessors. We currently only do this for single-variant
-  // records; shared fields across variants are a later refinement.
-  case custom_type.variants {
-    [variant] -> {
-      let #(accessors, st) =
-        list.fold(variant.fields, #(dict.new(), st), fn(acc, field) {
-          let #(accessors, st) = acc
-          case field {
-            glance.LabelledVariantField(item, label) -> {
-              let #(field_type, st) = hydrate_in(env, names, st, item)
-              let scheme = Scheme(param_ids, Fn([return_type], field_type))
-              #(dict.insert(accessors, label, scheme), st)
-            }
-            glance.UnlabelledVariantField(..) -> #(accessors, st)
-          }
-        })
-      let env =
-        Env(
-          ..env,
-          accessors: dict.insert(env.accessors, custom_type.name, accessors),
-        )
-      #(env, st)
-    }
-    _ -> #(env, st)
+  // A label is accessible iff it appears in every variant with the same type.
+  // (Single-variant records are the degenerate case where every label qualifies.)
+  let accessors =
+    shared_accessors(list.reverse(rev_variant_labels), param_ids, return_type)
+  let env =
+    Env(..env, accessors: dict.insert(env.accessors, custom_type.name, accessors))
+  #(env, st)
+}
+
+/// Accessor schemes for the labels present in every variant with a consistent
+/// type, given each variant's `label -> field type` map.
+fn shared_accessors(
+  variants: List(Dict(String, Type)),
+  param_ids: List(Int),
+  return_type: Type,
+) -> Dict(String, Scheme) {
+  case variants {
+    [] -> dict.new()
+    [first, ..rest] ->
+      dict.fold(first, dict.new(), fn(accessors, label, field_type) {
+        let shared =
+          list.all(rest, fn(variant) {
+            dict.get(variant, label) == Ok(field_type)
+          })
+        case shared {
+          True ->
+            dict.insert(
+              accessors,
+              label,
+              Scheme(param_ids, Fn([return_type], field_type)),
+            )
+          False -> accessors
+        }
+      })
   }
 }
 
