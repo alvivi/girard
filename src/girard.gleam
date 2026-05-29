@@ -93,14 +93,22 @@ pub fn annotate_with(
   resolver: Resolver,
 ) -> Result(Annotated, Error) {
   use module <- result.try(parse(source))
-  use #(#(env, st), _interface) <- result.try(infer_module(
+  use #(#(env, st), _interface, _cache) <- result.try(infer_module(
     resolver,
     set.new(),
+    dict.new(),
     "",
     module,
   ))
   Ok(render(module, env, st))
 }
+
+/// Interfaces resolved so far in this run, keyed by module path. Resolving a
+/// module is expensive (it infers the whole module), and a deep import graph
+/// imports the same dependency many times; memoizing keeps each module inferred
+/// once rather than re-inferring it exponentially.
+type Cache =
+  dict.Dict(String, ModuleInterface)
 
 // --- Module inference ------------------------------------------------------
 
@@ -110,14 +118,21 @@ pub fn annotate_with(
 fn infer_module(
   resolver: Resolver,
   loading: Set(String),
+  cache: Cache,
   module_name: String,
   module: glance.Module,
-) -> Result(#(#(infer.Env, infer.State), ModuleInterface), Error) {
+) -> Result(#(#(infer.Env, infer.State), ModuleInterface, Cache), Error) {
   let #(prelude_env, st) = infer.prelude()
   let env = infer.set_module(prelude_env, module_name)
 
   // 1. Imports.
-  use env <- result.try(process_imports(resolver, loading, env, module.imports))
+  use #(env, cache) <- result.try(process_imports(
+    resolver,
+    loading,
+    cache,
+    env,
+    module.imports,
+  ))
 
   // 2. Pre-declare local type names so forward references resolve, then
   //    register aliases, custom-type constructors/accessors, and field maps.
@@ -161,7 +176,7 @@ fn infer_module(
       public_value_names(module),
       public_type_names(module),
     )
-  Ok(#(#(final_env, st), interface))
+  Ok(#(#(final_env, st), interface, cache))
 }
 
 fn infer_defs(
@@ -225,25 +240,28 @@ fn infer_defs(
 fn process_imports(
   resolver: Resolver,
   loading: Set(String),
+  cache: Cache,
   env: infer.Env,
   imports: List(glance.Definition(glance.Import)),
-) -> Result(infer.Env, Error) {
-  list.try_fold(imports, env, fn(env, definition) {
+) -> Result(#(infer.Env, Cache), Error) {
+  list.try_fold(imports, #(env, cache), fn(acc, definition) {
+    let #(env, cache) = acc
     let import_ = definition.definition
     let path = import_.module
     case set.contains(loading, path) {
       // Cyclic import: break the cycle by skipping.
-      True -> Ok(env)
+      True -> Ok(#(env, cache))
       False -> {
-        use maybe_interface <- result.try(resolve_interface(
+        use #(maybe_interface, cache) <- result.try(resolve_interface(
           resolver,
           loading,
+          cache,
           path,
         ))
         case maybe_interface {
           // Unresolvable or unparsable: best effort, skip (uses of it surface
           // later as unbound variables).
-          None -> Ok(env)
+          None -> Ok(#(env, cache))
           Some(interface) -> {
             // A discarded alias (`import x as _y`) imports the module for its
             // unqualified items only — it must NOT be bound under any qualified
@@ -263,7 +281,7 @@ fn process_imports(
                   u.name,
                 )
               })
-            Ok(
+            let env =
               list.fold(import_.unqualified_types, env, fn(env, u) {
                 infer.import_type(
                   env,
@@ -271,8 +289,8 @@ fn process_imports(
                   interface,
                   u.name,
                 )
-              }),
-            )
+              })
+            Ok(#(env, cache))
           }
         }
       }
@@ -283,22 +301,29 @@ fn process_imports(
 fn resolve_interface(
   resolver: Resolver,
   loading: Set(String),
+  cache: Cache,
   path: String,
-) -> Result(Option(ModuleInterface), Error) {
-  case resolver(path) {
-    Error(_) -> Ok(None)
-    Ok(source) ->
-      case glance.module(source) {
-        Error(_) -> Ok(None)
-        Ok(module) -> {
-          use #(_, interface) <- result.try(infer_module(
-            resolver,
-            set.insert(loading, path),
-            path,
-            module,
-          ))
-          Ok(Some(interface))
-        }
+) -> Result(#(Option(ModuleInterface), Cache), Error) {
+  case dict.get(cache, path) {
+    // Already inferred in this run: reuse it rather than inferring again.
+    Ok(interface) -> Ok(#(Some(interface), cache))
+    Error(_) ->
+      case resolver(path) {
+        Error(_) -> Ok(#(None, cache))
+        Ok(source) ->
+          case glance.module(source) {
+            Error(_) -> Ok(#(None, cache))
+            Ok(module) -> {
+              use #(_, interface, cache) <- result.try(infer_module(
+                resolver,
+                set.insert(loading, path),
+                cache,
+                path,
+                module,
+              ))
+              Ok(#(Some(interface), dict.insert(cache, path, interface)))
+            }
+          }
       }
   }
 }
