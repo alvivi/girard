@@ -481,6 +481,18 @@ pub fn chained_field_access_test() {
   |> should.equal("fn(Node) -> Int")
 }
 
+pub fn transitive_field_access_test() {
+  // `main` accesses `.start` on a `sp.Span` it receives via `mid`, without
+  // importing `sp` directly — the accessor must be reachable transitively.
+  let sp = "pub type Span { Span(start: Int, end: Int) }"
+  let mid =
+    "import sp\npub type Err { Err(loc: sp.Span) }\n"
+    <> "pub fn loc(e: Err) -> sp.Span { e.loc }"
+  let source = "import mid\npub fn start_of(e: mid.Err) { mid.loc(e).start }"
+  signature_with(source, [#("sp", sp), #("mid", mid)], "start_of")
+  |> should.equal("fn(Err) -> Int")
+}
+
 pub fn qualified_labelled_pattern_test() {
   // Matching an imported constructor by label (with a spread) needs the field
   // map from the imported module.

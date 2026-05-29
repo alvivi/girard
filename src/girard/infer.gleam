@@ -97,6 +97,9 @@ pub type ModuleInterface {
     aliases: Dict(String, #(List(String), glance.Type)),
     accessors: Dict(String, Dict(String, Scheme)),
     field_maps: Dict(String, List(Option(String))),
+    /// The modules this one imports, so a type it exposes from another module
+    /// (e.g. a `glance.Span` field) keeps its accessors reachable transitively.
+    modules: Dict(String, ModuleInterface),
   )
 }
 
@@ -237,6 +240,7 @@ pub fn build_interface(
     aliases: take(env.aliases, type_names),
     accessors: take(env.accessors, type_names),
     field_maps: take(env.field_maps, value_names),
+    modules: env.modules,
   )
 }
 
@@ -255,7 +259,14 @@ pub fn import_qualified(
   alias: String,
   interface: ModuleInterface,
 ) -> Env {
-  Env(..env, modules: dict.insert(env.modules, alias, interface))
+  // Bring the module's own imports along (under their aliases, but not
+  // overriding the importer's direct imports) so types it exposes from other
+  // modules keep their accessors reachable. Then bind the module itself.
+  let modules =
+    dict.fold(env.modules, interface.modules, fn(acc, alias, interface) {
+      dict.insert(acc, alias, interface)
+    })
+  Env(..env, modules: dict.insert(modules, alias, interface))
 }
 
 /// Bring a single value (function/constant/constructor) into scope unqualified.
