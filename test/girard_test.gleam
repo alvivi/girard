@@ -218,3 +218,29 @@ pub fn parametric_alias_test() {
   signature(source, "mk")
   |> should.equal("fn(a) -> #(a, a)")
 }
+
+// --- Record field access and update (M3) ------------------------------------
+
+pub fn field_access_test() {
+  let source =
+    "pub type User { User(name: String, age: Int) }\n"
+    <> "pub fn get_age(u: User) { u.age }"
+  signature(source, "get_age")
+  |> should.equal("fn(User) -> Int")
+}
+
+pub fn generic_field_access_test() {
+  // Field access needs a known type — Gleam itself requires the annotation.
+  let source =
+    "pub type Box(a) { Box(value: a) }\npub fn unwrap(b: Box(a)) { b.value }"
+  signature(source, "unwrap")
+  |> should.equal("fn(Box(a)) -> a")
+}
+
+pub fn record_update_test() {
+  let source =
+    "pub type User { User(name: String, age: Int) }\n"
+    <> "pub fn birthday(u: User) { User(..u, age: 0) }"
+  signature(source, "birthday")
+  |> should.equal("fn(User) -> User")
+}

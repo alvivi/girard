@@ -73,8 +73,14 @@ pub fn annotate(source: String) -> Annotated {
   // 1. Register type aliases and custom-type constructors into the base
   //    environment.
   let #(prelude_env, prelude_st) = infer.prelude()
+  // Pre-declare all local type names so forward references resolve.
   let base_env =
-    list.fold(module.type_aliases, prelude_env, fn(env, definition) {
+    list.fold(module.custom_types, prelude_env, fn(env, definition) {
+      let ct = definition.definition
+      infer.declare_type(env, ct.name, list.length(ct.parameters))
+    })
+  let base_env =
+    list.fold(module.type_aliases, base_env, fn(env, definition) {
       infer.register_type_alias(env, definition.definition)
     })
   let #(base_env, st) =

@@ -38,6 +38,13 @@ pub type Env {
     /// Type aliases: name -> (parameter names, aliased type AST), expanded
     /// during hydration.
     aliases: Dict(String, #(List(String), glance.Type)),
+    /// Record field accessors: type name -> label -> a scheme for
+    /// `fn(record) -> field`, generalized over the type's parameters.
+    accessors: Dict(String, Dict(String, Scheme)),
+    /// Names of types defined in the current module (mapped to their arity).
+    /// Used during hydration to give local types the current module ("")
+    /// rather than the prelude module.
+    local_types: Dict(String, Int),
   )
 }
 
@@ -46,7 +53,19 @@ pub fn new_state() -> State {
 }
 
 pub fn new_env() -> Env {
-  Env(values: dict.new(), aliases: dict.new())
+  Env(
+    values: dict.new(),
+    aliases: dict.new(),
+    accessors: dict.new(),
+    local_types: dict.new(),
+  )
+}
+
+/// Declare a local type name (and arity) so references to it during hydration
+/// resolve to the current module. Call this for every custom type before
+/// registering any of them, so forward references resolve correctly.
+pub fn declare_type(env: Env, name: String, arity: Int) -> Env {
+  Env(..env, local_types: dict.insert(env.local_types, name, arity))
 }
 
 /// Register a type alias so references to it expand during hydration.
@@ -356,8 +375,48 @@ fn infer_expr_inner(
         None -> #(types.nil(), st)
       }
 
-    glance.FieldAccess(..) -> panic as "field access not yet supported"
-    glance.RecordUpdate(..) -> panic as "record update not yet supported"
+    glance.FieldAccess(_, container, label) -> {
+      let #(container_type, st) = infer_expr(env, st, container)
+      case resolve(st, container_type) {
+        Named(_, type_name, _) -> {
+          let #(accessor_type, st) =
+            instantiate(st, accessor(env, type_name, label))
+          let #(field, st) = fresh(st)
+          let st = unify(st, accessor_type, Fn([container_type], field))
+          #(field, st)
+        }
+        _ -> panic as "field access on a value of unknown type"
+      }
+    }
+
+    glance.RecordUpdate(_, _module, _constructor, record, fields) -> {
+      let #(record_type, st) = infer_expr(env, st, record)
+      case resolve(st, record_type) {
+        Named(_, type_name, _) -> {
+          let st =
+            list.fold(fields, st, fn(st, field) {
+              let #(value_type, st) = case field.item {
+                Some(value) -> infer_expr(env, st, value)
+                // Shorthand `label:` refers to the variable named `label`.
+                None ->
+                  case dict.get(env.values, field.label) {
+                    Ok(scheme) -> instantiate(st, scheme)
+                    Error(_) ->
+                      panic as { "unbound variable: " <> field.label }
+                  }
+              }
+              let #(accessor_type, st) =
+                instantiate(st, accessor(env, type_name, field.label))
+              let #(field_type, st) = fresh(st)
+              let st = unify(st, accessor_type, Fn([record_type], field_type))
+              unify(st, value_type, field_type)
+            })
+          #(record_type, st)
+        }
+        _ -> panic as "record update on a value of unknown type"
+      }
+    }
+
     glance.BitString(..) -> panic as "bit arrays not yet supported"
   }
 }
@@ -771,10 +830,13 @@ fn hydrate_with(
           let #(#(t, st), _) = hydrate_with(env, alias_names, st, aliased)
           #(#(t, st), names)
         }
-        _, _ -> {
-          let module = option.unwrap(module, types.prelude_module)
-          #(#(Named(module, name, arg_types), st), names)
-        }
+        // A local custom type lives in the current module ("").
+        None, _ ->
+          case dict.has_key(env.local_types, name) {
+            True -> #(#(Named("", name, arg_types), st), names)
+            False -> #(#(Named(types.prelude_module, name, arg_types), st), names)
+          }
+        Some(m), _ -> #(#(Named(m, name, arg_types), st), names)
       }
     }
 
@@ -876,6 +938,16 @@ pub fn register_custom_type(
   st: State,
   custom_type: glance.CustomType,
 ) -> #(Env, State) {
+  // Record the type as local first so its own fields can refer to it.
+  let env =
+    Env(
+      ..env,
+      local_types: dict.insert(
+        env.local_types,
+        custom_type.name,
+        list.length(custom_type.parameters),
+      ),
+    )
   let #(rev_param_vars, st) =
     list.fold(custom_type.parameters, #([], st), fn(acc, _name) {
       let #(vars, st) = acc
@@ -893,21 +965,60 @@ pub fn register_custom_type(
     })
   let return_type = Named("", custom_type.name, param_vars)
 
-  list.fold(custom_type.variants, #(env, st), fn(acc, variant) {
-    let #(env, st) = acc
-    let #(rev_field_types, st) =
-      list.fold(variant.fields, #([], st), fn(acc, field) {
-        let #(types_, st) = acc
-        let #(t, st) = hydrate_in(env, names, st, variant_field_type(field))
-        #([t, ..types_], st)
-      })
-    let field_types = list.reverse(rev_field_types)
-    let ctor_type = case field_types {
-      [] -> return_type
-      _ -> Fn(field_types, return_type)
+  let #(env, st) =
+    list.fold(custom_type.variants, #(env, st), fn(acc, variant) {
+      let #(env, st) = acc
+      let #(rev_field_types, st) =
+        list.fold(variant.fields, #([], st), fn(acc, field) {
+          let #(types_, st) = acc
+          let #(t, st) = hydrate_in(env, names, st, variant_field_type(field))
+          #([t, ..types_], st)
+        })
+      let field_types = list.reverse(rev_field_types)
+      let ctor_type = case field_types {
+        [] -> return_type
+        _ -> Fn(field_types, return_type)
+      }
+      #(bind_value(env, variant.name, Scheme(param_ids, ctor_type)), st)
+    })
+
+  // Register field accessors. We currently only do this for single-variant
+  // records; shared fields across variants are a later refinement.
+  case custom_type.variants {
+    [variant] -> {
+      let #(accessors, st) =
+        list.fold(variant.fields, #(dict.new(), st), fn(acc, field) {
+          let #(accessors, st) = acc
+          case field {
+            glance.LabelledVariantField(item, label) -> {
+              let #(field_type, st) = hydrate_in(env, names, st, item)
+              let scheme = Scheme(param_ids, Fn([return_type], field_type))
+              #(dict.insert(accessors, label, scheme), st)
+            }
+            glance.UnlabelledVariantField(..) -> #(accessors, st)
+          }
+        })
+      let env =
+        Env(
+          ..env,
+          accessors: dict.insert(env.accessors, custom_type.name, accessors),
+        )
+      #(env, st)
     }
-    #(bind_value(env, variant.name, Scheme(param_ids, ctor_type)), st)
-  })
+    _ -> #(env, st)
+  }
+}
+
+/// Look up the accessor scheme for `type_name`.`label`.
+fn accessor(env: Env, type_name: String, label: String) -> Scheme {
+  case dict.get(env.accessors, type_name) {
+    Ok(labels) ->
+      case dict.get(labels, label) {
+        Ok(scheme) -> scheme
+        Error(_) -> panic as { "no field `" <> label <> "` on " <> type_name }
+      }
+    Error(_) -> panic as { "no accessors for type " <> type_name }
+  }
 }
 
 fn variant_field_type(field: glance.VariantField) -> glance.Type {
