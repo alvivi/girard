@@ -90,6 +90,12 @@ pub type Env {
     /// label of each positional parameter (`None` where unlabelled). Used to
     /// reorder labelled and shorthand arguments at call/pattern sites.
     field_maps: Dict(String, List(Option(String))),
+    /// Variables that a pattern has narrowed to a specific constructor variant
+    /// (e.g. `Element(..) as e`), mapping the variable to that variant's
+    /// `label -> field type` for the bound value. This lets `e.field` reach a
+    /// field present in only some variants, mirroring the compiler's inferred
+    /// variant narrowing. Field types are tied to the variable's own type.
+    variants: Dict(String, Dict(String, Type)),
     /// The name of the module currently being inferred. Local types are minted
     /// with this module so they stay distinct from imported types.
     current_module: String,
@@ -128,6 +134,7 @@ fn new_env() -> Env {
     accessors: dict.new(),
     local_types: dict.new(),
     field_maps: dict.new(),
+    variants: dict.new(),
     current_module: "",
     modules: dict.new(),
   )
@@ -418,11 +425,52 @@ fn free_vars_loop(type_: Type, acc: List(Int)) -> List(Int) {
 
 fn env_free_vars(st: State, env: Env) -> List(Int) {
   dict.fold(env.values, [], fn(acc, _name, scheme) {
-    // Quantified variables of a scheme are not free.
-    let fv = free_vars(st, scheme.type_)
-    let fv = list.filter(fv, fn(id) { !list.contains(scheme.vars, id) })
-    list.append(fv, acc)
+    // A scheme's quantified variables are bound *within the scheme*; they must
+    // not be resolved against the ambient substitution. This matters because
+    // imported schemes carry variable ids minted in their own module, which can
+    // collide with — and have since been bound to unrelated types by — the
+    // importing module's substitution. Treating them as opaque (rather than
+    // zonking them) keeps such collisions from leaking phantom free variables
+    // that would wrongly block generalization here.
+    scheme_free_vars(st, scheme.type_, scheme.vars, acc)
   })
+}
+
+/// Free variables of `type_`, treating `bound` ids as opaque: a bound id
+/// contributes nothing and is never resolved through the substitution, while a
+/// free id is resolved and its remaining variables collected.
+fn scheme_free_vars(
+  st: State,
+  type_: Type,
+  bound: List(Int),
+  acc: List(Int),
+) -> List(Int) {
+  case type_ {
+    Var(id) ->
+      case list.contains(bound, id) {
+        True -> acc
+        False ->
+          case resolve(st, type_) {
+            Var(resolved) ->
+              case list.contains(acc, resolved) {
+                True -> acc
+                False -> [resolved, ..acc]
+              }
+            other -> scheme_free_vars(st, other, bound, acc)
+          }
+      }
+    Named(_, _, args) ->
+      list.fold(args, acc, fn(a, t) { scheme_free_vars(st, t, bound, a) })
+    Fn(args, ret) ->
+      scheme_free_vars(
+        st,
+        ret,
+        bound,
+        list.fold(args, acc, fn(a, t) { scheme_free_vars(st, t, bound, a) }),
+      )
+    Tuple(elements) ->
+      list.fold(elements, acc, fn(a, t) { scheme_free_vars(st, t, bound, a) })
+  }
 }
 
 // --- Unification -----------------------------------------------------------
@@ -671,6 +719,31 @@ fn infer_field_access(
       }
     _ -> Error(Nil)
   }
+  // A variable narrowed to a variant by a pattern (`Ctor(..) as v`) resolves
+  // `v.field` from that variant's recorded fields, reaching fields not shared
+  // by every variant.
+  let variant_field = case container {
+    glance.Variable(_, name) ->
+      case dict.get(env.variants, name) {
+        Ok(fields) -> dict.get(fields, label)
+        Error(_) -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+  case variant_field {
+    Ok(field) -> Ok(#(field, st))
+    Error(_) ->
+      infer_field_access_general(env, st, container, label, module_access)
+  }
+}
+
+fn infer_field_access_general(
+  env: Env,
+  st: State,
+  container: glance.Expression,
+  label: String,
+  module_access: Result(Scheme, Nil),
+) -> Result(#(Type, State), Error) {
   case module_access {
     Ok(scheme) -> Ok(instantiate(st, scheme))
     Error(_) -> {
@@ -772,21 +845,24 @@ fn infer_record_update(
         }),
       )
 
-      // Kept fields are copied from the record.
+      // Kept fields are copied from the record. The record carries the same
+      // constructor, so each kept field's type is the constructor's field type
+      // with the result's parameters swapped for the record's. Unifying the two
+      // ties only the parameters a kept field actually uses, which is what lets
+      // an *updated* field change a parameter. Deriving this from the named
+      // constructor (rather than a field accessor) means it works even for
+      // fields not shared by every variant of a multi-variant type.
+      let to_record_params =
+        dict.from_list(list.zip(
+          list.map(type_parameters, var_id),
+          record_parameters,
+        ))
       use st <- result.try(
         list.try_fold(dict.to_list(label_types), st, fn(st, pair) {
           let #(label, expected) = pair
           case list.contains(updated, label) {
             True -> Ok(st)
-            False -> {
-              use #(field, st) <- result.try(field_type(
-                env,
-                st,
-                record_type,
-                label,
-              ))
-              unify(st, field, expected)
-            }
+            False -> unify(st, substitute(to_record_params, expected), expected)
           }
         }),
       )
@@ -815,6 +891,47 @@ fn constructor_field_map(
   case dict.get(maps, constructor) {
     Ok(labels) -> labels
     Error(_) -> []
+  }
+}
+
+/// Record, for a variable bound by `Ctor(..) as name`, that variant's labelled
+/// fields with types tied to `value_type` (the variable's own type). Later
+/// `name.field` reads from this even when the field is absent from other
+/// variants. Best-effort: on any failure the environment is left unchanged.
+fn record_variant(
+  env: Env,
+  st: State,
+  module: Option(String),
+  constructor: String,
+  value_type: Type,
+  name: String,
+) -> #(Env, State) {
+  let recorded = {
+    use scheme <- result.try(constructor_scheme(env, module, constructor))
+    let #(ctor_type, st) = instantiate(st, scheme)
+    let #(field_types, ret) = case ctor_type {
+      Fn(args, ret) -> #(args, ret)
+      other -> #([], other)
+    }
+    // Tie this fresh instance to the variable's actual type so the recorded
+    // field types resolve correctly later.
+    use st <- result.try(unify(st, value_type, ret))
+    let labels = constructor_field_map(env, module, constructor)
+    let fields =
+      list.fold(list.zip(labels, field_types), dict.new(), fn(acc, pair) {
+        case pair.0 {
+          Some(label) -> dict.insert(acc, label, resolve(st, pair.1))
+          None -> acc
+        }
+      })
+    Ok(#(fields, st))
+  }
+  case recorded {
+    Ok(#(fields, st)) -> #(
+      Env(..env, variants: dict.insert(env.variants, name, fields)),
+      st,
+    )
+    Error(_) -> #(env, st)
   }
 }
 
@@ -1406,7 +1523,7 @@ fn infer_case(
   let #(result, st) = fresh(st)
   use st <- result.try(
     list.try_fold(clauses, st, fn(st, clause) {
-      infer_clause(env, st, clause, subject_types, result)
+      infer_clause(env, st, clause, subjects, subject_types, result)
     }),
   )
   Ok(#(result, st))
@@ -1416,6 +1533,7 @@ fn infer_clause(
   env: Env,
   st: State,
   clause: glance.Clause,
+  subjects: List(glance.Expression),
   subject_types: List(Type),
   result: Type,
 ) -> Result(State, Error) {
@@ -1424,12 +1542,35 @@ fn infer_clause(
   list.try_fold(clause.patterns, st, fn(st, patterns) {
     use #(clause_env, st) <- result.try(
       list.try_fold(
-        list.zip(patterns, subject_types),
+        list.zip(patterns, list.zip(subjects, subject_types)),
         #(env, st),
         fn(acc, pair) {
           let #(env, st) = acc
-          let #(pattern, subject) = pair
-          infer_pattern(env, st, pattern, subject)
+          let #(pattern, #(subject, subject_type)) = pair
+          use #(env, st) <- result.try(infer_pattern(
+            env,
+            st,
+            pattern,
+            subject_type,
+          ))
+          // When a clause matches a bare subject variable against a variant
+          // pattern, that variable is narrowed to the variant within the clause
+          // (the compiler's inferred-variant narrowing), so its non-shared
+          // fields become accessible.
+          case subject, pattern {
+            glance.Variable(_, name),
+              glance.PatternVariant(_, module, constructor, _, _)
+            ->
+              Ok(record_variant(
+                env,
+                st,
+                module,
+                constructor,
+                subject_type,
+                name,
+              ))
+            _, _ -> Ok(#(env, st))
+          }
         },
       ),
     )
@@ -1493,6 +1634,13 @@ fn infer_pattern(
 
     glance.PatternAssignment(_, pattern, name) -> {
       let env = bind_value(env, name, Scheme([], expected))
+      // `Ctor(..) as name` narrows `name` to that variant: record the variant's
+      // fields so a later `name.field` reaches fields present only in it.
+      let #(env, st) = case pattern {
+        glance.PatternVariant(_, module, constructor, _, _) ->
+          record_variant(env, st, module, constructor, expected, name)
+        _ -> #(env, st)
+      }
       infer_pattern(env, st, pattern, expected)
     }
 

@@ -620,3 +620,88 @@ pub fn transitive_import_test() {
   signature_with(source, [#("base", base), #("mid", mid)], "run")
   |> should.equal("fn() -> Int")
 }
+
+// --- Inferred-variant field access and multi-variant records (M5) -----------
+
+pub fn variant_narrowed_field_access_test() {
+  // `kids` is present only in the `Branch` variant. Binding it with `as` after
+  // a variant pattern narrows the value to that variant, so the field is
+  // reachable (the compiler's inferred-variant narrowing).
+  let source =
+    "pub type Node(a) {\n"
+    <> "  Branch(value: a, kids: List(Node(a)))\n"
+    <> "  Leaf(value: a)\n"
+    <> "}\n"
+    <> "pub fn kids_of(n: Node(a)) -> List(Node(a)) {\n"
+    <> "  case n {\n"
+    <> "    Branch(..) as b -> b.kids\n"
+    <> "    Leaf(..) -> []\n"
+    <> "  }\n"
+    <> "}"
+  signature(source, "kids_of")
+  |> should.equal("fn(Node(a)) -> List(Node(a))")
+}
+
+pub fn scrutinee_variant_narrowing_test() {
+  // The bare subject variable `n` is narrowed to `Branch` inside that clause,
+  // so `n.kids` (a field absent from `Leaf`) is reachable.
+  let source =
+    "pub type Node(a) {\n"
+    <> "  Branch(value: a, kids: List(Node(a)))\n"
+    <> "  Leaf(value: a)\n"
+    <> "}\n"
+    <> "pub fn kids_of(n: Node(a)) -> List(Node(a)) {\n"
+    <> "  case n {\n"
+    <> "    Branch(..) -> n.kids\n"
+    <> "    Leaf(..) -> []\n"
+    <> "  }\n"
+    <> "}"
+  signature(source, "kids_of")
+  |> should.equal("fn(Node(a)) -> List(Node(a))")
+}
+
+pub fn record_update_non_shared_field_test() {
+  // Updating via the `Branch` constructor copies the kept field `kids`, which
+  // exists only in `Branch`. The kept field's type is derived from the named
+  // constructor, not a field accessor shared by every variant.
+  let source =
+    "pub type Node(a) {\n"
+    <> "  Branch(value: a, kids: List(Node(a)))\n"
+    <> "  Leaf(value: a)\n"
+    <> "}\n"
+    <> "pub fn relabel(b: Node(a), v: a) -> Node(a) { Branch(..b, value: v) }"
+  signature(source, "relabel")
+  |> should.equal("fn(Node(a), a) -> Node(a)")
+}
+
+pub fn self_recursive_with_imports_generalizes_test() {
+  // A self-recursive helper that pattern-matches imported constructors must
+  // generalize, so a caller can apply it at more than one type. The helper's
+  // own type variable is minted in this module yet collides with the ids the
+  // imported `Opt` constructors quantify over; resolving those quantified ids
+  // against this module's substitution (instead of treating them as opaque)
+  // left the helper monomorphic and produced a spurious recursive-type error
+  // when a caller used it at two types — the bug behind the `given` package's
+  // `optionx.partition` / `all_some`.
+  let opt = "pub type Opt(a) {\n  Som(a)\n  Non\n}"
+  let source =
+    "import opt.{type Opt, Non, Som}\n"
+    <> "fn loop(xs: List(Opt(a)), acc: List(a), n: Int) {\n"
+    <> "  let #(acc, n) = case xs {\n"
+    <> "    [] -> #(acc, n)\n"
+    <> "    [Som(x), ..rest] -> loop(rest, [x, ..acc], n)\n"
+    <> "    [Non, ..rest] -> loop(rest, acc, n + 1)\n"
+    <> "  }\n"
+    <> "  #(acc, n)\n"
+    <> "}\n"
+    <> "pub fn partition(xs: List(Opt(a))) -> #(List(a), Int) {\n"
+    <> "  loop(xs, [], 0)\n"
+    <> "}\n"
+    <> "pub fn use_twice(xs: List(Opt(a)), ns: List(Opt(Int))) {\n"
+    <> "  #(partition(xs), partition(ns))\n"
+    <> "}"
+  signature_with(source, [#("opt", opt)], "use_twice")
+  |> should.equal(
+    "fn(List(Opt(a)), List(Opt(Int))) -> #(#(List(a), Int), #(List(Int), Int))",
+  )
+}

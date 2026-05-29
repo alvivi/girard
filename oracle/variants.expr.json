@@ -170,6 +170,404 @@
           "module": "gleam",
           "parameters": []
         }
+      },
+      {
+        "start": 578,
+        "end": 639,
+        "type": {
+          "kind": "named",
+          "name": "List",
+          "package": "",
+          "module": "gleam",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Node",
+              "package": "variants",
+              "module": "variants",
+              "parameters": [
+                {
+                  "kind": "variable",
+                  "id": 0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "start": 583,
+        "end": 584,
+        "type": {
+          "kind": "named",
+          "name": "Node",
+          "package": "variants",
+          "module": "variants",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 610,
+        "end": 616,
+        "type": {
+          "kind": "named",
+          "name": "List",
+          "package": "",
+          "module": "gleam",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Node",
+              "package": "variants",
+              "module": "variants",
+              "parameters": [
+                {
+                  "kind": "variable",
+                  "id": 0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "start": 610,
+        "end": 611,
+        "type": {
+          "kind": "named",
+          "name": "Node",
+          "package": "variants",
+          "module": "variants",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 633,
+        "end": 635,
+        "type": {
+          "kind": "named",
+          "name": "List",
+          "package": "",
+          "module": "gleam",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Node",
+              "package": "variants",
+              "module": "variants",
+              "parameters": [
+                {
+                  "kind": "variable",
+                  "id": 0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "start": 807,
+        "end": 863,
+        "type": {
+          "kind": "named",
+          "name": "List",
+          "package": "",
+          "module": "gleam",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Node",
+              "package": "variants",
+              "module": "variants",
+              "parameters": [
+                {
+                  "kind": "variable",
+                  "id": 0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "start": 812,
+        "end": 813,
+        "type": {
+          "kind": "named",
+          "name": "Node",
+          "package": "variants",
+          "module": "variants",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 834,
+        "end": 840,
+        "type": {
+          "kind": "named",
+          "name": "List",
+          "package": "",
+          "module": "gleam",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Node",
+              "package": "variants",
+              "module": "variants",
+              "parameters": [
+                {
+                  "kind": "variable",
+                  "id": 0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "start": 834,
+        "end": 835,
+        "type": {
+          "kind": "named",
+          "name": "Node",
+          "package": "variants",
+          "module": "variants",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 857,
+        "end": 859,
+        "type": {
+          "kind": "named",
+          "name": "List",
+          "package": "",
+          "module": "gleam",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Node",
+              "package": "variants",
+              "module": "variants",
+              "parameters": [
+                {
+                  "kind": "variable",
+                  "id": 0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "start": 1129,
+        "end": 1217,
+        "type": {
+          "kind": "named",
+          "name": "Node",
+          "package": "variants",
+          "module": "variants",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 1134,
+        "end": 1135,
+        "type": {
+          "kind": "named",
+          "name": "Node",
+          "package": "variants",
+          "module": "variants",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 1161,
+        "end": 1182,
+        "type": {
+          "kind": "named",
+          "name": "Node",
+          "package": "variants",
+          "module": "variants",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 1161,
+        "end": 1167,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "named",
+              "name": "List",
+              "package": "",
+              "module": "gleam",
+              "parameters": [
+                {
+                  "kind": "named",
+                  "name": "Node",
+                  "package": "variants",
+                  "module": "variants",
+                  "parameters": [
+                    {
+                      "kind": "variable",
+                      "id": 0
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Node",
+            "package": "variants",
+            "module": "variants",
+            "parameters": [
+              {
+                "kind": "variable",
+                "id": 0
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 1180,
+        "end": 1181,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1170,
+        "end": 1171,
+        "type": {
+          "kind": "named",
+          "name": "List",
+          "package": "",
+          "module": "gleam",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Node",
+              "package": "variants",
+              "module": "variants",
+              "parameters": [
+                {
+                  "kind": "variable",
+                  "id": 0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "start": 1170,
+        "end": 1171,
+        "type": {
+          "kind": "named",
+          "name": "Node",
+          "package": "variants",
+          "module": "variants",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 1199,
+        "end": 1213,
+        "type": {
+          "kind": "named",
+          "name": "Node",
+          "package": "variants",
+          "module": "variants",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 1199,
+        "end": 1203,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Node",
+            "package": "variants",
+            "module": "variants",
+            "parameters": [
+              {
+                "kind": "variable",
+                "id": 0
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 1211,
+        "end": 1212,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
       }
     ]
   }
