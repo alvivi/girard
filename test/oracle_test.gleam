@@ -1,0 +1,187 @@
+//// Differential signature oracle: compare girard's inferred top-level
+//// signatures against the *real* Gleam compiler's, using the JSON produced by
+//// `gleam export package-interface` (see scripts/gen-oracle.sh).
+////
+//// The compiler's type JSON is decoded straight into girard's own `Type` and
+//// rendered with girard's printer, so the only thing that can differ is the
+//// inferred structure. Type-variable names are canonicalised before comparison
+//// (the compiler numbers variables per signature; girard shares a naming
+//// context across a module — both are correct, just different spellings).
+
+import gleam/dict
+import gleam/dynamic/decode.{type Decoder}
+import gleam/int
+import gleam/json
+import gleam/list
+import gleam/string
+import gleeunit/should
+import simplifile
+import girard
+import girard/printer
+import girard/types.{type Type, Fn, Named, Tuple, Var}
+
+pub fn sample_signatures_match_compiler_test() {
+  let assert Ok(json_string) =
+    simplifile.read("test/oracle/sample.interface.json")
+  let assert Ok(source) = simplifile.read("test/oracle/sample.gleam")
+
+  let assert Ok(#(oracle_functions, oracle_constants)) =
+    json.parse(json_string, decode.at(["modules", "sample"], module_decoder()))
+
+  let annotated = girard.annotate(source)
+
+  // Every public function the compiler reports must match girard's signature.
+  list.each(dict.to_list(oracle_functions), fn(entry) {
+    let #(name, oracle_type) = entry
+    let assert Ok(ours) = list.key_find(annotated.functions, name)
+    check(name, ours, oracle_type)
+  })
+
+  list.each(dict.to_list(oracle_constants), fn(entry) {
+    let #(name, oracle_type) = entry
+    let assert Ok(ours) = list.key_find(annotated.constants, name)
+    check(name, ours, oracle_type)
+  })
+}
+
+/// Compare girard's rendered signature string against the compiler's type,
+/// both reduced to a canonical type-variable spelling.
+fn check(name: String, ours: String, theirs: Type) -> Nil {
+  let expected = canonicalize(printer.to_string(theirs))
+  let actual = canonicalize(ours)
+  case actual == expected {
+    True -> Nil
+    False ->
+      panic as {
+        name
+        <> ": girard inferred `"
+        <> actual
+        <> "` but the compiler says `"
+        <> expected
+        <> "`"
+      }
+  }
+  should.equal(actual, expected)
+}
+
+// --- Decoding the compiler's package-interface JSON ------------------------
+
+fn module_decoder() -> Decoder(#(dict.Dict(String, Type), dict.Dict(String, Type))) {
+  use functions <- decode.field(
+    "functions",
+    decode.dict(decode.string, function_decoder()),
+  )
+  use constants <- decode.field(
+    "constants",
+    decode.dict(decode.string, constant_decoder()),
+  )
+  decode.success(#(functions, constants))
+}
+
+fn function_decoder() -> Decoder(Type) {
+  use parameters <- decode.field(
+    "parameters",
+    decode.list(parameter_type_decoder()),
+  )
+  use return <- decode.field("return", type_decoder())
+  decode.success(Fn(parameters, return))
+}
+
+fn parameter_type_decoder() -> Decoder(Type) {
+  use type_ <- decode.field("type", type_decoder())
+  decode.success(type_)
+}
+
+fn constant_decoder() -> Decoder(Type) {
+  use type_ <- decode.field("type", type_decoder())
+  decode.success(type_)
+}
+
+fn type_decoder() -> Decoder(Type) {
+  use kind <- decode.field("kind", decode.string)
+  case kind {
+    "named" -> {
+      use name <- decode.field("name", decode.string)
+      use module <- decode.field("module", decode.string)
+      use parameters <- decode.field("parameters", decode.list(type_decoder()))
+      decode.success(Named(module, name, parameters))
+    }
+    "fn" -> {
+      use parameters <- decode.field("parameters", decode.list(type_decoder()))
+      use return <- decode.field("return", type_decoder())
+      decode.success(Fn(parameters, return))
+    }
+    "tuple" -> {
+      use elements <- decode.field("elements", decode.list(type_decoder()))
+      decode.success(Tuple(elements))
+    }
+    "variable" -> {
+      use id <- decode.field("id", decode.int)
+      decode.success(Var(id))
+    }
+    other -> decode.failure(Var(0), "Type(kind=" <> other <> ")")
+  }
+}
+
+// --- Canonical type-variable spelling --------------------------------------
+
+/// Rename type variables to a canonical first-seen sequence so that, e.g.,
+/// `fn(a) -> a` and `fn(x) -> x` compare equal. Type variables are the only
+/// lowercase identifiers in a rendered type other than the `fn` keyword.
+fn canonicalize(rendered: String) -> String {
+  let #(out, run, map, next) =
+    list.fold(
+      string.to_graphemes(rendered),
+      #("", "", dict.new(), 0),
+      fn(state, grapheme) {
+        let #(out, run, map, next) = state
+        case is_identifier_char(grapheme) {
+          True -> #(out, run <> grapheme, map, next)
+          False -> {
+            let #(out, map, next) = flush(out, run, map, next)
+            #(out <> grapheme, "", map, next)
+          }
+        }
+      },
+    )
+  let #(out, _map, _next) = flush(out, run, map, next)
+  out
+}
+
+fn flush(
+  out: String,
+  run: String,
+  map: dict.Dict(String, String),
+  next: Int,
+) -> #(String, dict.Dict(String, String), Int) {
+  case run, is_type_variable(run) {
+    "", _ -> #(out, map, next)
+    _, False -> #(out <> run, map, next)
+    _, True ->
+      case dict.get(map, run) {
+        Ok(canonical) -> #(out <> canonical, map, next)
+        Error(_) -> {
+          let canonical = "$" <> int.to_string(next)
+          #(out <> canonical, dict.insert(map, run, canonical), next + 1)
+        }
+      }
+  }
+}
+
+fn is_type_variable(run: String) -> Bool {
+  run != "fn" && run != "" && starts_lowercase(run)
+}
+
+fn starts_lowercase(run: String) -> Bool {
+  case string.first(run) {
+    Ok(c) -> string.lowercase(c) == c && string.uppercase(c) != c
+    Error(_) -> False
+  }
+}
+
+fn is_identifier_char(grapheme: String) -> Bool {
+  string.contains(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+    grapheme,
+  )
+}

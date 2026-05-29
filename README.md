@@ -37,10 +37,23 @@ double: fn(Int) -> Int
 ## Development
 
 ```sh
-gleam test   # run the test suite (the primary workflow for now)
+gleam test               # run the test suite (the primary workflow for now)
+gleam run -m glinter     # lint src/ (config under [tools.glinter] in gleam.toml)
+bash scripts/gen-oracle.sh  # regenerate the differential-testing fixtures
 ```
 
 Toolchain is pinned in `.tool-versions` (gleam 1.16.0, erlang 28.4.2).
+
+### Differential testing against the real compiler
+
+`test/oracle_test.gleam` checks girard's inferred top-level signatures against
+the *actual* Gleam compiler. For each `test/oracle/<name>.gleam`, `gleam export
+package-interface` produces a JSON of the compiler's inferred public interface
+(committed as `<name>.interface.json`); the test decodes that JSON into girard's
+own `Type`, renders it with girard's printer, and compares — modulo a canonical
+type-variable renaming. Regenerate the fixtures with `scripts/gen-oracle.sh`.
+This is the seed of the M5 fidelity harness (signature level today;
+per-expression once the compiler is patched to emit span→type).
 
 ## Architecture
 
