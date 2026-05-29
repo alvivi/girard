@@ -48,7 +48,7 @@ bash scripts/gen-oracle.sh  # regenerate the differential-testing fixtures
 The **package sweep** (`gleam run -m girard/sweep [package]`) runs girard over
 every module of an installed dependency and buckets each as fully typed or by
 error reason — a coverage report and a prioritised backlog of inference gaps.
-girard currently fully types all 19 `gleam_stdlib` modules.
+girard fully types every module of gleam_stdlib and of every other package swept so far (glance, glexer, gleam_json, tom, simplifile, filepath, gleam_time, gleeunit, glinter, ...).
 
 Toolchain is pinned in `.tool-versions` (gleam 1.16.0, erlang 28.4.2).
 
