@@ -82,10 +82,12 @@ pub type Env {
     /// Record field accessors: type name -> label -> a scheme for
     /// `fn(record) -> field`, generalized over the type's parameters.
     accessors: Dict(String, Dict(String, Scheme)),
-    /// In-scope type names -> (origin module, arity). Covers types defined in
-    /// the current module and types brought in by unqualified imports. Used
-    /// during hydration to resolve a bare type name to its module.
-    local_types: Dict(String, #(String, Int)),
+    /// In-scope type names -> (origin module, origin name, arity). Covers types
+    /// defined in the current module and types brought in by unqualified
+    /// imports. Used during hydration to resolve a bare type name to its module
+    /// and to the name it has *there* — an `import x.{type T as U}` is in scope
+    /// as `U` but must hydrate to `x`'s `T`, not a phantom `x.U`.
+    local_types: Dict(String, #(String, String, Int)),
     /// Field maps for callables (functions and constructors): name -> the
     /// label of each positional parameter (`None` where unlabelled). Used to
     /// reorder labelled and shorthand arguments at call/pattern sites.
@@ -110,7 +112,7 @@ pub type ModuleInterface {
   ModuleInterface(
     name: String,
     values: Dict(String, Scheme),
-    types: Dict(String, #(String, Int)),
+    types: Dict(String, #(String, String, Int)),
     /// Public type aliases, resolved to a type with the alias's parameters as
     /// variables (param ids + body).
     aliases: Dict(String, #(List(Int), Type)),
@@ -164,7 +166,11 @@ pub fn register_field_map(
 pub fn declare_type(env: Env, name: String, arity: Int) -> Env {
   Env(
     ..env,
-    local_types: dict.insert(env.local_types, name, #(env.current_module, arity)),
+    local_types: dict.insert(env.local_types, name, #(
+      env.current_module,
+      name,
+      arity,
+    )),
   )
 }
 
@@ -1887,8 +1893,8 @@ fn hydrate_with(
                 // prelude.
                 Error(_) ->
                   case dict.get(env.local_types, name) {
-                    Ok(#(origin, _arity)) -> #(
-                      #(Named(origin, name, arg_types), st),
+                    Ok(#(origin, origin_name, _arity)) -> #(
+                      #(Named(origin, origin_name, arg_types), st),
                       names,
                     )
                     Error(_) -> #(
@@ -1909,7 +1915,7 @@ fn hydrate_with(
                 )
                 Error(_) -> {
                   let origin = case dict.get(interface.types, name) {
-                    Ok(#(origin, _arity)) -> origin
+                    Ok(#(origin, _origin_name, _arity)) -> origin
                     Error(_) -> alias
                   }
                   #(#(Named(origin, name, arg_types), st), names)

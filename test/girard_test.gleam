@@ -612,6 +612,19 @@ pub fn qualified_imported_alias_test() {
   |> should.equal("fn(Id) -> Id")
 }
 
+pub fn renamed_type_import_test() {
+  // `import sock.{type Socket as Internal}` brings the type into scope as
+  // `Internal`, but it must hydrate to `sock`'s own `Socket`, not a phantom
+  // `sock.Internal`. Otherwise a value of the renamed type fails to unify with
+  // the same type named directly (glisten's `Socket` aliasing `InternalSocket`).
+  let sock = "pub type Socket\npub fn make() -> Socket { todo }"
+  let source =
+    "import sock.{type Socket as Internal}\n"
+    <> "pub fn use_it() -> Internal { sock.make() }"
+  signature_with(source, [#("sock", sock)], "use_it")
+  |> should.equal("fn() -> Socket")
+}
+
 pub fn transitive_import_test() {
   // `mid` re-exports a function that itself depends on `base`.
   let base = "pub fn inc(x: Int) -> Int { x + 1 }"
