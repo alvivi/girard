@@ -293,6 +293,16 @@ pub fn generic_field_access_test() {
   |> should.equal("fn(Box(a)) -> a")
 }
 
+pub fn record_update_unannotated_record_test() {
+  // `b` is unannotated, so its type is only fixed by the update's constructor;
+  // copying the kept `value` field must resolve through that binding.
+  let source =
+    "pub type Box(a) { Box(value: a, tag: String) }\n"
+    <> "pub fn retag(b, t) { Box(..b, tag: t) }"
+  signature(source, "retag")
+  |> should.equal("fn(Box(a), String) -> Box(a)")
+}
+
 pub fn record_update_changes_type_parameter_test() {
   // `Box(..b, value:)` replaces the only field using `a`, so the result type's
   // parameter changes (a -> c), like gleam_http's `set_body`.

@@ -666,7 +666,9 @@ fn field_type(
   record: Type,
   label: String,
 ) -> Result(#(Type, State), Error) {
-  use accessor_scheme <- result.try(accessor(env, record, label))
+  // Resolve through the substitution: a caller may pass a variable that has
+  // since been bound to the record type (e.g. record-update's kept fields).
+  use accessor_scheme <- result.try(accessor(env, resolve(st, record), label))
   let #(accessor_type, st) = instantiate(st, accessor_scheme)
   let #(field, st) = fresh(st)
   use st <- result.try(unify(st, accessor_type, Fn([record], field)))
