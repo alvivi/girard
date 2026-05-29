@@ -52,6 +52,11 @@ pub type State {
     /// Inferred type recorded for each annotated source span, in reverse order
     /// of discovery. Types are stored "live" and zonked at the end.
     annotations: List(#(glance.Span, Type)),
+    /// Field accesses whose record type was not yet known when encountered.
+    /// `#(record type, label, field type)` — resolved by `resolve_pending`
+    /// once inference has fixed the record type (deferred accessor resolution,
+    /// like the real compiler).
+    pending: List(#(Type, String, Type)),
   )
 }
 
@@ -96,7 +101,7 @@ pub type ModuleInterface {
 }
 
 fn new_state() -> State {
-  State(next_id: 0, subst: dict.new(), annotations: [])
+  State(next_id: 0, subst: dict.new(), annotations: [], pending: [])
 }
 
 fn new_env() -> Env {
@@ -535,8 +540,8 @@ fn infer_expr_inner(
     glance.FieldAccess(_, container, label) ->
       infer_field_access(env, st, container, label)
 
-    glance.RecordUpdate(_, _module, _constructor, record, fields) ->
-      infer_record_update(env, st, record, fields)
+    glance.RecordUpdate(_, module, constructor, record, fields) ->
+      infer_record_update(env, st, module, constructor, record, fields)
 
     glance.BitString(_, segments) -> {
       use st <- result.try(
@@ -589,15 +594,15 @@ fn infer_field_access(
     Error(_) -> {
       use #(container_type, st) <- result.try(infer_expr(env, st, container))
       case resolve(st, container_type) {
-        Named(_, type_name, _) -> {
-          use accessor_scheme <- result.try(accessor(env, type_name, label))
-          let #(accessor_type, st) = instantiate(st, accessor_scheme)
+        Named(_, _, _) as record -> {
+          use #(field, st) <- result.try(field_type(env, st, record, label))
+          Ok(#(field, st))
+        }
+        // The record type is not known yet; defer until inference fixes it.
+        Var(_) -> {
           let #(field, st) = fresh(st)
-          use st <- result.try(unify(
-            st,
-            accessor_type,
-            Fn([container_type], field),
-          ))
+          let st =
+            State(..st, pending: [#(container_type, label, field), ..st.pending])
           Ok(#(field, st))
         }
         _ -> Error(NotARecord)
@@ -606,15 +611,40 @@ fn infer_field_access(
   }
 }
 
+/// Resolve `record.label` for a known record type, returning the field type.
+fn field_type(
+  env: Env,
+  st: State,
+  record: Type,
+  label: String,
+) -> Result(#(Type, State), Error) {
+  use accessor_scheme <- result.try(accessor(env, record, label))
+  let #(accessor_type, st) = instantiate(st, accessor_scheme)
+  let #(field, st) = fresh(st)
+  use st <- result.try(unify(st, accessor_type, Fn([record], field)))
+  Ok(#(field, st))
+}
+
 fn infer_record_update(
   env: Env,
   st: State,
+  module: Option(String),
+  constructor: String,
   record: glance.Expression,
   fields: List(glance.RecordUpdateField(glance.Expression)),
 ) -> Result(#(Type, State), Error) {
-  use #(record_type, st) <- result.try(infer_expr(env, st, record))
+  // The updated type is determined by the constructor, so this works even when
+  // the record expression's own type is not yet known.
+  use scheme <- result.try(constructor_scheme(env, module, constructor))
+  let #(ctor_type, st) = instantiate(st, scheme)
+  let record_type = case ctor_type {
+    Fn(_, return) -> return
+    other -> other
+  }
+  use #(value_type, st) <- result.try(infer_expr(env, st, record))
+  use st <- result.try(unify(st, value_type, record_type))
   case resolve(st, record_type) {
-    Named(_, type_name, _) -> {
+    Named(_, _, _) as record -> {
       use st <- result.try(
         list.try_fold(fields, st, fn(st, field) {
           use #(value_type, st) <- result.try(case field.item {
@@ -626,19 +656,13 @@ fn infer_record_update(
                 Error(_) -> Error(UnboundVariable(field.label))
               }
           })
-          use accessor_scheme <- result.try(accessor(
+          use #(expected, st) <- result.try(field_type(
             env,
-            type_name,
+            st,
+            record,
             field.label,
           ))
-          let #(accessor_type, st) = instantiate(st, accessor_scheme)
-          let #(field_type, st) = fresh(st)
-          use st <- result.try(unify(
-            st,
-            accessor_type,
-            Fn([record_type], field_type),
-          ))
-          unify(st, value_type, field_type)
+          unify(st, value_type, expected)
         }),
       )
       Ok(#(record_type, st))
@@ -1271,6 +1295,7 @@ fn infer_pattern(
       use st <- result.try(unify(st, expected, ret))
       use arg_patterns <- result.try(order_pattern_args(
         env,
+        module,
         constructor,
         arguments,
         list.length(field_types),
@@ -1364,11 +1389,22 @@ fn segment_value_type(options: List(glance.BitStringSegmentOption(t))) -> Type {
 /// constructor's field map and filling positions omitted via `..` with discards.
 fn order_pattern_args(
   env: Env,
+  module: Option(String),
   constructor: String,
   arguments: List(glance.Field(glance.Pattern)),
   arity: Int,
 ) -> Result(List(glance.Pattern), Error) {
-  let labels = case dict.get(env.field_maps, constructor) {
+  // A qualified constructor pattern takes its field map from the module that
+  // defines the constructor, not the local environment.
+  let field_maps = case module {
+    Some(alias) ->
+      case dict.get(env.modules, alias) {
+        Ok(interface) -> interface.field_maps
+        Error(_) -> env.field_maps
+      }
+    None -> env.field_maps
+  }
+  let labels = case dict.get(field_maps, constructor) {
     Ok(labels) -> labels
     Error(_) -> []
   }
@@ -1699,18 +1735,91 @@ fn shared_accessors(
 }
 
 /// Look up the accessor scheme for `type_name`.`label`.
-fn accessor(
-  env: Env,
-  type_name: String,
-  label: String,
-) -> Result(Scheme, Error) {
-  case dict.get(env.accessors, type_name) {
-    Ok(labels) ->
-      case dict.get(labels, label) {
-        Ok(scheme) -> Ok(scheme)
-        Error(_) -> Error(NoSuchField(type_name, label))
+/// Look up the accessor scheme for `label` on a (resolved) record type. The
+/// accessors live with whichever module defined the type — the current module,
+/// or an imported one identified by the type's origin module.
+fn accessor(env: Env, record: Type, label: String) -> Result(Scheme, Error) {
+  case record {
+    Named(module, name, _) -> {
+      let accessors = accessors_of_module(env, module)
+      case dict.get(accessors, name) {
+        Ok(labels) ->
+          case dict.get(labels, label) {
+            Ok(scheme) -> Ok(scheme)
+            Error(_) -> Error(NoSuchField(name, label))
+          }
+        Error(_) -> Error(NoSuchField(name, label))
       }
-    Error(_) -> Error(NoSuchField(type_name, label))
+    }
+    _ -> Error(NotARecord)
+  }
+}
+
+fn accessors_of_module(
+  env: Env,
+  module: String,
+) -> Dict(String, Dict(String, Scheme)) {
+  case module == env.current_module {
+    True -> env.accessors
+    False ->
+      case list.find(dict.values(env.modules), fn(i) { i.name == module }) {
+        Ok(interface) -> interface.accessors
+        Error(_) -> env.accessors
+      }
+  }
+}
+
+/// Resolve field accesses that were deferred because the record type was
+/// unknown when first seen. By now inference has fixed the record types; any
+/// that are still unknown are genuinely ambiguous (the compiler rejects these
+/// too).
+pub fn resolve_pending(env: Env, st: State) -> Result(State, Error) {
+  // Process in discovery order so inner accesses of a chain (`a.b.c`) resolve
+  // before the outer ones, and loop to a fixpoint for any remaining cross
+  // dependencies. Anything still unresolved is genuinely ambiguous.
+  let pending = list.reverse(st.pending)
+  resolve_pending_loop(
+    env,
+    State(..st, pending: []),
+    pending,
+    list.length(pending),
+  )
+}
+
+fn resolve_pending_loop(
+  env: Env,
+  st: State,
+  pending: List(#(Type, String, Type)),
+  fuel: Int,
+) -> Result(State, Error) {
+  case pending {
+    [] -> Ok(st)
+    [#(_, label, _), ..] if fuel <= 0 -> Error(NoSuchField("_", label))
+    _ -> {
+      use #(st, remaining, progressed) <- result.try(
+        list.try_fold(pending, #(st, [], False), fn(acc, item) {
+          let #(st, remaining, progressed) = acc
+          let #(container, label, field) = item
+          case resolve(st, container) {
+            Named(_, _, _) as record -> {
+              use scheme <- result.try(accessor(env, record, label))
+              let #(accessor_type, st) = instantiate(st, scheme)
+              use st <- result.try(unify(
+                st,
+                accessor_type,
+                Fn([container], field),
+              ))
+              Ok(#(st, remaining, True))
+            }
+            _ -> Ok(#(st, [item, ..remaining], progressed))
+          }
+        }),
+      )
+      case progressed {
+        True -> resolve_pending_loop(env, st, list.reverse(remaining), fuel - 1)
+        False -> Error(NotARecord)
+      }
+    }
   }
 }
 

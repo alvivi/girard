@@ -437,6 +437,38 @@ pub fn inconsistent_variant_field_is_error_test() {
   let assert Error(infer.NoSuchField("Mix", "value")) = girard.annotate(source)
 }
 
+pub fn deferred_field_access_test() {
+  // `p` is accessed before the call that fixes its type to `P`; the field
+  // accesses are deferred and resolved once `p`'s type is known.
+  let source =
+    "pub type P { P(x: Int, y: Int) }\n"
+    <> "pub fn use_p(p: P) { p }\n"
+    // `p.x` is accessed before `use_p(p)` fixes `p`'s type to `P`.
+    <> "pub fn go(p) { let first = p.x\nuse_p(p) }"
+  signature(source, "go")
+  |> should.equal("fn(P) -> P")
+}
+
+pub fn chained_field_access_test() {
+  let source =
+    "pub type Span { Span(start: Int, end: Int) }\n"
+    <> "pub type Node { Node(span: Span) }\n"
+    <> "pub fn finish(n: Node) { n.span.end }"
+  signature(source, "finish")
+  |> should.equal("fn(Node) -> Int")
+}
+
+pub fn qualified_labelled_pattern_test() {
+  // Matching an imported constructor by label (with a spread) needs the field
+  // map from the imported module.
+  let ast = "pub type Node { Node(name: String, line: Int) }"
+  let source =
+    "import ast\n"
+    <> "pub fn name_of(n: ast.Node) { case n { ast.Node(name: nm, ..) -> nm } }"
+  signature_with(source, [#("ast", ast)], "name_of")
+  |> should.equal("fn(Node) -> String")
+}
+
 pub fn bidirectional_lambda_field_access_test() {
   // The lambda parameter `x` has no annotation; its type is only known from the
   // call's expected argument type. Bidirectional checking seeds it so `x.value`

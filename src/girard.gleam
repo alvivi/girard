@@ -204,6 +204,10 @@ fn infer_defs(
         infer.unify(st, var, inferred)
       }),
     )
+    // The component's bodies are fully inferred, so any field accesses deferred
+    // because their record type was unknown can now be resolved — before we
+    // generalize, so the field types are reflected in the schemes.
+    use st <- result.try(infer.resolve_pending(group_env, st))
     let env =
       list.fold(group_vars, env, fn(env, pair) {
         let #(def, var) = pair
