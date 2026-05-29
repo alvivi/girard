@@ -156,6 +156,7 @@ fn infer_module(
   let interface =
     infer.build_interface(
       final_env,
+      st,
       module_name,
       public_value_names(module),
       public_type_names(module),

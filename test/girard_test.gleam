@@ -571,6 +571,18 @@ pub fn module_and_value_share_name_test() {
   |> should.equal("fn() -> String")
 }
 
+pub fn alias_body_references_imported_type_test() {
+  // `mid.Pair`'s body uses a type `mid` imported from `base`. Resolving the
+  // alias must keep that type attributed to `base`, not the prelude (the bug
+  // behind lustre's `Json vs Json`).
+  let base = "pub type Colour { Red }"
+  let mid = "import base.{type Colour}\npub type Pair =\n  #(Colour, Colour)"
+  let source =
+    "import mid\nimport base\npub fn first(p: mid.Pair) -> base.Colour { p.0 }"
+  signature_with(source, [#("base", base), #("mid", mid)], "first")
+  |> should.equal("fn(#(Colour, Colour)) -> Colour")
+}
+
 pub fn qualified_imported_alias_test() {
   // `mid.Ref` is an alias for `base.Id` in another module; used qualified it
   // must expand to the same type (like birl's `duration.Duration`).

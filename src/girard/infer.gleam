@@ -72,9 +72,13 @@ pub type Env {
     /// Value bindings in scope: locals, parameters, top-level functions and
     /// custom-type constructors.
     values: Dict(String, Scheme),
-    /// Type aliases: name -> (parameter names, aliased type AST), expanded
-    /// during hydration.
+    /// Locally-defined type aliases: name -> (parameter names, aliased type
+    /// AST), expanded during hydration in this module's environment.
     aliases: Dict(String, #(List(String), glance.Type)),
+    /// Type aliases brought in by unqualified imports, already resolved to a
+    /// type with the alias's parameters as variables (param ids + body), so
+    /// they need no re-hydration in this module's environment.
+    imported_aliases: Dict(String, #(List(Int), Type)),
     /// Record field accessors: type name -> label -> a scheme for
     /// `fn(record) -> field`, generalized over the type's parameters.
     accessors: Dict(String, Dict(String, Scheme)),
@@ -101,7 +105,9 @@ pub type ModuleInterface {
     name: String,
     values: Dict(String, Scheme),
     types: Dict(String, #(String, Int)),
-    aliases: Dict(String, #(List(String), glance.Type)),
+    /// Public type aliases, resolved to a type with the alias's parameters as
+    /// variables (param ids + body).
+    aliases: Dict(String, #(List(Int), Type)),
     accessors: Dict(String, Dict(String, Scheme)),
     field_maps: Dict(String, List(Option(String))),
     /// The modules this one imports, so a type it exposes from another module
@@ -118,6 +124,7 @@ fn new_env() -> Env {
   Env(
     values: dict.new(),
     aliases: dict.new(),
+    imported_aliases: dict.new(),
     accessors: dict.new(),
     local_types: dict.new(),
     field_maps: dict.new(),
@@ -172,6 +179,13 @@ fn fresh_id(st: State) -> #(Int, State) {
 fn fresh(st: State) -> #(Type, State) {
   let #(id, st) = fresh_id(st)
   #(Var(id), st)
+}
+
+fn var_id(type_: Type) -> Int {
+  case type_ {
+    Var(id) -> id
+    _ -> 0
+  }
 }
 
 /// Public access to a fresh type variable for the driver in `girard.gleam`.
@@ -236,6 +250,7 @@ pub fn lookup(env: Env, name: String) -> Result(Scheme, Nil) {
 /// public values and types.
 pub fn build_interface(
   env: Env,
+  st: State,
   name: String,
   value_names: List(String),
   type_names: List(String),
@@ -244,11 +259,44 @@ pub fn build_interface(
     name: name,
     values: take(env.values, value_names),
     types: take(env.local_types, type_names),
-    aliases: take(env.aliases, type_names),
+    aliases: resolve_aliases(env, st, type_names),
     accessors: take(env.accessors, type_names),
     field_maps: take(env.field_maps, value_names),
     modules: env.modules,
   )
+}
+
+/// Resolve each named public alias to a concrete type, in this module's full
+/// environment, with the alias's parameters as variables. Resolving here (not
+/// when the alias is used elsewhere) keeps the bodies' type references — which
+/// may be imported into this module — correctly attributed.
+fn resolve_aliases(
+  env: Env,
+  st: State,
+  type_names: List(String),
+) -> Dict(String, #(List(Int), Type)) {
+  list.fold(type_names, #(dict.new(), st), fn(acc, name) {
+    let #(resolved, st) = acc
+    case dict.get(env.aliases, name) {
+      Error(_) -> #(resolved, st)
+      Ok(#(params, body)) -> {
+        let #(param_vars, st) = fresh_n(st, list.length(params))
+        let param_ids = list.map(param_vars, var_id)
+        let names = dict.from_list(list.zip(params, param_vars))
+        let #(type_, st) = hydrate_in(env, names, st, body)
+        #(dict.insert(resolved, name, #(param_ids, type_)), st)
+      }
+    }
+  }).0
+}
+
+/// Instantiate a resolved alias `#(param ids, body)` with concrete arguments.
+fn instantiate_alias(
+  params: List(Int),
+  body: Type,
+  arguments: List(Type),
+) -> Type {
+  substitute(dict.from_list(list.zip(params, arguments)), body)
 }
 
 fn take(d: Dict(String, v), keys: List(String)) -> Dict(String, v) {
@@ -258,21 +306,6 @@ fn take(d: Dict(String, v), keys: List(String)) -> Dict(String, v) {
       Error(_) -> acc
     }
   })
-}
-
-/// Reconstruct a minimal environment for an imported module, enough to hydrate
-/// a type it defines (e.g. expanding one of its aliases) with the same
-/// resolution it had at home.
-fn env_from_interface(interface: ModuleInterface) -> Env {
-  Env(
-    values: dict.new(),
-    aliases: interface.aliases,
-    accessors: interface.accessors,
-    local_types: interface.types,
-    field_maps: interface.field_maps,
-    current_module: interface.name,
-    modules: interface.modules,
-  )
 }
 
 /// Make a module available for qualified access (`alias.value`/`alias.Type`).
@@ -322,7 +355,11 @@ pub fn import_type(
     Error(_) -> env
   }
   let env = case dict.get(interface.aliases, original) {
-    Ok(alias) -> Env(..env, aliases: dict.insert(env.aliases, local, alias))
+    Ok(alias) ->
+      Env(
+        ..env,
+        imported_aliases: dict.insert(env.imported_aliases, local, alias),
+      )
     Error(_) -> env
   }
   case dict.get(interface.accessors, original) {
@@ -1682,44 +1719,46 @@ fn hydrate_with(
           #([t, ..types_], st, names)
         })
       let arg_types = list.reverse(arg_types)
-      // A local reference to a type alias is expanded to its definition.
-      case module, dict.get(env.aliases, name) {
-        None, Ok(#(params, aliased)) -> {
-          let alias_names = dict.from_list(list.zip(params, arg_types))
-          let #(#(t, st), _) = hydrate_with(env, alias_names, st, aliased)
-          #(#(t, st), names)
-        }
-        // A bare type name: resolve it to its origin module if known,
-        // otherwise assume it is a prelude type.
-        None, _ ->
-          case dict.get(env.local_types, name) {
-            Ok(#(origin, _arity)) -> #(
-              #(Named(origin, name, arg_types), st),
-              names,
-            )
-            Error(_) -> #(
-              #(Named(types.prelude_module, name, arg_types), st),
-              names,
-            )
+      case module {
+        None ->
+          case dict.get(env.aliases, name) {
+            // A local alias: expand its AST in this environment.
+            Ok(#(params, aliased)) -> {
+              let alias_names = dict.from_list(list.zip(params, arg_types))
+              let #(#(t, st), _) = hydrate_with(env, alias_names, st, aliased)
+              #(#(t, st), names)
+            }
+            Error(_) ->
+              case dict.get(env.imported_aliases, name) {
+                // An unqualified imported alias: already resolved.
+                Ok(#(params, body)) -> #(
+                  #(instantiate_alias(params, body, arg_types), st),
+                  names,
+                )
+                // Otherwise a named type: its origin module if known, else the
+                // prelude.
+                Error(_) ->
+                  case dict.get(env.local_types, name) {
+                    Ok(#(origin, _arity)) -> #(
+                      #(Named(origin, name, arg_types), st),
+                      names,
+                    )
+                    Error(_) -> #(
+                      #(Named(types.prelude_module, name, arg_types), st),
+                      names,
+                    )
+                  }
+              }
           }
         // A qualified type name `alias.Name`: resolve via the imported module.
-        Some(alias), _ ->
+        Some(alias) ->
           case dict.get(env.modules, alias) {
             Ok(interface) ->
               case dict.get(interface.aliases, name) {
-                // `Name` is a type alias in that module: expand it there, where
-                // its body's own type references resolve.
-                Ok(#(params, aliased)) -> {
-                  let alias_names = dict.from_list(list.zip(params, arg_types))
-                  let #(#(t, st), _) =
-                    hydrate_with(
-                      env_from_interface(interface),
-                      alias_names,
-                      st,
-                      aliased,
-                    )
-                  #(#(t, st), names)
-                }
+                Ok(#(params, body)) -> #(
+                  #(instantiate_alias(params, body, arg_types), st),
+                  names,
+                )
                 Error(_) -> {
                   let origin = case dict.get(interface.types, name) {
                     Ok(#(origin, _arity)) -> origin
