@@ -94,7 +94,10 @@ fn strong_connect(
 
 fn set_min_lowlink(state: Tarjan, node: String, candidate: Int) -> Tarjan {
   let current = get(state.lowlinks, node)
-  Tarjan(..state, lowlinks: dict.insert(state.lowlinks, node, int.min(current, candidate)))
+  Tarjan(
+    ..state,
+    lowlinks: dict.insert(state.lowlinks, node, int.min(current, candidate)),
+  )
 }
 
 fn pop_component(state: Tarjan, root: String, acc: List(String)) -> Tarjan {

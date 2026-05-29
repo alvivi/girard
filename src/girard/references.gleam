@@ -4,9 +4,9 @@
 //// Spurious edges can only merge components (reducing polymorphism in rare
 //// shadowing cases), never produce an incorrect type.
 
+import glance
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import glance
 
 /// All variable names referenced anywhere in a function body.
 pub fn in_function(function: glance.Function) -> List(String) {

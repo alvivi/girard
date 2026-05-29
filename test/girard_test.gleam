@@ -1,10 +1,10 @@
+import girard
+import girard/infer
 import gleam/dict
 import gleam/list
 import gleam/string
 import gleeunit
 import gleeunit/should
-import girard
-import girard/infer
 
 pub fn main() {
   gleeunit.main()
@@ -257,7 +257,8 @@ pub fn type_alias_test() {
 }
 
 pub fn parametric_alias_test() {
-  let source = "pub type Pair(a) = #(a, a)\npub fn mk(x: a) -> Pair(a) { #(x, x) }"
+  let source =
+    "pub type Pair(a) = #(a, a)\npub fn mk(x: a) -> Pair(a) { #(x, x) }"
   signature(source, "mk")
   |> should.equal("fn(a) -> #(a, a)")
 }
@@ -346,8 +347,7 @@ pub fn bit_array_string_segment_test() {
 }
 
 pub fn bit_array_pattern_test() {
-  let source =
-    "pub fn first_byte(b) { case b { <<x, _:bytes>> -> x\n_ -> 0 } }"
+  let source = "pub fn first_byte(b) { case b { <<x, _:bytes>> -> x\n_ -> 0 } }"
   signature(source, "first_byte")
   |> should.equal("fn(BitArray) -> Int")
 }
@@ -385,8 +385,7 @@ pub fn imported_type_and_constructor_test() {
 
 pub fn qualified_type_annotation_test() {
   let opt = "pub type Maybe(a) { Just(a)\nNothing }"
-  let source =
-    "import opt\npub fn wrap(x: a) -> opt.Maybe(a) { opt.Just(x) }"
+  let source = "import opt\npub fn wrap(x: a) -> opt.Maybe(a) { opt.Just(x) }"
   signature_with(source, [#("opt", opt)], "wrap")
   |> should.equal("fn(a) -> Maybe(a)")
 }
@@ -455,9 +454,7 @@ pub fn module_and_value_share_name_test() {
   // exists in scope (mirrors gleam/dynamic's `dynamic` constant + module).
   let m = "pub fn thing(x: Int) -> String { todo }"
   let source =
-    "import m\n"
-    <> "pub const m = 1\n"
-    <> "pub fn f() { m.thing(1) }"
+    "import m\n" <> "pub const m = 1\n" <> "pub fn f() { m.thing(1) }"
   signature_with(source, [#("m", m)], "f")
   |> should.equal("fn() -> String")
 }

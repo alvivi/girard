@@ -12,12 +12,12 @@
 //// Inference is total: anything that cannot be typed returns a `Result` with an
 //// `Error` rather than crashing.
 
+import girard/types.{type Scheme, type Type, Fn, Named, Scheme, Tuple, Var}
+import glance
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import glance
-import girard/types.{type Scheme, type Type, Fn, Named, Scheme, Tuple, Var}
 
 // --- Errors ----------------------------------------------------------------
 
@@ -245,7 +245,11 @@ fn take(d: Dict(String, v), keys: List(String)) -> Dict(String, v) {
 }
 
 /// Make a module available for qualified access (`alias.value`/`alias.Type`).
-pub fn import_qualified(env: Env, alias: String, interface: ModuleInterface) -> Env {
+pub fn import_qualified(
+  env: Env,
+  alias: String,
+  interface: ModuleInterface,
+) -> Env {
   Env(..env, modules: dict.insert(env.modules, alias, interface))
 }
 
@@ -275,7 +279,8 @@ pub fn import_type(
   original: String,
 ) -> Env {
   let env = case dict.get(interface.types, original) {
-    Ok(info) -> Env(..env, local_types: dict.insert(env.local_types, local, info))
+    Ok(info) ->
+      Env(..env, local_types: dict.insert(env.local_types, local, info))
     Error(_) -> env
   }
   let env = case dict.get(interface.aliases, original) {
@@ -327,9 +332,10 @@ fn free_vars_loop(type_: Type, acc: List(Int)) -> List(Int) {
       }
     Named(_, _, args) -> list.fold(args, acc, fn(a, t) { free_vars_loop(t, a) })
     Fn(args, ret) ->
-      free_vars_loop(ret, list.fold(args, acc, fn(a, t) {
-        free_vars_loop(t, a)
-      }))
+      free_vars_loop(
+        ret,
+        list.fold(args, acc, fn(a, t) { free_vars_loop(t, a) }),
+      )
     Tuple(elements) ->
       list.fold(elements, acc, fn(a, t) { free_vars_loop(t, a) })
   }
@@ -504,8 +510,7 @@ fn infer_expr_inner(
 
     glance.Block(_, statements) -> infer_statements(env, st, statements)
 
-    glance.Case(_, subjects, clauses) ->
-      infer_case(env, st, subjects, clauses)
+    glance.Case(_, subjects, clauses) -> infer_case(env, st, subjects, clauses)
 
     glance.TupleIndex(_, tuple, index) -> {
       use #(t, st) <- result.try(infer_expr(env, st, tuple))
@@ -537,7 +542,12 @@ fn infer_expr_inner(
       use st <- result.try(
         list.try_fold(segments, st, fn(st, segment) {
           let #(value, options) = segment
-          use st <- result.try(check(env, st, value, segment_value_type(options)))
+          use st <- result.try(check(
+            env,
+            st,
+            value,
+            segment_value_type(options),
+          ))
           list.try_fold(options, st, fn(st, option) {
             case option {
               glance.SizeValueOption(size) -> check(env, st, size, types.int())
@@ -583,7 +593,11 @@ fn infer_field_access(
           use accessor_scheme <- result.try(accessor(env, type_name, label))
           let #(accessor_type, st) = instantiate(st, accessor_scheme)
           let #(field, st) = fresh(st)
-          use st <- result.try(unify(st, accessor_type, Fn([container_type], field)))
+          use st <- result.try(unify(
+            st,
+            accessor_type,
+            Fn([container_type], field),
+          ))
           Ok(#(field, st))
         }
         _ -> Error(NotARecord)
@@ -612,10 +626,18 @@ fn infer_record_update(
                 Error(_) -> Error(UnboundVariable(field.label))
               }
           })
-          use accessor_scheme <- result.try(accessor(env, type_name, field.label))
+          use accessor_scheme <- result.try(accessor(
+            env,
+            type_name,
+            field.label,
+          ))
           let #(accessor_type, st) = instantiate(st, accessor_scheme)
           let #(field_type, st) = fresh(st)
-          use st <- result.try(unify(st, accessor_type, Fn([record_type], field_type)))
+          use st <- result.try(unify(
+            st,
+            accessor_type,
+            Fn([record_type], field_type),
+          ))
           unify(st, value_type, field_type)
         }),
       )
@@ -665,27 +687,23 @@ fn infer_lambda(
   expected_return: Option(Type),
 ) -> Result(#(Type, State), Error) {
   use #(rev_param_types, body_env, st) <- result.try(
-    list.try_fold(
-      list.zip(params, seed_params),
-      #([], env, st),
-      fn(acc, pair) {
-        let #(types_, env, st) = acc
-        let #(param, seed) = pair
-        use #(t, st) <- result.try(case param.type_ {
-          Some(ann) -> {
-            let #(annotated, st) = hydrate(env, st, ann)
-            use st <- result.try(unify(st, annotated, seed))
-            Ok(#(seed, st))
-          }
-          None -> Ok(#(seed, st))
-        })
-        let env = case param.name {
-          glance.Named(name) -> bind_value(env, name, Scheme([], t))
-          glance.Discarded(_) -> env
+    list.try_fold(list.zip(params, seed_params), #([], env, st), fn(acc, pair) {
+      let #(types_, env, st) = acc
+      let #(param, seed) = pair
+      use #(t, st) <- result.try(case param.type_ {
+        Some(ann) -> {
+          let #(annotated, st) = hydrate(env, st, ann)
+          use st <- result.try(unify(st, annotated, seed))
+          Ok(#(seed, st))
         }
-        Ok(#([t, ..types_], env, st))
-      },
-    ),
+        None -> Ok(#(seed, st))
+      })
+      let env = case param.name {
+        glance.Named(name) -> bind_value(env, name, Scheme([], t))
+        glance.Discarded(_) -> env
+      }
+      Ok(#([t, ..types_], env, st))
+    }),
   )
   let param_types = list.reverse(rev_param_types)
   use #(body_type, st) <- result.try(infer_statements(body_env, st, body))
@@ -834,7 +852,9 @@ fn reorder(
       }
     })
   let free =
-    list.filter(indices(list.length(labels)), fn(i) { !dict.has_key(labelled, i) })
+    list.filter(indices(list.length(labels)), fn(i) {
+      !dict.has_key(labelled, i)
+    })
   let placed =
     list.fold(list.zip(free, positional), labelled, fn(placed, pair) {
       dict.insert(placed, pair.0, pair.1)
@@ -847,7 +867,10 @@ fn reorder(
   })
 }
 
-fn label_index(index_of: Dict(String, Int), label: String) -> Result(Int, Error) {
+fn label_index(
+  index_of: Dict(String, Int),
+  label: String,
+) -> Result(Int, Error) {
   case dict.get(index_of, label) {
     Ok(index) -> Ok(index)
     Error(_) -> Error(UnknownLabel(label))
@@ -866,12 +889,16 @@ fn infer_capture(
   // `f(a, _, b)` becomes `fn(x) { f(a, x, b) }`.
   let #(hole, st) = fresh(st)
   use #(fn_type, st) <- result.try(infer_expr(env, st, function))
-  use #(before_types, st) <- result.try(
-    infer_each(env, st, list.map(before, field_item)),
-  )
-  use #(after_types, st) <- result.try(
-    infer_each(env, st, list.map(after, field_item)),
-  )
+  use #(before_types, st) <- result.try(infer_each(
+    env,
+    st,
+    list.map(before, field_item),
+  ))
+  use #(after_types, st) <- result.try(infer_each(
+    env,
+    st,
+    list.map(after, field_item),
+  ))
   let arg_types = list.flatten([before_types, [hole], after_types])
   let #(result, st) = fresh(st)
   use st <- result.try(unify(st, fn_type, Fn(arg_types, result)))
@@ -1047,9 +1074,12 @@ fn infer_use(
         Some(ann) -> hydrate(env, st, ann)
         None -> fresh(st)
       }
-      use #(env, st) <- result.try(
-        infer_pattern(env, st, use_pattern.pattern, param),
-      )
+      use #(env, st) <- result.try(infer_pattern(
+        env,
+        st,
+        use_pattern.pattern,
+        param,
+      ))
       Ok(#([param, ..types_], env, st))
     }),
   )
@@ -1069,7 +1099,11 @@ fn infer_use(
         }),
       )
       use #(arg_types, st) <- result.try(infer_each(env, st, ordered))
-      unify(st, callee_type, Fn(list.append(arg_types, [callback_type]), result))
+      unify(
+        st,
+        callee_type,
+        Fn(list.append(arg_types, [callback_type]), result),
+      )
     }
     other -> {
       use #(callee_type, st) <- result.try(infer_expr(env, st, other))
@@ -1144,11 +1178,15 @@ fn infer_clause(
   // binds the same variables and is checked against the subject types.
   list.try_fold(clause.patterns, st, fn(st, patterns) {
     use #(clause_env, st) <- result.try(
-      list.try_fold(list.zip(patterns, subject_types), #(env, st), fn(acc, pair) {
-        let #(env, st) = acc
-        let #(pattern, subject) = pair
-        infer_pattern(env, st, pattern, subject)
-      }),
+      list.try_fold(
+        list.zip(patterns, subject_types),
+        #(env, st),
+        fn(acc, pair) {
+          let #(env, st) = acc
+          let #(pattern, subject) = pair
+          infer_pattern(env, st, pattern, subject)
+        },
+      ),
     )
     use st <- result.try(case clause.guard {
       Some(guard) -> check(clause_env, st, guard, types.bool())
@@ -1170,7 +1208,8 @@ fn infer_pattern(
   case pattern {
     glance.PatternInt(..) -> with_env(env, unify(st, expected, types.int()))
     glance.PatternFloat(..) -> with_env(env, unify(st, expected, types.float()))
-    glance.PatternString(..) -> with_env(env, unify(st, expected, types.string()))
+    glance.PatternString(..) ->
+      with_env(env, unify(st, expected, types.string()))
     glance.PatternDiscard(..) -> Ok(#(env, st))
 
     glance.PatternVariable(_, name) ->
@@ -1230,14 +1269,21 @@ fn infer_pattern(
         other -> #([], other)
       }
       use st <- result.try(unify(st, expected, ret))
-      use arg_patterns <- result.try(
-        order_pattern_args(env, constructor, arguments, list.length(field_types)),
+      use arg_patterns <- result.try(order_pattern_args(
+        env,
+        constructor,
+        arguments,
+        list.length(field_types),
+      ))
+      list.try_fold(
+        list.zip(arg_patterns, field_types),
+        #(env, st),
+        fn(acc, pair) {
+          let #(env, st) = acc
+          let #(pattern, t) = pair
+          infer_pattern(env, st, pattern, t)
+        },
       )
-      list.try_fold(list.zip(arg_patterns, field_types), #(env, st), fn(acc, pair) {
-        let #(env, st) = acc
-        let #(pattern, t) = pair
-        infer_pattern(env, st, pattern, t)
-      })
     }
 
     glance.PatternBitString(_, segments) -> {
@@ -1245,9 +1291,12 @@ fn infer_pattern(
       list.try_fold(segments, #(env, st), fn(acc, segment) {
         let #(env, st) = acc
         let #(pattern, options) = segment
-        use #(env, st) <- result.try(
-          infer_pattern(env, st, pattern, segment_value_type(options)),
-        )
+        use #(env, st) <- result.try(infer_pattern(
+          env,
+          st,
+          pattern,
+          segment_value_type(options),
+        ))
         list.try_fold(options, #(env, st), fn(acc, option) {
           let #(env, st) = acc
           case option {
@@ -1262,7 +1311,10 @@ fn infer_pattern(
 }
 
 /// Pair a (possibly failed) new state with an unchanged environment.
-fn with_env(env: Env, st: Result(State, Error)) -> Result(#(Env, State), Error) {
+fn with_env(
+  env: Env,
+  st: Result(State, Error),
+) -> Result(#(Env, State), Error) {
   result.map(st, fn(st) { #(env, st) })
 }
 
@@ -1337,11 +1389,7 @@ fn order_pattern_args(
         }
         glance.ShorthandField(label, location) -> {
           use index <- result.try(label_index(index_of, label))
-          Ok(dict.insert(
-            placed,
-            index,
-            glance.PatternVariable(location, label),
-          ))
+          Ok(dict.insert(placed, index, glance.PatternVariable(location, label)))
         }
       }
     }),
@@ -1416,7 +1464,10 @@ fn hydrate_with(
         // otherwise assume it is a prelude type.
         None, _ ->
           case dict.get(env.local_types, name) {
-            Ok(#(origin, _arity)) -> #(#(Named(origin, name, arg_types), st), names)
+            Ok(#(origin, _arity)) -> #(
+              #(Named(origin, name, arg_types), st),
+              names,
+            )
             Error(_) -> #(
               #(Named(types.prelude_module, name, arg_types), st),
               names,
@@ -1515,9 +1566,11 @@ pub fn infer_function(
       Ok(#(Fn(param_types, return_type), st))
     }
     _ -> {
-      use #(body_type, st) <- result.try(
-        infer_statements(body_env, st, function.body),
-      )
+      use #(body_type, st) <- result.try(infer_statements(
+        body_env,
+        st,
+        function.body,
+      ))
       use st <- result.try(case function.return {
         Some(ann) -> {
           let #(t, st, _names) = hydrate_threaded(env, names, st, ann)
@@ -1556,7 +1609,8 @@ pub fn register_custom_type(
   custom_type: glance.CustomType,
 ) -> #(Env, State) {
   // Record the type as local first so its own fields can refer to it.
-  let env = declare_type(env, custom_type.name, list.length(custom_type.parameters))
+  let env =
+    declare_type(env, custom_type.name, list.length(custom_type.parameters))
   let #(rev_param_ids, st) =
     list.fold(custom_type.parameters, #([], st), fn(acc, _name) {
       let #(ids, st) = acc
@@ -1590,12 +1644,16 @@ pub fn register_custom_type(
         _ -> Fn(field_types, return_type)
       }
       let env =
-        register_field_map(env, variant.name, list.map(variant.fields, fn(f) {
-          case f {
-            glance.LabelledVariantField(_, label) -> Some(label)
-            glance.UnlabelledVariantField(..) -> None
-          }
-        }))
+        register_field_map(
+          env,
+          variant.name,
+          list.map(variant.fields, fn(f) {
+            case f {
+              glance.LabelledVariantField(_, label) -> Some(label)
+              glance.UnlabelledVariantField(..) -> None
+            }
+          }),
+        )
       let env = bind_value(env, variant.name, Scheme(param_ids, ctor_type))
       #(env, st, [labelled, ..variant_labels])
     })
@@ -1605,7 +1663,10 @@ pub fn register_custom_type(
   let accessors =
     shared_accessors(list.reverse(rev_variant_labels), param_ids, return_type)
   let env =
-    Env(..env, accessors: dict.insert(env.accessors, custom_type.name, accessors))
+    Env(
+      ..env,
+      accessors: dict.insert(env.accessors, custom_type.name, accessors),
+    )
   #(env, st)
 }
 
@@ -1638,7 +1699,11 @@ fn shared_accessors(
 }
 
 /// Look up the accessor scheme for `type_name`.`label`.
-fn accessor(env: Env, type_name: String, label: String) -> Result(Scheme, Error) {
+fn accessor(
+  env: Env,
+  type_name: String,
+  label: String,
+) -> Result(Scheme, Error) {
   case dict.get(env.accessors, type_name) {
     Ok(labels) ->
       case dict.get(labels, label) {

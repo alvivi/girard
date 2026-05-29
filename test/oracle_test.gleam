@@ -8,6 +8,9 @@
 //// (the compiler numbers variables per signature; girard shares a naming
 //// context across a module — both are correct, just different spellings).
 
+import girard
+import girard/printer
+import girard/types.{type Type, Fn, Named, Tuple, Var}
 import gleam/dict
 import gleam/dynamic/decode.{type Decoder}
 import gleam/int
@@ -15,9 +18,6 @@ import gleam/json
 import gleam/list
 import gleam/string
 import simplifile
-import girard
-import girard/printer
-import girard/types.{type Type, Fn, Named, Tuple, Var}
 
 pub fn signatures_match_compiler_test() {
   let assert Ok(entries) = simplifile.read_directory("oracle")
@@ -77,7 +77,9 @@ fn check(name: String, ours: String, theirs: Type) -> Nil {
 
 // --- Decoding the compiler's package-interface JSON ------------------------
 
-fn module_decoder() -> Decoder(#(dict.Dict(String, Type), dict.Dict(String, Type))) {
+fn module_decoder() -> Decoder(
+  #(dict.Dict(String, Type), dict.Dict(String, Type)),
+) {
   use functions <- decode.field(
     "functions",
     decode.dict(decode.string, function_decoder()),

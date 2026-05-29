@@ -11,6 +11,7 @@
 //// imports are resolved from `build/packages` too.
 
 import argv
+import girard
 import gleam/dict
 import gleam/int
 import gleam/io
@@ -18,7 +19,6 @@ import gleam/list
 import gleam/option
 import gleam/string
 import simplifile
-import girard
 
 pub fn main() -> Nil {
   let package = case argv.load().arguments {
@@ -88,9 +88,7 @@ fn report(package: String, outcomes: List(#(String, String))) -> Nil {
       |> dict.to_list
       |> list.sort(fn(a, b) { int.compare(b.1, a.1) })
       |> list.each(fn(entry) {
-        io.println(
-          "    " <> int.to_string(entry.1) <> "  " <> entry.0,
-        )
+        io.println("    " <> int.to_string(entry.1) <> "  " <> entry.0)
       })
     }
   }

@@ -3,11 +3,11 @@
 //// variables are named `a`, `b`, `c`, ... consistently within a `Names`
 //// context, mirroring the compiler's `type_/printer.rs`.
 
+import girard/types.{type Type, Fn, Named, Tuple, Var}
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/string
-import girard/types.{type Type, Fn, Named, Tuple, Var}
 
 pub type Names {
   Names(map: Dict(Int, String), next: Int)

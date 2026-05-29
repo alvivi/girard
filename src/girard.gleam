@@ -8,6 +8,12 @@
 //// their public interfaces. Inference is total: `annotate` returns a `Result`
 //// describing why a module could not be typed rather than crashing.
 
+import girard/infer.{type ModuleInterface}
+import girard/printer
+import girard/references
+import girard/scc
+import girard/types.{type Scheme, type Type, Scheme}
+import glance
 import gleam/dict
 import gleam/int
 import gleam/list
@@ -16,13 +22,7 @@ import gleam/order
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
-import glance
 import simplifile
-import girard/infer.{type ModuleInterface}
-import girard/printer
-import girard/references
-import girard/scc
-import girard/types.{type Scheme, type Type, Scheme}
 
 /// Why a module could not be typed (re-exported from `girard/infer`).
 pub type Error =
@@ -91,9 +91,12 @@ pub fn annotate_with(
   resolver: Resolver,
 ) -> Result(Annotated, Error) {
   use module <- result.try(parse(source))
-  use #(#(env, st), _interface) <- result.try(
-    infer_module(resolver, set.new(), "", module),
-  )
+  use #(#(env, st), _interface) <- result.try(infer_module(
+    resolver,
+    set.new(),
+    "",
+    module,
+  ))
   Ok(render(module, env, st))
 }
 
@@ -133,14 +136,18 @@ fn infer_module(
   let env =
     list.fold(module.functions, env, fn(env, d) {
       let f = d.definition
-      infer.register_field_map(env, f.name, list.map(f.parameters, fn(p) {
-        p.label
-      }))
+      infer.register_field_map(
+        env,
+        f.name,
+        list.map(f.parameters, fn(p) { p.label }),
+      )
     })
 
   // 3. Infer definitions in strongly-connected-component order.
-  let functions = list.map(module.functions, fn(d) { FunctionDef(d.definition) })
-  let constants = list.map(module.constants, fn(d) { ConstantDef(d.definition) })
+  let functions =
+    list.map(module.functions, fn(d) { FunctionDef(d.definition) })
+  let constants =
+    list.map(module.constants, fn(d) { ConstantDef(d.definition) })
   let defs = list.append(functions, constants)
   use #(final_env, st) <- result.try(infer_defs(env, st, defs))
 
@@ -221,9 +228,11 @@ fn process_imports(
       // Cyclic import: break the cycle by skipping.
       True -> Ok(env)
       False -> {
-        use maybe_interface <- result.try(
-          resolve_interface(resolver, loading, path),
-        )
+        use maybe_interface <- result.try(resolve_interface(
+          resolver,
+          loading,
+          path,
+        ))
         case maybe_interface {
           // Unresolvable or unparsable: best effort, skip (uses of it surface
           // later as unbound variables).
@@ -268,9 +277,12 @@ fn resolve_interface(
       case glance.module(source) {
         Error(_) -> Ok(None)
         Ok(module) -> {
-          use #(_, interface) <- result.try(
-            infer_module(resolver, set.insert(loading, path), path, module),
-          )
+          use #(_, interface) <- result.try(infer_module(
+            resolver,
+            set.insert(loading, path),
+            path,
+            module,
+          ))
           Ok(Some(interface))
         }
       }
@@ -368,8 +380,10 @@ fn first_readable(paths: List(String)) -> Result(String, Nil) {
 // --- Rendering -------------------------------------------------------------
 
 fn render(module: glance.Module, env: infer.Env, st: infer.State) -> Annotated {
-  let functions = list.map(module.functions, fn(d) { FunctionDef(d.definition) })
-  let constants = list.map(module.constants, fn(d) { ConstantDef(d.definition) })
+  let functions =
+    list.map(module.functions, fn(d) { FunctionDef(d.definition) })
+  let constants =
+    list.map(module.constants, fn(d) { ConstantDef(d.definition) })
 
   let printer_names = printer.new_names()
   let #(signatures, printer_names) =
@@ -446,7 +460,10 @@ pub fn format(source: String) -> String {
 pub fn describe_error(error: Error) -> String {
   case error {
     infer.TypeMismatch(a, b) ->
-      "type mismatch: " <> printer.to_string(a) <> " vs " <> printer.to_string(b)
+      "type mismatch: "
+      <> printer.to_string(a)
+      <> " vs "
+      <> printer.to_string(b)
     infer.ArityMismatch -> "wrong number of arguments"
     infer.RecursiveType(_, type_) ->
       "recursive type: " <> printer.to_string(type_)
@@ -473,7 +490,10 @@ fn parse(source: String) -> Result(glance.Module, Error) {
   glance.module(source) |> result.map_error(infer.ParseFailed)
 }
 
-fn print_scheme(names: printer.Names, scheme: Scheme) -> #(String, printer.Names) {
+fn print_scheme(
+  names: printer.Names,
+  scheme: Scheme,
+) -> #(String, printer.Names) {
   printer.print(names, scheme.type_)
 }
 
