@@ -1264,29 +1264,67 @@ fn infer_capture(
   env: Env,
   st: State,
   span: glance.Span,
-  _label: Option(String),
+  label: Option(String),
   function: glance.Expression,
   before: List(glance.Field(glance.Expression)),
   after: List(glance.Field(glance.Expression)),
 ) -> Result(#(Type, State), Error) {
-  // `f(a, _, b)` becomes `fn(x) { f(a, x, b) }`.
+  // `f(a, _, b)` becomes `fn(x) { f(a, x, b) }`. The hole and the surrounding
+  // arguments are reordered into the callee's positional order exactly as a
+  // direct call would be — labels (including the hole's own, `value: _`) move
+  // each argument to its declared slot, so a labelled hole lands in the right
+  // parameter even when it is written out of order.
   let #(hole, st) = fresh(st)
   use #(fn_type, st) <- result.try(infer_expr(env, st, function))
-  use #(before_types, st) <- result.try(infer_each(
-    env,
-    st,
-    list.map(before, field_item),
-  ))
-  use #(after_types, st) <- result.try(infer_each(
-    env,
-    st,
-    list.map(after, field_item),
-  ))
-  let arg_types = list.flatten([before_types, [hole], after_types])
+  use #(before_typed, st) <- result.try(infer_fields_typed(env, st, before))
+  use #(after_typed, st) <- result.try(infer_fields_typed(env, st, after))
+  let hole_field = case label {
+    Some(name) -> glance.LabelledField(name, span, hole)
+    None -> glance.UnlabelledField(hole)
+  }
+  let fields = list.flatten([before_typed, [hole_field], after_typed])
+  // Fields are already typed, so the shorthand materializer is never invoked.
+  use arg_types <- result.try(
+    order_fields(env, function, fields, fn(_, _) { hole }),
+  )
   let #(result, st) = fresh(st)
   use st <- result.try(unify(st, fn_type, Fn(arg_types, result)))
   let captured = Fn([hole], result)
   Ok(#(captured, record(st, span, captured)))
+}
+
+/// Infer each call field's value, keeping its label so the arguments can be
+/// reordered into positional order. Shorthand fields (`label:`) are resolved to
+/// the in-scope `label` and recorded as labelled.
+fn infer_fields_typed(
+  env: Env,
+  st: State,
+  fields: List(glance.Field(glance.Expression)),
+) -> Result(#(List(glance.Field(Type)), State), Error) {
+  use #(rev, st) <- result.try(
+    list.try_fold(fields, #([], st), fn(acc, field) {
+      let #(typed, st) = acc
+      case field {
+        glance.UnlabelledField(item) -> {
+          use #(t, st) <- result.try(infer_expr(env, st, item))
+          Ok(#([glance.UnlabelledField(t), ..typed], st))
+        }
+        glance.LabelledField(label, location, item) -> {
+          use #(t, st) <- result.try(infer_expr(env, st, item))
+          Ok(#([glance.LabelledField(label, location, t), ..typed], st))
+        }
+        glance.ShorthandField(label, location) -> {
+          use #(t, st) <- result.try(infer_expr(
+            env,
+            st,
+            glance.Variable(location, label),
+          ))
+          Ok(#([glance.LabelledField(label, location, t), ..typed], st))
+        }
+      }
+    }),
+  )
+  Ok(#(list.reverse(rev), st))
 }
 
 fn infer_binop(

@@ -197,6 +197,18 @@ pub fn capture_test() {
   |> should.equal("fn() -> fn(Int) -> Int")
 }
 
+pub fn labelled_capture_test() {
+  // A labelled capture hole (`z: _`) written out of declared order must land in
+  // its labelled parameter, not its source position. Here the hole is `z`
+  // (Float) though it appears where `y` (String) sits positionally — mirrors
+  // squirrel's `QueryFileHasInvalidName(file:, reason: _, suggested_name:)`.
+  let source =
+    "pub type R {\n  R(x: Int, y: String, z: Float)\n}\n"
+    <> "pub fn make() { R(x: 1, z: _, y: \"a\") }"
+  signature(source, "make")
+  |> should.equal("fn() -> fn(Float) -> R")
+}
+
 // --- Custom types ----------------------------------------------------------
 
 pub fn custom_type_unbox_test() {
