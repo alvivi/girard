@@ -437,6 +437,16 @@ pub fn inconsistent_variant_field_is_error_test() {
   let assert Error(infer.NoSuchField("Mix", "value")) = girard.annotate(source)
 }
 
+pub fn use_with_labelled_callback_test() {
+  // `use <- guard(when:, return:)` — the callback fills the trailing
+  // `otherwise` slot even though the explicit args are labelled.
+  let m =
+    "pub fn guard(when req: Bool, return cons: a, otherwise alt: fn() -> a) -> a { cons }"
+  let source = "import m\npub fn f(c) { use <- m.guard(when: c, return: 0)\n1 }"
+  signature_with(source, [#("m", m)], "f")
+  |> should.equal("fn(Bool) -> Int")
+}
+
 pub fn deferred_field_access_test() {
   // `p` is accessed before the call that fixes its type to `P`; the field
   // accesses are deferred and resolved once `p`'s type is known.

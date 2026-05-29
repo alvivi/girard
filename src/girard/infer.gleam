@@ -813,23 +813,38 @@ fn order_fields(
           }
         }),
       )
-    False -> {
-      let labels = case callee {
-        glance.Variable(_, name) -> dict.get(env.field_maps, name)
-        // Qualified call `module.fn`: take the field map from the module.
-        glance.FieldAccess(_, glance.Variable(_, alias), name) ->
-          case dict.get(env.modules, alias) {
-            Ok(interface) -> dict.get(interface.field_maps, name)
-            Error(_) -> dict.get(env.field_maps, name)
-          }
-        _ -> Error(Nil)
-      }
-      case labels {
+    False ->
+      case callee_labels(env, callee) {
         Ok(labels) -> reorder(fields, labels, shorthand)
         Error(_) -> Error(AmbiguousCall)
       }
-    }
   }
+}
+
+/// The field map (per-position labels) of a call's callee, if known.
+fn callee_labels(
+  env: Env,
+  callee: glance.Expression,
+) -> Result(List(Option(String)), Nil) {
+  case callee {
+    glance.Variable(_, name) -> dict.get(env.field_maps, name)
+    // Qualified call `module.fn`: take the field map from the module.
+    glance.FieldAccess(_, glance.Variable(_, alias), name) ->
+      case dict.get(env.modules, alias) {
+        Ok(interface) -> dict.get(interface.field_maps, name)
+        Error(_) -> dict.get(env.field_maps, name)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+fn label_indices(labels: List(Option(String))) -> Dict(String, Int) {
+  list.index_fold(labels, dict.new(), fn(acc, label, index) {
+    case label {
+      Some(name) -> dict.insert(acc, name, index)
+      None -> acc
+    }
+  })
 }
 
 fn is_unlabelled(field: glance.Field(t)) -> Bool {
@@ -844,13 +859,7 @@ fn reorder(
   labels: List(Option(String)),
   shorthand: fn(String, glance.Span) -> t,
 ) -> Result(List(t), Error) {
-  let index_of =
-    list.index_fold(labels, dict.new(), fn(acc, label, index) {
-      case label {
-        Some(name) -> dict.insert(acc, name, index)
-        None -> acc
-      }
-    })
+  let index_of = label_indices(labels)
   // Labelled and shorthand arguments are placed at their declared index;
   // positional arguments then fill the remaining positions in order.
   use labelled <- result.try(
@@ -1111,30 +1120,95 @@ fn infer_use(
   use #(body_type, st) <- result.try(infer_statements(callback_env, st, rest))
   let callback_type = Fn(param_types, body_type)
 
-  // The right-hand side is called with the callback appended as its last
-  // argument.
+  // The right-hand side is called with the callback as its final argument.
   let #(result, st) = fresh(st)
   use st <- result.try(case function {
-    glance.Call(_, callee, arguments) -> {
-      use #(callee_type, st) <- result.try(infer_expr(env, st, callee))
-      use ordered <- result.try(
-        order_fields(env, callee, arguments, fn(label, location) {
-          glance.Variable(location, label)
-        }),
-      )
-      use #(arg_types, st) <- result.try(infer_each(env, st, ordered))
-      unify(
-        st,
-        callee_type,
-        Fn(list.append(arg_types, [callback_type]), result),
-      )
-    }
+    glance.Call(_, callee, arguments) ->
+      infer_use_call(env, st, callee, arguments, callback_type, result)
     other -> {
       use #(callee_type, st) <- result.try(infer_expr(env, st, other))
       unify(st, callee_type, Fn([callback_type], result))
     }
   })
   Ok(#(result, st))
+}
+
+/// Infer `use ... <- callee(args)`: the callback is the final positional
+/// argument. When the explicit arguments are all positional we simply append
+/// the callback; when some are labelled we place them by their field map and
+/// the callback fills the remaining slot (e.g. the `otherwise` of `bool.guard`).
+fn infer_use_call(
+  env: Env,
+  st: State,
+  callee: glance.Expression,
+  arguments: List(glance.Field(glance.Expression)),
+  callback_type: Type,
+  result: Type,
+) -> Result(State, Error) {
+  use #(callee_type, st) <- result.try(infer_expr(env, st, callee))
+  case list.all(arguments, is_unlabelled) {
+    True -> {
+      use #(arg_types, st) <- result.try(infer_each(
+        env,
+        st,
+        list.map(arguments, field_item),
+      ))
+      unify(
+        st,
+        callee_type,
+        Fn(list.append(arg_types, [callback_type]), result),
+      )
+    }
+    False -> {
+      use labels <- result.try(result.replace_error(
+        callee_labels(env, callee),
+        AmbiguousCall,
+      ))
+      let index_of = label_indices(labels)
+      // Infer the explicit arguments, splitting labelled (placed by index) from
+      // positional (which, with the trailing callback, fill the free slots).
+      use #(labelled, rev_positional, st) <- result.try(
+        list.try_fold(arguments, #(dict.new(), [], st), fn(acc, field) {
+          let #(labelled, positional, st) = acc
+          case field {
+            glance.UnlabelledField(item) -> {
+              use #(t, st) <- result.try(infer_expr(env, st, item))
+              Ok(#(labelled, [t, ..positional], st))
+            }
+            glance.LabelledField(label, _, item) -> {
+              use index <- result.try(label_index(index_of, label))
+              use #(t, st) <- result.try(infer_expr(env, st, item))
+              Ok(#(dict.insert(labelled, index, t), positional, st))
+            }
+            glance.ShorthandField(label, location) -> {
+              use index <- result.try(label_index(index_of, label))
+              use #(t, st) <- result.try(infer_expr(
+                env,
+                st,
+                glance.Variable(location, label),
+              ))
+              Ok(#(dict.insert(labelled, index, t), positional, st))
+            }
+          }
+        }),
+      )
+      let trailing = list.append(list.reverse(rev_positional), [callback_type])
+      let free =
+        list.filter(indices(list.length(labels)), fn(i) {
+          !dict.has_key(labelled, i)
+        })
+      let placed =
+        list.fold(list.zip(free, trailing), labelled, fn(placed, pair) {
+          dict.insert(placed, pair.0, pair.1)
+        })
+      use arg_types <- result.try(
+        list.try_map(indices(list.length(labels)), fn(index) {
+          result.replace_error(dict.get(placed, index), MissingArgument)
+        }),
+      )
+      unify(st, callee_type, Fn(arg_types, result))
+    }
+  }
 }
 
 /// Infer one statement, returning its type and the (possibly extended)
