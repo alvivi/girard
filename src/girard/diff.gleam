@@ -53,7 +53,10 @@ fn diff(package: String, json_path: String) -> Nil {
         Error(_) -> #(checked, mismatches, errored)
         Ok(source) ->
           case girard.annotate(source) {
-            Error(_) -> #(checked, mismatches, errored + 1)
+            Error(e) -> {
+              io.println(module_name <> ": ERROR " <> girard.describe_error(e))
+              #(checked, mismatches, errored + 1)
+            }
             Ok(annotated) -> {
               let found = compare(module_name, annotated, oracle_exprs)
               #(checked + 1, mismatches + found, errored)

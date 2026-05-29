@@ -52,12 +52,19 @@ pub type State {
     /// Inferred type recorded for each annotated source span, in reverse order
     /// of discovery. Types are stored "live" and zonked at the end.
     annotations: List(#(glance.Span, Type)),
-    /// Field accesses whose record type was not yet known when encountered.
-    /// `#(record type, label, field type)` — resolved by `resolve_pending`
-    /// once inference has fixed the record type (deferred accessor resolution,
-    /// like the real compiler).
-    pending: List(#(Type, String, Type)),
+    /// Field accesses and tuple indexes whose container type was not yet known
+    /// when encountered; resolved by `resolve_pending` once inference has fixed
+    /// the container type (deferred resolution, like the real compiler).
+    pending: List(Pending),
   )
+}
+
+/// A deferred access awaiting its container's type.
+pub type Pending {
+  /// `record.label` — the field type goes in `result`.
+  PendingField(container: Type, label: String, result: Type)
+  /// `tuple.index` — the element type goes in `result`.
+  PendingIndex(container: Type, index: Int, result: Type)
 }
 
 pub type Env {
@@ -251,6 +258,21 @@ fn take(d: Dict(String, v), keys: List(String)) -> Dict(String, v) {
       Error(_) -> acc
     }
   })
+}
+
+/// Reconstruct a minimal environment for an imported module, enough to hydrate
+/// a type it defines (e.g. expanding one of its aliases) with the same
+/// resolution it had at home.
+fn env_from_interface(interface: ModuleInterface) -> Env {
+  Env(
+    values: dict.new(),
+    aliases: interface.aliases,
+    accessors: interface.accessors,
+    local_types: interface.types,
+    field_maps: interface.field_maps,
+    current_module: interface.name,
+    modules: interface.modules,
+  )
 }
 
 /// Make a module available for qualified access (`alias.value`/`alias.Type`).
@@ -536,6 +558,13 @@ fn infer_expr_inner(
             Ok(element) -> Ok(#(element, st))
             Error(_) -> Error(TupleIndexOutOfRange(index))
           }
+        // The tuple type is not known yet; defer until inference fixes it.
+        Var(_) -> {
+          let #(element, st) = fresh(st)
+          let st =
+            State(..st, pending: [PendingIndex(t, index, element), ..st.pending])
+          Ok(#(element, st))
+        }
         _ -> Error(NotATuple)
       }
     }
@@ -618,7 +647,10 @@ fn infer_field_access(
         Var(_) -> {
           let #(field, st) = fresh(st)
           let st =
-            State(..st, pending: [#(container_type, label, field), ..st.pending])
+            State(..st, pending: [
+              PendingField(container_type, label, field),
+              ..st.pending
+            ])
           Ok(#(field, st))
         }
         _ -> Error(NotARecord)
@@ -1669,17 +1701,33 @@ fn hydrate_with(
             )
           }
         // A qualified type name `alias.Name`: resolve via the imported module.
-        Some(alias), _ -> {
-          let origin = case dict.get(env.modules, alias) {
+        Some(alias), _ ->
+          case dict.get(env.modules, alias) {
             Ok(interface) ->
-              case dict.get(interface.types, name) {
-                Ok(#(origin, _arity)) -> origin
-                Error(_) -> alias
+              case dict.get(interface.aliases, name) {
+                // `Name` is a type alias in that module: expand it there, where
+                // its body's own type references resolve.
+                Ok(#(params, aliased)) -> {
+                  let alias_names = dict.from_list(list.zip(params, arg_types))
+                  let #(#(t, st), _) =
+                    hydrate_with(
+                      env_from_interface(interface),
+                      alias_names,
+                      st,
+                      aliased,
+                    )
+                  #(#(t, st), names)
+                }
+                Error(_) -> {
+                  let origin = case dict.get(interface.types, name) {
+                    Ok(#(origin, _arity)) -> origin
+                    Error(_) -> alias
+                  }
+                  #(#(Named(origin, name, arg_types), st), names)
+                }
               }
-            Error(_) -> alias
+            Error(_) -> #(#(Named(alias, name, arg_types), st), names)
           }
-          #(#(Named(origin, name, arg_types), st), names)
-        }
       }
     }
 
@@ -1948,29 +1996,20 @@ pub fn resolve_pending(env: Env, st: State) -> Result(State, Error) {
 fn resolve_pending_loop(
   env: Env,
   st: State,
-  pending: List(#(Type, String, Type)),
+  pending: List(Pending),
   fuel: Int,
 ) -> Result(State, Error) {
-  case pending {
-    [] -> Ok(st)
-    [#(_, label, _), ..] if fuel <= 0 -> Error(NoSuchField("_", label))
-    _ -> {
+  case pending, fuel <= 0 {
+    [], _ -> Ok(st)
+    [_, ..], True -> Error(NotARecord)
+    _, False -> {
       use #(st, remaining, progressed) <- result.try(
         list.try_fold(pending, #(st, [], False), fn(acc, item) {
           let #(st, remaining, progressed) = acc
-          let #(container, label, field) = item
-          case resolve(st, container) {
-            Named(_, _, _) as record -> {
-              use scheme <- result.try(accessor(env, record, label))
-              let #(accessor_type, st) = instantiate(st, scheme)
-              use st <- result.try(unify(
-                st,
-                accessor_type,
-                Fn([container], field),
-              ))
-              Ok(#(st, remaining, True))
-            }
-            _ -> Ok(#(st, [item, ..remaining], progressed))
+          use #(st, resolved) <- result.try(resolve_one(env, st, item))
+          case resolved {
+            True -> Ok(#(st, remaining, True))
+            False -> Ok(#(st, [item, ..remaining], progressed))
           }
         }),
       )
@@ -1979,6 +2018,42 @@ fn resolve_pending_loop(
         False -> Error(NotARecord)
       }
     }
+  }
+}
+
+/// Try to resolve one deferred access. Returns `#(state, resolved?)`: `False`
+/// means the container is still an unbound variable, so keep it for a later
+/// pass. A container fixed to the wrong shape is a hard error.
+fn resolve_one(
+  env: Env,
+  st: State,
+  item: Pending,
+) -> Result(#(State, Bool), Error) {
+  case item {
+    PendingField(container, label, field) ->
+      case resolve(st, container) {
+        Named(_, _, _) as record -> {
+          use scheme <- result.try(accessor(env, record, label))
+          let #(accessor_type, st) = instantiate(st, scheme)
+          use st <- result.try(unify(st, accessor_type, Fn([container], field)))
+          Ok(#(st, True))
+        }
+        Var(_) -> Ok(#(st, False))
+        _ -> Error(NotARecord)
+      }
+    PendingIndex(container, index, result) ->
+      case resolve(st, container) {
+        Tuple(elements) ->
+          case list_at(elements, index) {
+            Ok(element) -> {
+              use st <- result.try(unify(st, element, result))
+              Ok(#(st, True))
+            }
+            Error(_) -> Error(TupleIndexOutOfRange(index))
+          }
+        Var(_) -> Ok(#(st, False))
+        _ -> Error(NotATuple)
+      }
   }
 }
 

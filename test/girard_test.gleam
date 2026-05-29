@@ -472,6 +472,19 @@ pub fn inconsistent_variant_field_is_error_test() {
   let assert Error(infer.NoSuchField("Mix", "value")) = girard.annotate(source)
 }
 
+pub fn deferred_tuple_index_test() {
+  // `p.0` is indexed before the `use` desugaring fixes `p`'s type to the list's
+  // element type (like gleam_community/maths' weighted_sum over tuples).
+  let source =
+    "pub fn fold(list: List(a), init: b, f: fn(b, a) -> b) -> b { init }\n"
+    <> "pub fn run(pairs: List(#(Int, String))) {\n"
+    <> "  use acc, p <- fold(pairs, 0)\n"
+    <> "  acc + p.0\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn(List(#(Int, String))) -> Int")
+}
+
 pub fn use_with_labelled_callback_test() {
   // `use <- guard(when:, return:)` — the callback fills the trailing
   // `otherwise` slot even though the explicit args are labelled.
@@ -546,6 +559,17 @@ pub fn module_and_value_share_name_test() {
     "import m\n" <> "pub const m = 1\n" <> "pub fn f() { m.thing(1) }"
   signature_with(source, [#("m", m)], "f")
   |> should.equal("fn() -> String")
+}
+
+pub fn qualified_imported_alias_test() {
+  // `mid.Ref` is an alias for `base.Id` in another module; used qualified it
+  // must expand to the same type (like birl's `duration.Duration`).
+  let base = "pub type Id { Id(Int) }"
+  let mid = "import base\npub type Ref = base.Id"
+  let source =
+    "import mid\nimport base\npub fn same(x: mid.Ref) -> base.Id { x }"
+  signature_with(source, [#("base", base), #("mid", mid)], "same")
+  |> should.equal("fn(Id) -> Id")
 }
 
 pub fn transitive_import_test() {
