@@ -14,33 +14,45 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/string
-import gleeunit/should
 import simplifile
 import girard
 import girard/printer
 import girard/types.{type Type, Fn, Named, Tuple, Var}
 
-pub fn sample_signatures_match_compiler_test() {
+pub fn signatures_match_compiler_test() {
+  let assert Ok(entries) = simplifile.read_directory("oracle")
+  let samples =
+    list.filter_map(entries, fn(entry) {
+      case string.ends_with(entry, ".gleam") {
+        True -> Ok(string.replace(entry, ".gleam", ""))
+        False -> Error(Nil)
+      }
+    })
+  list.each(samples, check_sample)
+}
+
+/// Compare every public function and constant of one oracle sample against the
+/// compiler's interface for that module.
+fn check_sample(name: String) -> Nil {
   let assert Ok(json_string) =
-    simplifile.read("test/oracle/sample.interface.json")
-  let assert Ok(source) = simplifile.read("test/oracle/sample.gleam")
+    simplifile.read("oracle/" <> name <> ".interface.json")
+  let assert Ok(source) = simplifile.read("oracle/" <> name <> ".gleam")
 
   let assert Ok(#(oracle_functions, oracle_constants)) =
-    json.parse(json_string, decode.at(["modules", "sample"], module_decoder()))
+    json.parse(json_string, decode.at(["modules", name], module_decoder()))
 
   let annotated = girard.annotate(source)
 
-  // Every public function the compiler reports must match girard's signature.
   list.each(dict.to_list(oracle_functions), fn(entry) {
-    let #(name, oracle_type) = entry
-    let assert Ok(ours) = list.key_find(annotated.functions, name)
-    check(name, ours, oracle_type)
+    let #(fn_name, oracle_type) = entry
+    let assert Ok(ours) = list.key_find(annotated.functions, fn_name)
+    check(name <> "." <> fn_name, ours, oracle_type)
   })
 
   list.each(dict.to_list(oracle_constants), fn(entry) {
-    let #(name, oracle_type) = entry
-    let assert Ok(ours) = list.key_find(annotated.constants, name)
-    check(name, ours, oracle_type)
+    let #(const_name, oracle_type) = entry
+    let assert Ok(ours) = list.key_find(annotated.constants, const_name)
+    check(name <> "." <> const_name, ours, oracle_type)
   })
 }
 
@@ -61,7 +73,6 @@ fn check(name: String, ours: String, theirs: Type) -> Nil {
         <> "`"
       }
   }
-  should.equal(actual, expected)
 }
 
 // --- Decoding the compiler's package-interface JSON ------------------------

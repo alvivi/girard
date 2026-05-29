@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Regenerate the differential-testing oracle fixtures: for each
-# test/oracle/<name>.gleam, run the *real* Gleam compiler's
+# oracle/<name>.gleam, run the *real* Gleam compiler's
 # `gleam export package-interface` and store the JSON as
-# test/oracle/<name>.interface.json.
+# oracle/<name>.interface.json.
 #
 # This is the ground truth girard's inferred signatures are compared against
-# (see test/oracle_test.gleam). Run from the project root: `bash scripts/gen-oracle.sh`.
+# (see oracle_test.gleam). Run from the project root: `bash scripts/gen-oracle.sh`.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-oracle_dir="$root/test/oracle"
+oracle_dir="$root/oracle"
 toolversions="$root/.tool-versions"
 
 for src in "$oracle_dir"/*.gleam; do
