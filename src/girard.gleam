@@ -245,8 +245,15 @@ fn process_imports(
           // later as unbound variables).
           None -> Ok(env)
           Some(interface) -> {
-            let alias = import_alias(import_)
-            let env = infer.import_qualified(env, alias, interface)
+            // A discarded alias (`import x as _y`) imports the module for its
+            // unqualified items only — it must NOT be bound under any qualified
+            // name. Otherwise we'd bind it under the module's last segment and
+            // shadow a real import sharing that name (mist's `gleam/http as
+            // _ghttp` vs `mist/internal/http`).
+            let env = case qualified_alias(import_) {
+              Ok(alias) -> infer.import_qualified(env, alias, interface)
+              Error(_) -> env
+            }
             let env =
               list.fold(import_.unqualified_values, env, fn(env, u) {
                 infer.import_value(
@@ -296,10 +303,14 @@ fn resolve_interface(
   }
 }
 
-fn import_alias(import_: glance.Import) -> String {
+/// The name under which an import is accessible for qualified access, or
+/// `Error` when the module is imported with a discarded alias (`as _x`) and so
+/// has no qualified name at all.
+fn qualified_alias(import_: glance.Import) -> Result(String, Nil) {
   case import_.alias {
-    Some(glance.Named(alias)) -> alias
-    _ -> last_segment(import_.module)
+    Some(glance.Named(alias)) -> Ok(alias)
+    Some(glance.Discarded(_)) -> Error(Nil)
+    None -> Ok(last_segment(import_.module))
   }
 }
 

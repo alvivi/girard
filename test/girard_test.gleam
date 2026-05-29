@@ -625,6 +625,24 @@ pub fn renamed_type_import_test() {
   |> should.equal("fn() -> Socket")
 }
 
+pub fn discarded_import_does_not_shadow_test() {
+  // `import b/http as _unused` is a discarded import: it brings nothing into
+  // qualified scope and must not bind the module under its last segment
+  // (`http`), where it would shadow a real `import a/http` sharing that name.
+  // This is mist's `gleam/http as _ghttp` vs `mist/internal/http`.
+  let real = "pub fn special() -> Int { 1 }"
+  let discarded = "pub fn other() -> Int { 2 }"
+  // The discarded import comes first in source; imports are processed in reverse
+  // so it is handled last, where a stray last-segment binding would win and
+  // shadow the real `a/http` (exactly mist's `gleam/http as _ghttp` ordering).
+  let source =
+    "import b/http as _unused\n"
+    <> "import a/http\n"
+    <> "pub fn run() -> Int { http.special() }"
+  signature_with(source, [#("a/http", real), #("b/http", discarded)], "run")
+  |> should.equal("fn() -> Int")
+}
+
 pub fn transitive_import_test() {
   // `mid` re-exports a function that itself depends on `base`.
   let base = "pub fn inc(x: Int) -> Int { x + 1 }"
