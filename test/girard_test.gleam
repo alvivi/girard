@@ -192,6 +192,17 @@ pub fn list_pattern_test() {
   |> should.equal("fn(List(a)) -> Result(a, Nil)")
 }
 
+pub fn string_prefix_binding_test() {
+  // `"a" as c <> rest` binds both the matched prefix (`c`) and the remainder
+  // (`rest`) to String — the prefix `as` binding must be in scope (jot's
+  // `take_symbol_chars`).
+  let source =
+    "pub fn lead(s: String) -> String {\n"
+    <> "  case s {\n    \"a\" as c <> rest -> c <> rest\n    _ -> s\n  }\n}"
+  signature(source, "lead")
+  |> should.equal("fn(String) -> String")
+}
+
 pub fn capture_test() {
   signature("pub fn add(a, b) { a + b }\npub fn inc() { add(1, _) }", "inc")
   |> should.equal("fn() -> fn(Int) -> Int")

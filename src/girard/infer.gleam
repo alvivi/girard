@@ -1768,13 +1768,21 @@ fn infer_pattern(
       infer_pattern(env, st, pattern, expected)
     }
 
-    glance.PatternConcatenate(_, _prefix, _prefix_name, rest_name) -> {
+    glance.PatternConcatenate(_, _prefix, prefix_name, rest_name) -> {
       use st <- result.try(unify(st, expected, types.string()))
-      let env = case rest_name {
-        glance.Named(name) -> bind_value(env, name, Scheme([], types.string()))
-        glance.Discarded(_) -> env
+      // Both the matched prefix (`"a" as c <> rest`) and the remainder bind to
+      // String. The prefix binding is optional (`<> rest` with no `as`).
+      let bind_name = fn(env, name) {
+        case name {
+          glance.Named(n) -> bind_value(env, n, Scheme([], types.string()))
+          glance.Discarded(_) -> env
+        }
       }
-      Ok(#(env, st))
+      let env = case prefix_name {
+        Some(name) -> bind_name(env, name)
+        None -> env
+      }
+      Ok(#(bind_name(env, rest_name), st))
     }
 
     glance.PatternVariant(_, module, constructor, arguments, _spread) -> {
