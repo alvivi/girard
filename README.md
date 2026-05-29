@@ -78,24 +78,26 @@ official compiler infers. We get there in milestones.
   constructors (`True`, `False`, `Nil`, `Ok`, `Error`).
 - Per-expression span→type output plus generalized function signatures.
 
-### ⏳ Milestone 2 — Correct module-level polymorphism
+### ✅ Milestone 2 — Correct module-level polymorphism
 - Build a call graph between top-level definitions, compute strongly-connected
   components, and infer in dependency order, generalizing after each SCC
   (mirrors the compiler's `call_graph` + `dep_tree`).
-- Without this, a generic helper used at two different types within one module
-  is wrongly monomorphized. This is the current top priority.
+- A generic helper is now generalized before its callers, so it can be used at
+  several types within one module; mutually recursive functions are inferred
+  together.
 
-### ⏳ Milestone 3 — Full single-module surface
-- Module constants and `type` aliases (with hydration into the environment).
-- Record field access (`record.field`) and record update (`Foo(..r, x: 1)`),
-  including accessor maps for shared labels across variants.
+### ✅ Milestone 3 — Full single-module surface
+- Module constants and `type` aliases (including parametric aliases), expanded
+  during hydration; constants join functions in the dependency graph.
+- Record field access (`record.field`) and record update (`Foo(..r, x: 1)`)
+  via per-type accessors (single-variant records for now; shared fields across
+  variants remain a refinement).
 - **Labelled arguments**: field maps for functions and constructors, with
-  argument reordering — currently calls are treated positionally.
+  argument and pattern reordering plus `..` spread in patterns.
 - `use` expressions (desugaring to a callback-passing call).
 - Bit array expressions and patterns with segment options.
-- Guards in `case` clauses with their full operator set.
-- Annotated-variable sharing within a single signature (so `fn(a) -> a` written
-  by the user is honoured, not just inferred).
+- Type-variable sharing within a single signature (a written `fn(a) -> a` ties
+  the occurrences of `a` together).
 
 ### ⏳ Milestone 4 — Imports, prelude & standard library
 - Resolve `import` statements (qualified, aliased, and unqualified imports).
