@@ -289,3 +289,22 @@ pub fn use_chain_test() {
   signature(source, "chain")
   |> should.equal("fn() -> Res(Int)")
 }
+
+// --- Bit arrays (M3) --------------------------------------------------------
+
+pub fn bit_array_test() {
+  signature("pub fn bytes() { <<1, 2, 3>> }", "bytes")
+  |> should.equal("fn() -> BitArray")
+}
+
+pub fn bit_array_string_segment_test() {
+  signature("pub fn encode(s) { <<s:utf8>> }", "encode")
+  |> should.equal("fn(String) -> BitArray")
+}
+
+pub fn bit_array_pattern_test() {
+  let source =
+    "pub fn first_byte(b) { case b { <<x, _:bytes>> -> x\n_ -> 0 } }"
+  signature(source, "first_byte")
+  |> should.equal("fn(BitArray) -> Int")
+}

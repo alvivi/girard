@@ -435,7 +435,20 @@ fn infer_expr_inner(
       }
     }
 
-    glance.BitString(..) -> panic as "bit arrays not yet supported"
+    glance.BitString(_, segments) -> {
+      let st =
+        list.fold(segments, st, fn(st, segment) {
+          let #(value, options) = segment
+          let st = check(env, st, value, segment_value_type(options))
+          list.fold(options, st, fn(st, option) {
+            case option {
+              glance.SizeValueOption(size) -> check(env, st, size, types.int())
+              _ -> st
+            }
+          })
+        })
+      #(types.bit_array(), st)
+    }
   }
 }
 
@@ -941,9 +954,42 @@ fn infer_pattern(
       })
     }
 
-    glance.PatternBitString(..) ->
-      panic as "bit array patterns not yet supported"
+    glance.PatternBitString(_, segments) -> {
+      let st = unify(st, expected, types.bit_array())
+      list.fold(segments, #(env, st), fn(acc, segment) {
+        let #(env, st) = acc
+        let #(pattern, options) = segment
+        let #(env, st) =
+          infer_pattern(env, st, pattern, segment_value_type(options))
+        list.fold(options, #(env, st), fn(acc, option) {
+          let #(env, st) = acc
+          case option {
+            glance.SizeValueOption(size) ->
+              infer_pattern(env, st, size, types.int())
+            _ -> #(env, st)
+          }
+        })
+      })
+    }
   }
+}
+
+/// The value type of a bit-array segment, inferred from its options
+/// (defaulting to `Int`).
+fn segment_value_type(options: List(glance.BitStringSegmentOption(t))) -> Type {
+  list.fold(options, types.int(), fn(acc, option) {
+    case option {
+      glance.FloatOption -> types.float()
+      glance.Utf8Option | glance.Utf16Option | glance.Utf32Option ->
+        types.string()
+      glance.Utf8CodepointOption
+      | glance.Utf16CodepointOption
+      | glance.Utf32CodepointOption -> types.utf_codepoint()
+      glance.BytesOption | glance.BitsOption -> types.bit_array()
+      glance.IntOption -> types.int()
+      _ -> acc
+    }
+  })
 }
 
 /// Place constructor-pattern arguments into positional order, reordering by the

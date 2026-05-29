@@ -59,3 +59,7 @@ pub fn result(ok: Type, error: Type) -> Type {
 pub fn bit_array() -> Type {
   Named(prelude_module, "BitArray", [])
 }
+
+pub fn utf_codepoint() -> Type {
+  Named(prelude_module, "UtfCodepoint", [])
+}
