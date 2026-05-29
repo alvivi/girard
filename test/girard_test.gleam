@@ -1,0 +1,152 @@
+import gleam/list
+import gleam/string
+import gleeunit
+import gleeunit/should
+import girard
+
+pub fn main() {
+  gleeunit.main()
+}
+
+// --- Helpers ---------------------------------------------------------------
+
+/// The inferred signature of the named top-level function.
+fn signature(source: String, name: String) -> String {
+  let annotated = girard.annotate(source)
+  case list.key_find(annotated.functions, name) {
+    Ok(sig) -> sig
+    Error(_) -> panic as { "no function named " <> name }
+  }
+}
+
+/// The inferred type of the first occurrence of `snippet` in `source`,
+/// matched by its exact byte span.
+fn type_of(source: String, snippet: String) -> String {
+  let assert Ok(start) = first_index(source, snippet)
+  let end = start + string.byte_size(snippet)
+  let annotated = girard.annotate(source)
+  let matches =
+    list.filter_map(annotated.expressions, fn(a) {
+      case a.span.start == start && a.span.end == end {
+        True -> Ok(a.type_)
+        False -> Error(Nil)
+      }
+    })
+  case matches {
+    [type_, ..] -> type_
+    [] -> panic as { "no expression with span for: " <> snippet }
+  }
+}
+
+fn first_index(haystack: String, needle: String) -> Result(Int, Nil) {
+  case string.split_once(haystack, needle) {
+    Ok(#(before, _)) -> Ok(string.byte_size(before))
+    Error(_) -> Error(Nil)
+  }
+}
+
+// --- Function signature inference ------------------------------------------
+
+pub fn identity_test() {
+  signature("pub fn id(x) { x }", "id")
+  |> should.equal("fn(a) -> a")
+}
+
+pub fn double_test() {
+  signature("pub fn double(x) { x + x }", "double")
+  |> should.equal("fn(Int) -> Int")
+}
+
+pub fn string_literal_test() {
+  signature("pub fn greet() { \"hi\" }", "greet")
+  |> should.equal("fn() -> String")
+}
+
+pub fn singleton_list_test() {
+  signature("pub fn singleton(x) { [x] }", "singleton")
+  |> should.equal("fn(a) -> List(a)")
+}
+
+pub fn higher_order_test() {
+  signature("pub fn apply(f, x) { f(x) }", "apply")
+  |> should.equal("fn(fn(a) -> b, a) -> b")
+}
+
+pub fn tuple_test() {
+  signature("pub fn pair(a, b) { #(a, b) }", "pair")
+  |> should.equal("fn(a, b) -> #(a, b)")
+}
+
+pub fn float_op_test() {
+  signature("pub fn g(x) { x +. 1.0 }", "g")
+  |> should.equal("fn(Float) -> Float")
+}
+
+pub fn comparison_test() {
+  signature("pub fn lt(a, b) { a < b }", "lt")
+  |> should.equal("fn(Int, Int) -> Bool")
+}
+
+pub fn concat_test() {
+  signature("pub fn cat(a, b) { a <> b }", "cat")
+  |> should.equal("fn(String, String) -> String")
+}
+
+pub fn let_binding_test() {
+  signature("pub fn f() { let x = 1\nx + 1 }", "f")
+  |> should.equal("fn() -> Int")
+}
+
+pub fn case_bool_test() {
+  signature("pub fn is_zero(n) { case n { 0 -> True\n_ -> False } }", "is_zero")
+  |> should.equal("fn(Int) -> Bool")
+}
+
+pub fn list_pattern_test() {
+  signature(
+    "pub fn head(xs) { case xs { [x, ..] -> Ok(x)\n[] -> Error(Nil) } }",
+    "head",
+  )
+  |> should.equal("fn(List(a)) -> Result(a, Nil)")
+}
+
+pub fn capture_test() {
+  signature("pub fn add(a, b) { a + b }\npub fn inc() { add(1, _) }", "inc")
+  |> should.equal("fn() -> fn(Int) -> Int")
+}
+
+// --- Custom types ----------------------------------------------------------
+
+pub fn custom_type_unbox_test() {
+  let source =
+    "pub type Box(a) { Box(a) }\npub fn unbox(b) { case b { Box(x) -> x } }"
+  signature(source, "unbox")
+  |> should.equal("fn(Box(a)) -> a")
+}
+
+pub fn custom_type_construct_test() {
+  let source = "pub type Box(a) { Box(a) }\npub fn wrap(x) { Box(x) }"
+  signature(source, "wrap")
+  |> should.equal("fn(a) -> Box(a)")
+}
+
+pub fn enum_test() {
+  let source = "pub type Color { Red\nGreen\nBlue }\npub fn pick() { Red }"
+  signature(source, "pick")
+  |> should.equal("fn() -> Color")
+}
+
+// --- Per-expression annotations --------------------------------------------
+
+pub fn expression_annotation_test() {
+  let source = "pub fn double(x) { x + x }"
+  type_of(source, "x + x")
+  |> should.equal("Int")
+}
+
+pub fn pipe_test() {
+  let source =
+    "pub fn double(x) { x + x }\npub fn quad(n) { n |> double |> double }"
+  signature(source, "quad")
+  |> should.equal("fn(Int) -> Int")
+}
