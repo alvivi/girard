@@ -33,7 +33,7 @@ fix is required, add a regression test and link the commit.
 | acrostic | ⏭️ skip · resolve | not found / could not download. |
 | act | ✅ clean |  |
 | actorx | ⏭️ skip · resolve | not found / could not download. |
-| acumen | 📝 note | All modules error `unbound variable: der`. Root cause: its dep `kryptos/internal/der` fails to **parse** in glance — a bit-array *pattern* segment with an arithmetic size, `<<v:bytes-size(len - 1)>>` (glance rejects the `-`; bare vars and construction-side arithmetic parse fine). A glance limitation, not girard inference; cascades to every module importing `der`. |
+| acumen | 📝 note | glance kind A: its dep `kryptos/internal/der` fails to **parse** — arithmetic in a bit-array *pattern* segment size, `<<0x00, value:bytes-size(len - 1), ..>>` (Minus). Cascades to `unbound variable: der`. A glance limitation, not girard. |
 | adglent | ⏭️ skip · resolve | not found / could not download. |
 | ag_html | ⏭️ skip · resolve | not found / could not download. |
 | aham | ✅ clean |  |
@@ -103,7 +103,7 @@ fix is required, add a regression test and link the commit.
 | bigi | ✅ clean |  |
 | binary_search | ✅ clean |  |
 | birch | ✅ clean |  |
-| birdie | 📝 note | `internal/diagnostic` fails to **parse** — a glance limitation (newer syntax), not girard inference. Cascades to `unbound variable: diagnostic`. |
+| birdie | 📝 note | glance kind A: arithmetic in a bit-array *pattern* segment size `size(end - start)` in `internal/diagnostic` (Minus). Cascades to `unbound variable: diagnostic`. |
 | birl | ✅ clean |  |
 | biscotto | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | bison | ⏭️ skip · build |  |
@@ -226,7 +226,7 @@ fix is required, add a regression test and link the commit.
 | crew | 🔧 fixed | a parameter named `pool` shadowing a top-level `pool` created a spurious call-graph edge, merging `worker_loop` into `pool`'s component so it never generalized; `worker`'s call then over-unified its `PoolMsg`/`Work` type params. Fixed: lexical scoping in reference collection (`e915817`). |
 | crossbar | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | css_select | ⏭️ skip · resolve | not found / could not download. |
-| cthulhu | 📝 note | bit-array segment with an arithmetic size (`size(is_dead * 32)`) fails to **parse** in glance — same parser gap as acumen, not girard inference. |
+| cthulhu | 📝 note | glance kind A: arithmetic in a bit-array *pattern* segment size `little-signed-size(is_dead * 32)` (Star). |
 | cuid2_gleam | ✅ clean |  |
 | cx | ✅ clean |  |
 | cycle | ✅ clean |  |
@@ -772,7 +772,7 @@ fix is required, add a regression test and link the commit.
 | gzxcvbn | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | gzxcvbn_common | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | gzxcvbn_en | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
-| h2_frame | 📝 note | fails to **parse** in glance — a bit-array segment whose value is a qualified field access (`stream_priority.stream_dependency:size(31)`). A glance limitation, not girard inference. |
+| h2_frame | 📝 note | glance kind A: arithmetic in a bit-array *pattern* segment size `pad_length:size(8 * padded)` (Star). |
 | halo | ⏭️ skip · resolve | not found / could not download. |
 | handles | ✅ clean |  |
 | handles_foxed | ✅ clean |  |
@@ -870,12 +870,12 @@ fix is required, add a regression test and link the commit.
 | kmh | ✅ clean |  |
 | knit_string | ✅ clean |  |
 | kreator | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
-| kryptos | 📝 note | its `kryptos/internal/der` module fails to **parse** in glance (bit-array pattern segment with an arithmetic size); cascades to `unbound variable: der` in dependents. The same glance gap behind acumen — not girard inference. |
+| kryptos | 📝 note | glance kind A: `kryptos/internal/der` — arithmetic in a bit-array *pattern* segment size `bytes-size(len - 1)` (Minus). Construction-side arithmetic parses; pattern-side does not. Cascades to dependents (acumen). |
 | kv_sessions | ⏭️ skip · resolve | not found / could not download. |
 | kv_sessions_postgres_adapter | ⏭️ skip · resolve | not found / could not download. |
 | kvite | ✅ clean |  |
 | lamb | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
-| lancaster_stemmer | 📝 note | fails to **parse** in glance — a parser limitation, not girard inference. |
+| lancaster_stemmer | 📝 note | glance kind B: a string-prefix concatenation pattern with a *discarded* rest, `"a" as letter <> _` (a named rest like `<> rest` parses; `<> _` does not). |
 | lang | ✅ clean |  |
 | langfuse_client | ✅ clean |  |
 | lanyard | ✅ clean |  |
