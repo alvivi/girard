@@ -17,21 +17,13 @@ gleam_stdlib = ">= 0.44.0 and < 2.0.0"
 glance = ">= 6.0.0 and < 7.0.0"
 simplifile = ">= 2.4.0 and < 3.0.0"
 argv = ">= 1.1.0 and < 2.0.0"
-gleam_json = ">= 3.1.0 and < 4.0.0"
-gleam_otp = ">= 1.2.0 and < 2.0.0"
-birl = ">= 2.0.0 and < 3.0.0"
-gleam_community_maths = ">= 2.0.2 and < 3.0.0"
-youid = ">= 1.6.0 and < 2.0.0"
-gleam_crypto = ">= 1.6.0 and < 2.0.0"
-iv = ">= 1.4.2 and < 2.0.0"
-gleam_deque = ">= 1.0.0 and < 2.0.0"
-repeatedly = ">= 2.1.2 and < 3.0.0"
-nakai = ">= 1.1.2 and < 2.0.0"
-lustre = ">= 5.7.0 and < 6.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
 glinter = ">= 2.19.0 and < 3.0.0"
+# Decoding the patched compiler's oracle JSON in dev/girard/diff and the oracle
+# test — not used by the library itself.
+gleam_json = ">= 3.1.0 and < 4.0.0"
 
 # Linter config. Run with `gleam run -m glinter`.
 # We lint the library (src/) only: gleeunit tests are public, un-annotated, and

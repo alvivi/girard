@@ -86,7 +86,7 @@ fn infer_def(
 
 /// Annotate a Gleam source string, resolving imports from disk.
 pub fn annotate(source: String) -> Result(Annotated, Error) {
-  annotate_with(source, disk_resolver)
+  annotate_with(source, disk_resolver())
 }
 
 /// Annotate a Gleam source string, resolving imports with a custom resolver.
@@ -533,19 +533,21 @@ fn public_type_names(module: glance.Module) -> List(String) {
 
 // --- Default disk resolver -------------------------------------------------
 
-/// Look for an imported module's source under `src/` and the `build/packages`
-/// dependency sources, relative to the current working directory.
-fn disk_resolver(path: String) -> Result(String, Nil) {
-  first_readable(["src/" <> path <> ".gleam", ..dependency_candidates(path)])
-}
-
-fn dependency_candidates(path: String) -> List(String) {
-  case simplifile.read_directory("build/packages") {
-    Ok(packages) ->
+/// Build a resolver that looks for an imported module's source under `src/` and
+/// the `build/packages/*/src` dependency sources, relative to the current
+/// working directory. The `build/packages` listing is read once and captured,
+/// so resolving many imports does not re-scan the directory each time.
+fn disk_resolver() -> Resolver {
+  let packages = case simplifile.read_directory("build/packages") {
+    Ok(packages) -> packages
+    Error(_) -> []
+  }
+  fn(path: String) -> Result(String, Nil) {
+    let candidates =
       list.map(packages, fn(pkg) {
         "build/packages/" <> pkg <> "/src/" <> path <> ".gleam"
       })
-    Error(_) -> []
+    first_readable(["src/" <> path <> ".gleam", ..candidates])
   }
 }
 

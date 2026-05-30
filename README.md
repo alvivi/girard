@@ -72,8 +72,17 @@ package-interface` produces a JSON of the compiler's inferred public interface
 (committed as `<name>.interface.json`); the test decodes that JSON into girard's
 own `Type`, renders it with girard's printer, and compares — modulo a canonical
 type-variable renaming. Regenerate the fixtures with `scripts/gen-oracle.sh`.
-This is the seed of the M5 fidelity harness (signature level today;
-per-expression once the compiler is patched to emit span→type).
+
+For full breadth, `scripts/sweep.sh <package>` checks girard's **per-expression**
+output against a patched compiler's `gleam export expression-types` over a
+package's whole hex-resolved dependency closure; `scripts/batch_sweep.sh` runs it
+across many packages. Results across the hex ecosystem are tracked in
+[`PACKAGES.md`](PACKAGES.md).
+
+**What CI covers.** CI runs only `gleam test` (the unit suite plus the committed
+oracle fixtures) and `gleam format --check`. The per-expression hex sweep is a
+manual safety net — it needs the patched compiler and network access to hex — so
+it is run locally, not in CI; `PACKAGES.md` is the record of that coverage.
 
 ## Architecture
 
