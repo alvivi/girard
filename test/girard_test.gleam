@@ -1,6 +1,7 @@
 import girard
 import girard/internal/printer
 import girard/types
+import glance
 import gleam/dict
 import gleam/list
 import gleam/string
@@ -998,4 +999,32 @@ pub fn parameter_shadowing_does_not_create_call_edge_test() {
   |> should.equal(
     "fn(Subject(PoolMsg(e, f)), Subject(Work(g, h)), i, fn(i, g) -> j) -> Nil",
   )
+}
+
+pub fn annotate_pre_parsed_module_test() {
+  // A client can parse once with glance and hand girard the AST, avoiding a
+  // second parse. The annotations carry glance spans, so they line up with the
+  // client's own AST nodes.
+  let source = "pub fn double(x) {\n  x + x\n}"
+  let assert Ok(module) = glance.module(source)
+
+  // Resolve no imports (this module has none).
+  let assert Ok(annotated) =
+    girard.annotate_module(module, fn(_) { Error(Nil) })
+
+  // Same signature as the string-based entry point.
+  list.key_find(annotated.functions, "double")
+  |> should.equal(Ok("fn(Int) -> Int"))
+
+  // Every annotation's span indexes into the client's source / AST. The whole
+  // body `x + x` is recorded, and matches the glance call node's span.
+  let assert Ok(start) = first_index(source, "x + x")
+  let span = #(start, start + string.byte_size("x + x"))
+  list.filter_map(annotated.expressions, fn(a) {
+    case #(a.span.start, a.span.end) == span {
+      True -> Ok(a.type_)
+      False -> Error(Nil)
+    }
+  })
+  |> should.equal(["Int"])
 }

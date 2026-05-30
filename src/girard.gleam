@@ -95,6 +95,20 @@ pub fn annotate_with(
   resolver: Resolver,
 ) -> Result(Annotated, Error) {
   use module <- result.try(parse(source))
+  annotate_module(module, resolver)
+}
+
+/// Annotate an already-parsed `glance.Module`, resolving imports with the given
+/// resolver. Use this when you have parsed the source with `glance` yourself —
+/// the returned spans are glance's, so they line up with your AST's node spans
+/// and you avoid parsing the same source twice. (Imported modules are still
+/// parsed internally, via the resolver, since only this module is pre-parsed.)
+/// `girard.disk_resolver()` is the default resolver; pass `fn(_) { Error(Nil) }`
+/// to resolve no imports.
+pub fn annotate_module(
+  module: glance.Module,
+  resolver: Resolver,
+) -> Result(Annotated, Error) {
   use #(#(env, st), _interface, _cache) <- result.try(infer_module(
     resolver,
     set.new(),
@@ -533,11 +547,11 @@ fn public_type_names(module: glance.Module) -> List(String) {
 
 // --- Default disk resolver -------------------------------------------------
 
-/// Build a resolver that looks for an imported module's source under `src/` and
+/// The default resolver: looks for an imported module's source under `src/` and
 /// the `build/packages/*/src` dependency sources, relative to the current
 /// working directory. The `build/packages` listing is read once and captured,
 /// so resolving many imports does not re-scan the directory each time.
-fn disk_resolver() -> Resolver {
+pub fn disk_resolver() -> Resolver {
   let packages = case simplifile.read_directory("build/packages") {
     Ok(packages) -> packages
     Error(_) -> []

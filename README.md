@@ -41,6 +41,37 @@ double: fn(Int) -> Int
 (`functions: List(#(name, signature))` and `expressions: List(Annotation)`);
 `girard.format(source)` renders the report above.
 
+### Annotating a `glance` AST you already parsed
+
+If you have already parsed the source with [`glance`](https://hexdocs.pm/glance/),
+pass the `glance.Module` straight to `girard.annotate_module(module, resolver)`
+to avoid parsing twice. Each `Annotation` carries a `glance.Span`, which is the
+same span glance puts on every AST node — so you can join girard's types onto
+your tree by span:
+
+```gleam
+import girard
+import glance
+import gleam/dict
+import gleam/list
+
+pub fn typed(source: String) {
+  let assert Ok(module) = glance.module(source)            // parse once
+  let assert Ok(annotated) =
+    girard.annotate_module(module, girard.disk_resolver()) // or fn(_) { Error(Nil) }
+
+  // span -> inferred type, ready to look up against any glance node's span
+  let types =
+    list.fold(annotated.expressions, dict.new(), fn(acc, a) {
+      dict.insert(acc, #(a.span.start, a.span.end), a.type_)
+    })
+  #(module, types)
+}
+```
+
+(Imported modules are still parsed internally, via the resolver — only the
+module you pass is taken pre-parsed.)
+
 ## Command line
 
 ```sh
