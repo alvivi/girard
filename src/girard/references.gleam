@@ -85,6 +85,12 @@ fn in_expr(expr: glance.Expression, acc: List(String)) -> List(String) {
         in_optional(field.item, acc)
       })
 
+    // `x.label` where `x` is a bare name is qualified access — `x` is an
+    // imported module (`string.trim`), not a dependency on a same-named local
+    // definition. Counting it would wrongly group, e.g., a `string` helper with
+    // `gleam/string` into one mutually-recursive component. A non-variable
+    // container (`f().field`) is still a real value reference.
+    glance.FieldAccess(_, glance.Variable(..), _label) -> acc
     glance.FieldAccess(_, container, _label) -> in_expr(container, acc)
 
     glance.Call(_, function, arguments) ->
