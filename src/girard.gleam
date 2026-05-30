@@ -57,6 +57,17 @@ pub type Annotated {
 pub type Resolver =
   fn(String) -> Result(String, Nil)
 
+/// The build target a module is compiled for. The target is a whole-build
+/// setting in Gleam, so it applies to every module in one annotation run.
+/// Definitions and imports annotated `@target(...)` are kept only when they
+/// match the active target; girard's plain `annotate`/`annotate_with` default
+/// to `Erlang` (matching `gleam build`'s default), and the `*_with_target`
+/// variants select it explicitly.
+pub type Target {
+  Erlang
+  JavaScript
+}
+
 /// A top-level definition that participates in the dependency graph.
 type Def {
   FunctionDef(glance.Function)
@@ -95,12 +106,24 @@ pub fn annotate(source: String) -> Result(Annotated, Error) {
 }
 
 /// Annotate a Gleam source string, resolving imports with a custom resolver.
+/// Types for the `Erlang` target; use `annotate_with_target` for JavaScript.
 pub fn annotate_with(
   source: String,
   resolver: Resolver,
 ) -> Result(Annotated, Error) {
+  annotate_with_target(source, resolver, Erlang)
+}
+
+/// Annotate a Gleam source string for a specific build target, resolving
+/// imports with a custom resolver. `@target(...)` definitions that do not match
+/// `target` are dropped, exactly as the compiler omits them from the build.
+pub fn annotate_with_target(
+  source: String,
+  resolver: Resolver,
+  target: Target,
+) -> Result(Annotated, Error) {
   use module <- result.try(parse(source))
-  annotate_module(module, resolver)
+  annotate_module_with_target(module, resolver, target)
 }
 
 /// Annotate an already-parsed `glance.Module`, resolving imports with the given
@@ -114,12 +137,23 @@ pub fn annotate_module(
   module: glance.Module,
   resolver: Resolver,
 ) -> Result(Annotated, Error) {
+  annotate_module_with_target(module, resolver, Erlang)
+}
+
+/// As `annotate_module`, but for a specific build target. `@target(...)`
+/// definitions that do not match `target` are dropped.
+pub fn annotate_module_with_target(
+  module: glance.Module,
+  resolver: Resolver,
+  target: Target,
+) -> Result(Annotated, Error) {
   use #(#(env, st), _interface, _cache) <- result.try(infer_module(
     resolver,
     set.new(),
     dict.new(),
     "",
     module,
+    target,
   ))
   Ok(render(module, env, st))
 }
@@ -142,12 +176,13 @@ fn infer_module(
   cache: Cache,
   module_name: String,
   module: glance.Module,
+  target: Target,
 ) -> Result(#(#(infer.Env, infer.State), ModuleInterface, Cache), Error) {
-  // Drop definitions and imports compiled only for another target. girard types
-  // the Erlang target (matching the oracle), so a `@target(javascript)` sibling
-  // — e.g. simplifile's JS `do_file_info` returning a different error type —
-  // must not shadow the Erlang one.
-  let module = for_target(module)
+  // Drop definitions and imports compiled only for another target — a
+  // `@target(javascript)` sibling (e.g. simplifile's JS `do_file_info`
+  // returning a different error type) must not shadow the matching one when
+  // typing for Erlang, and vice versa.
+  let module = for_target(module, target)
   let #(prelude_env, st) = infer.prelude()
   let env = infer.set_module(prelude_env, module_name)
 
@@ -158,6 +193,7 @@ fn infer_module(
     cache,
     env,
     module.imports,
+    target,
   ))
 
   // 2. Pre-declare local type names so forward references resolve, then
@@ -366,6 +402,7 @@ fn process_imports(
   cache: Cache,
   env: infer.Env,
   imports: List(glance.Definition(glance.Import)),
+  target: Target,
 ) -> Result(#(infer.Env, Cache), Error) {
   list.try_fold(imports, #(env, cache), fn(acc, definition) {
     let #(env, cache) = acc
@@ -380,6 +417,7 @@ fn process_imports(
           loading,
           cache,
           path,
+          target,
         ))
         case maybe_interface {
           // Unresolvable or unparsable: best effort, skip (uses of it surface
@@ -426,6 +464,7 @@ fn resolve_interface(
   loading: Set(String),
   cache: Cache,
   path: String,
+  target: Target,
 ) -> Result(#(Option(ModuleInterface), Cache), Error) {
   case path == prelude.prelude_module {
     // `import gleam` refers to the built-in prelude module, which has no source
@@ -435,7 +474,7 @@ fn resolve_interface(
       case dict.get(cache, path) {
         // Already inferred in this run: reuse it rather than inferring again.
         Ok(interface) -> Ok(#(Some(interface), cache))
-        Error(_) -> resolve_uncached(resolver, loading, cache, path)
+        Error(_) -> resolve_uncached(resolver, loading, cache, path, target)
       }
   }
 }
@@ -445,6 +484,7 @@ fn resolve_uncached(
   loading: Set(String),
   cache: Cache,
   path: String,
+  target: Target,
 ) -> Result(#(Option(ModuleInterface), Cache), Error) {
   case resolver(path) {
     Error(_) -> Ok(#(None, cache))
@@ -458,6 +498,7 @@ fn resolve_uncached(
             cache,
             path,
             module,
+            target,
           ))
           Ok(#(Some(interface), dict.insert(cache, path, interface)))
         }
@@ -483,23 +524,27 @@ fn last_segment(path: String) -> String {
   }
 }
 
-/// Keep only the definitions and imports compiled for the Erlang target: those
-/// with no `@target` attribute, or `@target(erlang)`. A `@target(javascript)`
-/// definition is dropped.
-fn for_target(module: glance.Module) -> glance.Module {
+/// Keep only the definitions and imports compiled for `target`: those with no
+/// `@target` attribute, or one naming the active target. A definition annotated
+/// for the other target is dropped, exactly as the compiler omits it.
+fn for_target(module: glance.Module, target: Target) -> glance.Module {
   glance.Module(
-    imports: list.filter(module.imports, on_erlang_target),
-    custom_types: list.filter(module.custom_types, on_erlang_target),
-    type_aliases: list.filter(module.type_aliases, on_erlang_target),
-    constants: list.filter(module.constants, on_erlang_target),
-    functions: list.filter(module.functions, on_erlang_target),
+    imports: list.filter(module.imports, on_target(_, target)),
+    custom_types: list.filter(module.custom_types, on_target(_, target)),
+    type_aliases: list.filter(module.type_aliases, on_target(_, target)),
+    constants: list.filter(module.constants, on_target(_, target)),
+    functions: list.filter(module.functions, on_target(_, target)),
   )
 }
 
-fn on_erlang_target(definition: glance.Definition(a)) -> Bool {
+fn on_target(definition: glance.Definition(a), target: Target) -> Bool {
+  let active = case target {
+    Erlang -> "erlang"
+    JavaScript -> "javascript"
+  }
   list.all(definition.attributes, fn(attr) {
     case attr.name, attr.arguments {
-      "target", [glance.Variable(_, target)] -> target == "erlang"
+      "target", [glance.Variable(_, t)] -> t == active
       _, _ -> True
     }
   })

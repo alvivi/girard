@@ -52,6 +52,20 @@ fn dir_resolver(root: String) -> girard.Resolver {
   }
 }
 
+/// Read the package's build target from its `gleam.toml`, defaulting to
+/// `Erlang` (the compiler's default) when unset or unreadable. A crude line
+/// scan suffices: the only values are `target = "erlang"` / `"javascript"`.
+fn target_of(toml_path: String) -> girard.Target {
+  case simplifile.read(toml_path) {
+    Ok(toml) ->
+      case string.contains(toml, "target = \"javascript\"") {
+        True -> girard.JavaScript
+        False -> girard.Erlang
+      }
+    Error(_) -> girard.Erlang
+  }
+}
+
 fn first_readable(paths: List(String)) -> Result(String, Nil) {
   case paths {
     [] -> Error(Nil)
@@ -65,6 +79,7 @@ fn first_readable(paths: List(String)) -> Result(String, Nil) {
 
 fn diff(package: String, json_path: String, pkg_root: String) -> Nil {
   let resolver = dir_resolver(pkg_root)
+  let target = target_of(pkg_root <> "/" <> package <> "/gleam.toml")
   let assert Ok(json_string) = simplifile.read(json_path)
   let assert Ok(modules) =
     json.parse(
@@ -84,7 +99,7 @@ fn diff(package: String, json_path: String, pkg_root: String) -> Nil {
       case simplifile.read(path) {
         Error(_) -> #(checked, mismatches, errored)
         Ok(source) ->
-          case girard.annotate_with(source, resolver) {
+          case girard.annotate_with_target(source, resolver, target) {
             Error(e) -> {
               io.println(module_name <> ": ERROR " <> girard.describe_error(e))
               #(checked, mismatches, errored + 1)
