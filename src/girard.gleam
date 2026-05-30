@@ -11,7 +11,7 @@
 import argv
 import girard/infer.{type ModuleInterface}
 import girard/printer
-import girard/references
+import girard/reference
 import girard/scc
 import girard/types.{type Scheme, type Type, Scheme}
 import glance
@@ -67,8 +67,8 @@ fn def_name(def: Def) -> String {
 /// `#(value references, field-access qualifier names)` of a definition.
 fn def_refs(def: Def) -> #(List(String), List(String)) {
   case def {
-    FunctionDef(f) -> references.in_function(f)
-    ConstantDef(c) -> references.in_constant(c)
+    FunctionDef(f) -> reference.in_function(f)
+    ConstantDef(c) -> reference.in_constant(c)
   }
 }
 

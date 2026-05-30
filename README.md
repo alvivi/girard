@@ -82,7 +82,7 @@ per-expression once the compiler is patched to emit span→type).
 | `girard/types`          | The internal `Type` model (`Named`/`Fn`/`Var`/`Tuple`), prelude constructors, `Scheme` |
 | `girard/infer`          | Threaded `State` (substitution + fresh-var counter + span→type map), unification, generalize/instantiate, inference of expressions/statements/patterns, hydration, module interfaces & imports |
 | `girard/scc`            | Tarjan strongly-connected components, for dependency-ordered inference       |
-| `girard/references`     | Collect the names a definition refers to, to build the call graph            |
+| `girard/reference`      | Collect the names a definition refers to, to build the call graph            |
 | `girard/printer`        | Rendering a `Type` back to Gleam syntax with `a, b, c …` variable naming     |
 | `girard`                | The driver: parse → resolve imports → register types → infer in SCC order → emit annotations |
 
