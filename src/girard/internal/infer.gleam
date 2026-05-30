@@ -1249,20 +1249,52 @@ fn infer_callee(
   st: State,
   function: glance.Expression,
 ) -> Result(#(Type, State), Error) {
-  let module_export = case function {
-    glance.FieldAccess(_, glance.Variable(_, name), label) ->
-      case dict.get(env.modules, name) {
+  case function {
+    glance.FieldAccess(_, glance.Variable(_, name), label) -> {
+      let module_export = case dict.get(env.modules, name) {
         Ok(interface) -> dict.get(interface.values, label)
         Error(_) -> Error(Nil)
       }
-    _ -> Error(Nil)
-  }
-  case module_export {
-    Ok(scheme) -> {
-      let #(type_, st) = instantiate(st, scheme)
-      Ok(#(type_, record(st, span(function), type_)))
+      // A same-named module export wins over a value's field in call position
+      // (`dep.value(dep)` where dep's `value` field is plain data, not callable)
+      // — *unless* the local value's `label` field is itself a function, in
+      // which case the field is what's being called (a `components` parameter
+      // shadowing the `components` module alias, calling `components.hr()`), so
+      // defer to ordinary field access.
+      case module_export, field_is_callable(env, st, name, label) {
+        Ok(scheme), False -> {
+          let #(type_, st) = instantiate(st, scheme)
+          Ok(#(type_, record(st, span(function), type_)))
+        }
+        _, _ -> infer_expr(env, st, function)
+      }
     }
-    Error(_) -> infer_expr(env, st, function)
+    _ -> infer_expr(env, st, function)
+  }
+}
+
+/// Whether `name` is a local value whose `label` field is a function type — the
+/// signal that `name.label(..)` calls that field rather than a same-named
+/// module export. Inspects only the field's shape; any state changes from
+/// instantiation are discarded.
+fn field_is_callable(env: Env, st: State, name: String, label: String) -> Bool {
+  case dict.get(env.values, name) {
+    Ok(scheme) -> {
+      let #(value_type, st) = instantiate(st, scheme)
+      case resolve(st, value_type) {
+        Named(_, _, _) as record ->
+          case field_type(env, st, record, label) {
+            Ok(#(field, st)) ->
+              case resolve(st, field) {
+                Fn(_, _) -> True
+                _ -> False
+              }
+            Error(_) -> False
+          }
+        _ -> False
+      }
+    }
+    Error(_) -> False
   }
 }
 
@@ -1878,11 +1910,20 @@ fn infer_expr_assignment(
     None -> Ok(st)
   })
   use #(env, st) <- result.try(infer_pattern(env, st, pattern, value_type))
-  // `let x = Ctor(..)` narrows `x` to that variant (the compiler's inferred
-  // variant), so a later `x.field` reaches a field present only in `Ctor`.
-  let #(env, st) = case pattern, constructor_call(value) {
-    glance.PatternVariable(_, name), Ok(#(module, constructor)) ->
-      record_variant(env, st, module, constructor, value_type, name)
+  // Inferred-variant narrowing, so a later `x.field` reaches a field present in
+  // only one variant.
+  let #(env, st) = case pattern, value {
+    // `let x = Ctor(..)`: the constructed variant narrows `x`.
+    glance.PatternVariable(_, name), _ ->
+      case constructor_call(value) {
+        Ok(#(module, constructor)) ->
+          record_variant(env, st, module, constructor, value_type, name)
+        Error(_) -> #(env, st)
+      }
+    // `let Ctor(..) = x` / `let assert Ctor(..) = x`: matching a variant pattern
+    // against a bare variable narrows that variable to the variant.
+    glance.PatternVariant(_, module, constructor, _, _), glance.Variable(_, name)
+    -> record_variant(env, st, module, constructor, value_type, name)
     _, _ -> #(env, st)
   }
   Ok(#(value_type, env, st))

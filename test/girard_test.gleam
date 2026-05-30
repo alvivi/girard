@@ -745,6 +745,37 @@ pub fn module_call_beats_field_test() {
   |> should.equal("fn() -> Int")
 }
 
+pub fn field_call_beats_module_test() {
+  // The mirror of `module_call_beats_field_test`: when the local value's field
+  // *is* a function, `components.hr()` calls that field, not the same-named
+  // module export. A `components` parameter shadows the `components` module
+  // alias (maud's `components.hr()`).
+  let components =
+    "pub type Comps(a) {\n  Comps(hr: fn() -> a)\n}\n"
+    <> "pub fn hr(c: Comps(a), f: fn() -> a) -> Comps(a) { Comps(f) }"
+  let source =
+    "import components.{type Comps}\n"
+    <> "pub fn render(components: Comps(a)) -> a {\n  components.hr()\n}"
+  signature_with(source, [#("components", components)], "render")
+  |> should.equal("fn(Comps(a)) -> a")
+}
+
+pub fn let_pattern_variant_narrowing_test() {
+  // `let assert Delim(..) = x` narrows `x` to the `Delim` variant, so `x.len`
+  // (a field absent from `Text`) is reachable (maud's `let assert Inline(..)`).
+  let source =
+    "pub type Inline {\n"
+    <> "  Text(String)\n"
+    <> "  Delim(style: String, len: Int)\n"
+    <> "}\n"
+    <> "pub fn f(x: Inline) -> Int {\n"
+    <> "  let assert Delim(..) = x\n"
+    <> "  x.len\n"
+    <> "}"
+  signature(source, "f")
+  |> should.equal("fn(Inline) -> Int")
+}
+
 pub fn transitive_import_test() {
   // `mid` re-exports a function that itself depends on `base`.
   let base = "pub fn inc(x: Int) -> Int { x + 1 }"
