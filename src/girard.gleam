@@ -589,8 +589,12 @@ fn render(module: glance.Module, env: infer.Env, st: infer.State) -> Annotated {
   let constants =
     list.map(module.constants, fn(d) { ConstantDef(d.definition) })
 
+  // `st.annotations` is in reverse discovery order; reverse it so that when a
+  // span was recorded more than once (e.g. a polymorphic reference and its
+  // use-instantiated type), the later, stable sort keeps the same one the
+  // string-based renderer did.
   let expressions =
-    list.map(st.annotations, fn(entry) {
+    list.map(list.reverse(st.annotations), fn(entry) {
       let #(span, type_) = entry
       Annotation(span, infer.zonk(st, type_))
     })
