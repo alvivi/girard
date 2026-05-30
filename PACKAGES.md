@@ -850,40 +850,473 @@ fix is required, add a regression test and link the commit.
 | justin | ✅ clean |  |
 | kafein | ✅ clean |  |
 | kata | ✅ clean |  |
+| kata_env | ✅ clean |  |
+| kata_form | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| kata_json | ✅ clean |  |
+| keccak_gleam | ✅ clean |  |
+| keyboard_shortcuts | ✅ clean |  |
+| keystore | ✅ clean |  |
+| kick | ✅ clean |  |
+| kielet | ⏭️ skip · resolve | not found / could not download. |
+| kielet_gen | ⏭️ skip · resolve | not found / could not download. |
+| kindly | ✅ clean |  |
+| kirala_bbmarkdown | ⏭️ skip · resolve | not found / could not download. |
+| kirala_l4u | ⏭️ skip · resolve | not found / could not download. |
+| kirala_markdown | ⏭️ skip · resolve | not found / could not download. |
+| kitazith | ✅ clean |  |
+| kitten | ✅ clean |  |
+| klubok_gleam | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| kmh | ✅ clean |  |
+| knit_string | ✅ clean |  |
+| kreator | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| kv_sessions | ⏭️ skip · resolve | not found / could not download. |
+| kv_sessions_postgres_adapter | ⏭️ skip · resolve | not found / could not download. |
+| kvite | ✅ clean |  |
+| lamb | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| lancaster_stemmer | 📝 note | fails to **parse** in glance — a parser limitation, not girard inference. |
+| lang | ✅ clean |  |
+| langfuse_client | ✅ clean |  |
+| lanyard | ✅ clean |  |
+| lap | ✅ clean |  |
+| lattice_core | ✅ clean |  |
+| lattice_counters | ✅ clean |  |
+| lattice_crdt | ✅ clean |  |
+| lattice_maps | ✅ clean |  |
+| lattice_presence | ✅ clean |  |
+| lattice_registers | ✅ clean |  |
+| lattice_sets | ✅ clean |  |
+| lazy_const | ✅ clean |  |
+| le_ids | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| legos | ⏭️ skip · resolve | not found / could not download. |
+| lenient_parse | ⏭️ skip · resolve | not found / could not download. |
+| leviathan | ⏭️ skip · resolve | not found / could not download. |
+| libero | ⏭️ skip · resolve | not found / could not download. |
+| libsql | ⏭️ skip · resolve | not found / could not download. |
+| libsql_gleam | ⏭️ skip · resolve | not found / could not download. |
+| lifeguard | ⏭️ skip · resolve | not found / could not download. |
+| lightbulb | ⏭️ skip · resolve | not found / could not download. |
+| lightspeed | ⏭️ skip · resolve | not found / could not download. |
+| lily | ⏭️ skip · resolve | not found / could not download. |
+| lite_fs | ⏭️ skip · resolve | not found / could not download. |
+| llmgleam | ⏭️ skip · resolve | not found / could not download. |
+| loan | ⏭️ skip · resolve | not found / could not download. |
+| local_time_utils | ⏭️ skip · resolve | not found / could not download. |
 | logging | ✅ clean |  |
+| lorem_ipsum | ⏭️ skip · resolve | not found / could not download. |
+| lotta | ⏭️ skip · resolve | not found / could not download. |
+| lucid | ⏭️ skip · resolve | not found / could not download. |
+| lucide_lustre | ⏭️ skip · resolve | not found / could not download. |
+| luciole | ⏭️ skip · resolve | not found / could not download. |
+| lumenmail | ⏭️ skip · resolve | not found / could not download. |
+| lumi | ⏭️ skip · resolve | not found / could not download. |
+| luminite | ⏭️ skip · resolve | not found / could not download. |
 | lustre | 🔧 fixed | multiple: inferred-variant field access (`Element.attributes`), multi-variant record update, cross-module generalization (`74a3278`); `cache.events(cache)` module-vs-field by call position (`8693b66`). |
+| lustre_alpine | ⏭️ skip · resolve | not found / could not download. |
+| lustre_animation | ⏭️ skip · resolve | not found / could not download. |
+| lustre_carousel | ⏭️ skip · resolve | not found / could not download. |
 | lustre_dev_tools | 🔧 fixed | `import gleam.{Error as Err}` (via polly) — prelude module not resolvable (`07129a2`); `string.trim` qualified access wrongly grouped `flag`/`string` → `Int vs String` (`3209cb8`/`656e830`). |
+| lustre_hash_state | ⏭️ skip · resolve | not found / could not download. |
 | lustre_http | ⏭️ skip · build |  |
+| lustre_http_lib | ⏭️ skip · resolve | not found / could not download. |
+| lustre_hx | ⏭️ skip · resolve | not found / could not download. |
+| lustre_kakaomap | ⏭️ skip · resolve | not found / could not download. |
+| lustre_limiter | ⏭️ skip · resolve | not found / could not download. |
+| lustre_omnistate | ⏭️ skip · resolve | not found / could not download. |
+| lustre_pipes | ⏭️ skip · resolve | not found / could not download. |
+| lustre_platform | ⏭️ skip · resolve | not found / could not download. |
+| lustre_platform_opentui | ⏭️ skip · resolve | not found / could not download. |
+| lustre_portal | ⏭️ skip · resolve | not found / could not download. |
+| lustre_prefab | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| lustre_routed | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| lustre_ssg | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| lustre_stylish | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| lustre_tauri | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| lustre_touch_events | ✅ clean |  |
+| lustre_transition | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| lustre_ui | ⏭️ skip · resolve | not found / could not download. |
+| lustre_virtual_list | ⏭️ skip · resolve | not found / could not download. |
 | lustre_websocket | ⏭️ skip · build |  |
+| lustremail | ⏭️ skip · resolve | not found / could not download. |
+| lww_register | ✅ clean |  |
+| lzf_gleam | ✅ clean |  |
+| m25 | ✅ clean |  |
+| m3e | ✅ clean |  |
+| mala | ✅ clean |  |
+| malgleam | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| mapped | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | marceau | ✅ clean |  |
+| marmot | ⏭️ skip · resolve | not found / could not download. |
+| mascarpone | ⏭️ skip · resolve | not found / could not download. |
 | mat | ⏭️ skip · build |  |
+| matrix_gleam | ⏭️ skip · resolve | not found / could not download. |
+| maud | ⏭️ skip · resolve | not found / could not download. |
+| mcp_client | ⏭️ skip · resolve | not found / could not download. |
+| mcp_toolkit | ⏭️ skip · resolve | not found / could not download. |
+| meadow | ⏭️ skip · resolve | not found / could not download. |
+| melon | ⏭️ skip · resolve | not found / could not download. |
+| memo_gleam | ⏭️ skip · resolve | not found / could not download. |
+| mendix_widget_gleam | ⏭️ skip · resolve | not found / could not download. |
+| mendraw | ⏭️ skip · resolve | not found / could not download. |
+| messua | ⏭️ skip · resolve | not found / could not download. |
+| metamon | ⏭️ skip · resolve | not found / could not download. |
+| midas | ⏭️ skip · resolve | not found / could not download. |
+| midas_beam | ⏭️ skip · resolve | not found / could not download. |
+| midas_browser | ⏭️ skip · resolve | not found / could not download. |
+| midas_node | ⏭️ skip · resolve | not found / could not download. |
+| midas_sdk | ⏭️ skip · resolve | not found / could not download. |
+| migrant | ⏭️ skip · resolve | not found / could not download. |
+| mimetype | ⏭️ skip · resolve | not found / could not download. |
+| mineflayer | ⏭️ skip · resolve | not found / could not download. |
+| miniflare | ⏭️ skip · resolve | not found / could not download. |
+| miniflux_sdk | ⏭️ skip · resolve | not found / could not download. |
+| minigen | ⏭️ skip · resolve | not found / could not download. |
 | mist | 🔧 fixed | `compression.deflate` module-vs-field (`8693b66`); `import gleam/http as _ghttp` discarded alias shadowed `mist/internal/http` (`1b35463`); exponential transitive re-inference hang fixed by interface memoization (`bcd20f4`). |
+| mist_reload | ⏭️ skip · resolve | not found / could not download. |
+| mochi | ⏭️ skip · resolve | not found / could not download. |
+| mockth | ⏭️ skip · resolve | not found / could not download. |
 | modem | ✅ clean |  |
+| mon | ⏭️ skip · resolve | not found / could not download. |
+| money_pattern | ⏭️ skip · resolve | not found / could not download. |
+| monies | ⏭️ skip · resolve | not found / could not download. |
+| monks_of_style | ⏭️ skip · resolve | not found / could not download. |
+| mork | ⏭️ skip · resolve | not found / could not download. |
+| mork_to_lustre | ⏭️ skip · resolve | not found / could not download. |
+| morse_code_translator | ⏭️ skip · resolve | not found / could not download. |
+| morsey | ⏭️ skip · resolve | not found / could not download. |
+| mote | ⏭️ skip · resolve | not found / could not download. |
 | mug | ✅ clean |  |
+| multiformats | ⏭️ skip · resolve | not found / could not download. |
+| multipart_form | ⏭️ skip · resolve | not found / could not download. |
+| multipartkit | ⏭️ skip · resolve | not found / could not download. |
+| mumu | ⏭️ skip · resolve | not found / could not download. |
 | mungo | ⏭️ skip · build |  |
+| murmur3a | ⏭️ skip · resolve | not found / could not download. |
+| mut_cell | ⏭️ skip · resolve | not found / could not download. |
+| mysig | ⏭️ skip · resolve | not found / could not download. |
 | nakai | ✅ clean |  |
+| nanoworker | ✅ clean |  |
+| nbeet | ✅ clean |  |
+| neon | ✅ clean |  |
+| nephrotoma | ✅ clean |  |
+| nerf | ⏭️ skip · resolve | not found / could not download. |
+| nessie | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| nessie_2 | ✅ clean |  |
+| nessie_cluster | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| netlify | ✅ clean |  |
+| netpbm | ✅ clean |  |
+| netstring | ✅ clean |  |
+| next_door | ✅ clean |  |
+| ngs | ✅ clean |  |
+| nibble | ⏭️ skip · resolve | not found / could not download. |
+| niji | ✅ clean |  |
+| nimiq_address | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| nimiq_blake2b | ✅ clean |  |
+| nimiq_bls | ✅ clean |  |
+| nimiq_gleam | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| nimiq_rpc | ⏭️ skip · resolve | not found / could not download. |
+| nimiq_serde | ✅ clean |  |
+| node_pg | ✅ clean |  |
+| node_socket_client | ✅ clean |  |
+| node_tags | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | non_empty_list | ✅ clean |  |
+| nori | ✅ clean |  |
+| novdom | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| novdom_dev_tools | ⏭️ skip · resolve | not found / could not download. |
+| novdom_testing | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | oas | ✅ clean |  |
+| oas_generator | ✅ clean |  |
+| oas_generator_utils | ✅ clean |  |
+| oaspec | ✅ clean |  |
+| oaspec_fetch | ✅ clean |  |
+| oaspec_httpc | ✅ clean |  |
+| observatory | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| ocular | ✅ clean |  |
+| odysseus | ✅ clean |  |
+| off_topic | ✅ clean |  |
+| og_image | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| ogre | ✅ clean |  |
+| okay | ✅ clean |  |
+| olive | ⏭️ skip · resolve | not found / could not download. |
+| ollama_gleam | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| omnimessage_lustre | 📝 note | type-variable identity differs only (`#($0, Effect($1))` vs `#($2, Effect($1))`): `lustre.application` later ties `compose`'s returned update fn's input/output model, and girard records the fully-resolved type while the compiler snapshots the call result before that back-propagation. Same class as prng; girard is the more-resolved view, not a bug. |
+| omnimessage_server | ⏭️ skip · resolve | not found / could not download. |
+| on | ✅ clean |  |
+| onigleam | ✅ clean |  |
+| opaq | ⏭️ skip · resolve | not found / could not download. |
+| open_color | ✅ clean |  |
+| open_props | ✅ clean |  |
+| opener | ✅ clean |  |
+| openfeature | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| opengleametry | ⏭️ skip · resolve | not found / could not download. |
+| opengleametry_test | ⏭️ skip · resolve | not found / could not download. |
+| openrouter_client | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| operating_system | ✅ clean |  |
+| opt_args_with_defs_for_gleam | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| optimist | ✅ clean |  |
+| or_error | ✅ clean |  |
+| orbital | ✅ clean |  |
+| ordered_dict | ✅ clean |  |
+| ormlette | ⏭️ skip · resolve | not found / could not download. |
+| oteap | ⏭️ skip · resolve | not found / could not download. |
+| outcome | ✅ clean |  |
 | outil | ⏭️ skip · resolve |  |
+| outkeep | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| owoify_gleam | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| p5js_gleam | ✅ clean |  |
+| pack | ✅ clean |  |
+| packkit | ✅ clean |  |
+| paddlefish | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| paint | ✅ clean |  |
+| palabres | ✅ clean |  |
+| palabres_wisp | ✅ clean |  |
+| palindrome | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| panel | ⏭️ skip · resolve | not found / could not download. |
 | parallel_map | ⏭️ skip · build | uses the old `gleam/otp/actor` API (`actor.Stop`/`actor.Next`), incompatible with the resolved gleam_otp. |
+| parrot | ✅ clean |  |
+| parsed_it | ✅ clean |  |
+| parser_gleam | ⏭️ skip · resolve | not found / could not download. |
+| parsley | ✅ clean |  |
+| party | ⏭️ skip · resolve | not found / could not download. |
+| parz | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| passwd_gen | ⏭️ skip · resolve | not found / could not download. |
+| pathern | ✅ clean |  |
+| pb_lite | ⏭️ skip · resolve | not found / could not download. |
+| pcl | ⏭️ skip · resolve | not found / could not download. |
+| pearl | ✅ clean |  |
+| pears | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| pegasus_crypto | ✅ clean |  |
+| peggy | ⏭️ skip · resolve | not found / could not download. |
+| persevero | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | pevensie | ⏭️ skip · resolve |  |
+| pevensie_postgres | ⏭️ skip · resolve | not found / could not download. |
+| pevensie_redis | ⏭️ skip · resolve | not found / could not download. |
+| pg_value | ✅ clean |  |
+| pgl | ✅ clean |  |
 | pgo | ✅ clean |  |
+| pharos | ✅ clean |  |
+| phonetic_gleam | ⏭️ skip · resolve | not found / could not download. |
+| phony | ✅ clean |  |
+| phosphor_lustre | ⏭️ skip · resolve | not found / could not download. |
+| pickle | ⏭️ skip · resolve | not found / could not download. |
+| pify | ⏭️ skip · resolve | not found / could not download. |
+| pika_id | ⏭️ skip · resolve | not found / could not download. |
+| pine | ⏭️ skip · resolve | not found / could not download. |
+| pink | ⏭️ skip · resolve | not found / could not download. |
+| pinkdf2 | ⏭️ skip · resolve | not found / could not download. |
 | platform | ✅ clean |  |
+| playground | ⏭️ skip · resolve | not found / could not download. |
+| plex_pin_auth | ⏭️ skip · resolve | not found / could not download. |
+| plinth | ⏭️ skip · resolve | not found / could not download. |
+| plinth_cloudflare | ⏭️ skip · resolve | not found / could not download. |
+| plume | ⏭️ skip · resolve | not found / could not download. |
+| plunk | ⏭️ skip · resolve | not found / could not download. |
+| plushie_gleam | ⏭️ skip · resolve | not found / could not download. |
+| pngleam | ⏭️ skip · resolve | not found / could not download. |
+| pocket_watch | ⏭️ skip · resolve | not found / could not download. |
+| pocketenv | ⏭️ skip · resolve | not found / could not download. |
 | pog | ✅ clean |  |
+| pojo | ⏭️ skip · resolve | not found / could not download. |
+| pokemon_names | ⏭️ skip · resolve | not found / could not download. |
+| pollux | ⏭️ skip · resolve | not found / could not download. |
 | polly | 🔧 fixed | dep of lustre_dev_tools; `import gleam.{Error as Err}` prelude import — see lustre_dev_tools (`07129a2`). |
+| pona | ⏭️ skip · resolve | not found / could not download. |
+| pontil | ⏭️ skip · resolve | not found / could not download. |
+| pontil_build | ⏭️ skip · resolve | not found / could not download. |
+| pontil_context | ⏭️ skip · resolve | not found / could not download. |
+| pontil_core | ✅ clean |  |
+| pontil_platform | ✅ clean |  |
+| pontil_summary | ✅ clean |  |
+| popcicle | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| poreader | ⏭️ skip · resolve | not found / could not download. |
+| porter_stemmer | ✅ clean |  |
+| postgleam | ✅ clean |  |
+| postglide | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| postgresql_protocol | ⏭️ skip · resolve | not found / could not download. |
+| pprint | ✅ clean |  |
+| precious | ✅ clean |  |
+| prequel | ⏭️ skip · resolve | not found / could not download. |
+| presentable_soup | ✅ clean |  |
+| pretty_diff | 📝 note | girard pins annotated generic vars to `Dynamic` where the compiler keeps them polymorphic (`Dict($0, Diff)` vs `Dict(Dynamic, Diff)`) — the same rigid-type-variable gap as gleamgen (25 mismatches, all this shape). |
+| priorityq | ✅ clean |  |
 | prng | 📝 note | one expression mismatch at a polymorphic function reference (`fixed_size_dict`): the compiler's signature is tied like girard's; the oracle snapshots the reference pre-unification. girard is correct. |
+| problem | ✅ clean |  |
+| probly | ✅ clean |  |
+| process_file | ✅ clean |  |
+| process_waiter | ⏭️ skip · resolve | not found / could not download. |
+| processgroups | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| promgleam | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| promptly | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| protobin | ⏭️ skip · resolve | not found / could not download. |
+| protozoa | ⏭️ skip · resolve | not found / could not download. |
+| protozoa_dev | ⏭️ skip · resolve | not found / could not download. |
+| psg | ⏭️ skip · resolve | not found / could not download. |
+| psl | ⏭️ skip · resolve | not found / could not download. |
+| pturso | ⏭️ skip · resolve | not found / could not download. |
+| pubgrub | ⏭️ skip · resolve | not found / could not download. |
+| publicsuffix_gleam | ⏭️ skip · resolve | not found / could not download. |
+| puddle | ⏭️ skip · resolve | not found / could not download. |
+| punycode | ⏭️ skip · resolve | not found / could not download. |
 | qcheck | ✅ clean |  |
+| qcheck_gleeunit_utils | ⏭️ skip · resolve | not found / could not download. |
+| qol_gleam | ⏭️ skip · resolve | not found / could not download. |
+| qrkit | ⏭️ skip · resolve | not found / could not download. |
+| qs | ⏭️ skip · resolve | not found / could not download. |
+| quaterni | ⏭️ skip · resolve | not found / could not download. |
+| quaternion | ⏭️ skip · resolve | not found / could not download. |
+| queryb | ⏭️ skip · resolve | not found / could not download. |
+| question | ⏭️ skip · resolve | not found / could not download. |
+| rad | ⏭️ skip · resolve | not found / could not download. |
+| rada | ⏭️ skip · resolve | not found / could not download. |
+| radiant | ⏭️ skip · resolve | not found / could not download. |
+| radiate | ⏭️ skip · resolve | not found / could not download. |
+| radish | ⏭️ skip · resolve | not found / could not download. |
+| radish_fork | ⏭️ skip · resolve | not found / could not download. |
+| rally | ⏭️ skip · resolve | not found / could not download. |
+| ramble | ⏭️ skip · resolve | not found / could not download. |
+| randomlib | ⏭️ skip · resolve | not found / could not download. |
+| ranged_int | ⏭️ skip · resolve | not found / could not download. |
 | ranger | ✅ clean |  |
+| rank | ⏭️ skip · resolve | not found / could not download. |
+| rasa | ⏭️ skip · resolve | not found / could not download. |
+| ratioed | ⏭️ skip · resolve | not found / could not download. |
+| rcade_inputs | ⏭️ skip · resolve | not found / could not download. |
+| react_gleam | ⏭️ skip · resolve | not found / could not download. |
+| reactive_signal | ⏭️ skip · resolve | not found / could not download. |
+| ream | ⏭️ skip · resolve | not found / could not download. |
+| rectify | ⏭️ skip · resolve | not found / could not download. |
+| recursive | ⏭️ skip · resolve | not found / could not download. |
+| redact | ✅ clean |  |
 | redraw | ✅ clean | JS-target package. |
+| redraw_batteries | ✅ clean |  |
+| redraw_dom | ✅ clean |  |
+| ref | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| reference_this | ✅ clean |  |
+| refrakt | ✅ clean |  |
+| reki | ✅ clean |  |
+| releam | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| rememo | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| rememo_erlang | ✅ clean |  |
+| rememo_javascript | ✅ clean |  |
+| remote_data | ✅ clean |  |
+| render_md | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | repeatedly | ✅ clean |  |
+| report | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| rexen | ✅ clean |  |
+| rizzo | ⏭️ skip · resolve | not found / could not download. |
+| roar | ✅ clean |  |
+| rockbox | ✅ clean |  |
+| roman_gleam | ✅ clean |  |
+| rosetta | ⏭️ skip · resolve | not found / could not download. |
+| roundabout | ⏭️ skip · resolve | not found / could not download. |
+| rsa_keys | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| rsvp | ⏭️ skip · resolve | not found / could not download. |
+| runetracer | ⏭️ skip · resolve | not found / could not download. |
+| sara | ⏭️ skip · resolve | not found / could not download. |
+| savoiardi | ⏭️ skip · resolve | not found / could not download. |
+| scaffold_gleam | ⏭️ skip · resolve | not found / could not download. |
+| scamper | ⏭️ skip · resolve | not found / could not download. |
+| sceall | ⏭️ skip · resolve | not found / could not download. |
+| scrapbook | ⏭️ skip · resolve | not found / could not download. |
+| scriptorium | ⏭️ skip · resolve | not found / could not download. |
+| search_algorithms_gleam | ⏭️ skip · resolve | not found / could not download. |
+| secp256k1_gleam | ⏭️ skip · resolve | not found / could not download. |
+| sendgriddle | ⏭️ skip · resolve | not found / could not download. |
+| sextant | ⏭️ skip · resolve | not found / could not download. |
+| shakespeare | ⏭️ skip · resolve | not found / could not download. |
+| shamir | ⏭️ skip · resolve | not found / could not download. |
+| shcribe | ⏭️ skip · resolve | not found / could not download. |
+| sheen | ⏭️ skip · resolve | not found / could not download. |
+| shelf | ⏭️ skip · resolve | not found / could not download. |
 | shellout | ✅ clean |  |
+| shimmer | ⏭️ skip · resolve | not found / could not download. |
+| shimmy | ⏭️ skip · resolve | not found / could not download. |
+| shine_tree | ⏭️ skip · resolve | not found / could not download. |
+| shiny | ⏭️ skip · resolve | not found / could not download. |
+| shopify_draft_proxy | ⏭️ skip · resolve | not found / could not download. |
 | shore | 🔧 fixed | `let focused = FocusedInput(..)` then `focused.offset` — variant narrowing from a constructor in a let binding (`1796ffb`). |
+| shork | ⏭️ skip · resolve | not found / could not download. |
+| showtime | ⏭️ skip · resolve | not found / could not download. |
+| sidereal | ⏭️ skip · resolve | not found / could not download. |
+| sift | ⏭️ skip · resolve | not found / could not download. |
+| sigmal | ⏭️ skip · resolve | not found / could not download. |
+| signal | ⏭️ skip · resolve | not found / could not download. |
+| signal_pgo | ⏭️ skip · resolve | not found / could not download. |
+| silk | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| simple_pubsub | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| simplejson | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | simplifile | ✅ clean |  |
+| singleflight | ✅ clean |  |
+| singularity | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| sixtytwo | ✅ clean |  |
 | sketch | ✅ clean | JS-target package. |
+| sketch_css | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| sketch_lustre | ✅ clean |  |
+| sketch_lustre_experimental | ⏭️ skip · resolve | not found / could not download. |
+| sketch_redraw | ✅ clean |  |
+| skir_client | ✅ clean |  |
+| slabs | ✅ clean |  |
+| slack_webhook_client | ✅ clean |  |
+| slackin | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| slate | ✅ clean |  |
+| smail | ✅ clean |  |
+| smalto | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| smalto_lustre | ⏭️ skip · resolve | not found / could not download. |
+| smalto_lustre_themes | ⏭️ skip · resolve | not found / could not download. |
+| smol | ⏭️ skip · resolve | not found / could not download. |
+| smut | ⏭️ skip · resolve | not found / could not download. |
 | snag | ✅ clean |  |
+| snowball_stemmer | ⏭️ skip · resolve | not found / could not download. |
+| snowglake | ⏭️ skip · resolve | not found / could not download. |
+| snowgleam | ⏭️ skip · resolve | not found / could not download. |
+| sol | ⏭️ skip · resolve | not found / could not download. |
+| solc | ⏭️ skip · resolve | not found / could not download. |
+| sonatina | ⏭️ skip · resolve | not found / could not download. |
+| sorbet | ⏭️ skip · resolve | not found / could not download. |
+| spacetraders_api | ⏭️ skip · resolve | not found / could not download. |
+| spacetraders_api_fetch | ⏭️ skip · resolve | not found / could not download. |
+| spacetraders_api_httpc | ⏭️ skip · resolve | not found / could not download. |
+| spacetraders_models | ⏭️ skip · resolve | not found / could not download. |
+| spacetraders_sdk | ⏭️ skip · resolve | not found / could not download. |
+| sparkle | ⏭️ skip · resolve | not found / could not download. |
+| sparkleplug | ⏭️ skip · resolve | not found / could not download. |
+| sparklinekit | ⏭️ skip · resolve | not found / could not download. |
+| sparkling | ⏭️ skip · resolve | not found / could not download. |
+| sparx | ⏭️ skip · resolve | not found / could not download. |
+| spatial | ⏭️ skip · resolve | not found / could not download. |
+| spectator | ⏭️ skip · resolve | not found / could not download. |
+| speedbump | ⏭️ skip · resolve | not found / could not download. |
+| spell_out | ⏭️ skip · resolve | not found / could not download. |
 | spinner | ✅ clean |  |
+| splash | ⏭️ skip · resolve | not found / could not download. |
+| splines | ⏭️ skip · resolve | not found / could not download. |
 | splitter | ✅ clean |  |
+| spoke | ⏭️ skip · resolve | not found / could not download. |
+| spoke_core | ⏭️ skip · resolve | not found / could not download. |
+| spoke_mqtt | ⏭️ skip · resolve | not found / could not download. |
+| spoke_mqtt_actor | ⏭️ skip · resolve | not found / could not download. |
+| spoke_mqtt_js | ⏭️ skip · resolve | not found / could not download. |
+| spoke_packet | ⏭️ skip · resolve | not found / could not download. |
+| spoke_tcp | ⏭️ skip · resolve | not found / could not download. |
+| spotify_client | ⏭️ skip · resolve | not found / could not download. |
+| spotless | ⏭️ skip · resolve | not found / could not download. |
+| sprinkle | ⏭️ skip · resolve | not found / could not download. |
+| sprocket | ⏭️ skip · resolve | not found / could not download. |
+| sprocket_mist | ⏭️ skip · resolve | not found / could not download. |
+| sqid | ⏭️ skip · resolve | not found / could not download. |
+| sqlc_gen_gleam | ⏭️ skip · resolve | not found / could not download. |
+| sqlight | ⏭️ skip · resolve | not found / could not download. |
+| sqlode | ⏭️ skip · resolve | not found / could not download. |
+| squall | ⏭️ skip · resolve | not found / could not download. |
+| squeal | ⏭️ skip · resolve | not found / could not download. |
 | squirrel | 🔧 fixed | `QueryFileHasInvalidName(file:, reason: _, suggested_name:)` — labelled function-capture hole placed positionally instead of by label (`ab80771`). |
+| squirtle | ⏭️ skip · resolve | not found / could not download. |
+| ssevents | ✅ clean |  |
+| ssg | ⏭️ skip · resolve | not found / could not download. |
+| stacky | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| staff_ai | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| star | ✅ clean |  |
+| stardate | ✅ clean |  |
+| starfeeds | ✅ clean |  |
 | storail | ✅ clean |  |
 | tempo | ⏭️ skip · build |  |
 | term_size | ✅ clean |  |
