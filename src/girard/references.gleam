@@ -1,6 +1,13 @@
 //// Collect the names a definition's body refers to, used to build the call
-//// graph between top-level definitions. This is an over-approximation: it
-//// gathers `Variable` references without tracking local shadowing.
+//// graph between top-level definitions.
+////
+//// References are tracked with lexical scoping: a name bound locally
+//// (function parameter, `let`/`use` binding, pattern variable, `fn` parameter,
+//// or `case` clause pattern) shadows any top-level definition of the same name,
+//// so its uses are *not* recorded as dependency edges. Without this, a function
+//// with a parameter named `pool` that also has a top-level `pool` would be
+//// wrongly grouped into `pool`'s recursive component, deferring its
+//// generalization and over-unifying its type.
 ////
 //// References are split into two kinds:
 ////   - *values*: names used in value position (`f`, `f(x)`, shorthand fields).
@@ -14,112 +21,224 @@
 import glance
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/set.{type Set}
 
 /// `#(value references, field-access qualifier names)` in a function body.
 pub fn in_function(function: glance.Function) -> #(List(String), List(String)) {
-  in_statements(function.body, #([], []))
+  let bound = set.from_list(list.flat_map(function.parameters, param_names))
+  in_statements(function.body, bound, #([], []))
 }
 
 /// `#(value references, field-access qualifier names)` in a constant's value.
 pub fn in_constant(constant: glance.Constant) -> #(List(String), List(String)) {
-  in_expr(constant.value, #([], []))
+  in_expr(constant.value, set.new(), #([], []))
 }
 
 type Acc =
   #(List(String), List(String))
 
-fn value(acc: Acc, name: String) -> Acc {
-  #([name, ..acc.0], acc.1)
+fn value(acc: Acc, bound: Set(String), name: String) -> Acc {
+  case set.contains(bound, name) {
+    True -> acc
+    False -> #([name, ..acc.0], acc.1)
+  }
 }
 
-fn qualifier(acc: Acc, name: String) -> Acc {
-  #(acc.0, [name, ..acc.1])
+fn qualifier(acc: Acc, bound: Set(String), name: String) -> Acc {
+  case set.contains(bound, name) {
+    True -> acc
+    False -> #(acc.0, [name, ..acc.1])
+  }
 }
 
-fn in_statements(statements: List(glance.Statement), acc: Acc) -> Acc {
-  list.fold(statements, acc, fn(acc, statement) {
-    case statement {
-      glance.Expression(expr) -> in_expr(expr, acc)
-      glance.Assignment(_, _, _, _, value) -> in_expr(value, acc)
-      glance.Assert(_, expr, message) ->
-        in_optional(message, in_expr(expr, acc))
-      glance.Use(_, _patterns, function) -> in_expr(function, acc)
-    }
-  })
+fn in_statements(
+  statements: List(glance.Statement),
+  bound: Set(String),
+  acc: Acc,
+) -> Acc {
+  // Bindings introduced by `let`/`use` are in scope for *subsequent*
+  // statements, so the scope grows as we fold left to right.
+  let #(_bound, acc) =
+    list.fold(statements, #(bound, acc), fn(state, statement) {
+      let #(bound, acc) = state
+      case statement {
+        glance.Expression(expr) -> #(bound, in_expr(expr, bound, acc))
+        glance.Assignment(_, _, pattern, _, value) -> {
+          let acc = in_expr(value, bound, acc)
+          #(set.union(bound, set.from_list(pattern_names(pattern))), acc)
+        }
+        glance.Assert(_, expr, message) -> #(
+          bound,
+          in_optional(message, bound, in_expr(expr, bound, acc)),
+        )
+        glance.Use(_, patterns, function) -> {
+          let acc = in_expr(function, bound, acc)
+          let names = list.flat_map(patterns, fn(p) { pattern_names(p.pattern) })
+          #(set.union(bound, set.from_list(names)), acc)
+        }
+      }
+    })
+  acc
 }
 
-fn in_optional(expr: Option(glance.Expression), acc: Acc) -> Acc {
+fn in_optional(
+  expr: Option(glance.Expression),
+  bound: Set(String),
+  acc: Acc,
+) -> Acc {
   case expr {
-    Some(e) -> in_expr(e, acc)
+    Some(e) -> in_expr(e, bound, acc)
     None -> acc
   }
 }
 
-fn in_exprs(exprs: List(glance.Expression), acc: Acc) -> Acc {
-  list.fold(exprs, acc, fn(acc, e) { in_expr(e, acc) })
+fn in_exprs(exprs: List(glance.Expression), bound: Set(String), acc: Acc) -> Acc {
+  list.fold(exprs, acc, fn(acc, e) { in_expr(e, bound, acc) })
 }
 
-fn in_fields(fields: List(glance.Field(glance.Expression)), acc: Acc) -> Acc {
+fn in_fields(
+  fields: List(glance.Field(glance.Expression)),
+  bound: Set(String),
+  acc: Acc,
+) -> Acc {
   list.fold(fields, acc, fn(acc, field) {
     case field {
-      glance.UnlabelledField(item) -> in_expr(item, acc)
-      glance.LabelledField(_, _, item) -> in_expr(item, acc)
-      glance.ShorthandField(label, _) -> value(acc, label)
+      glance.UnlabelledField(item) -> in_expr(item, bound, acc)
+      glance.LabelledField(_, _, item) -> in_expr(item, bound, acc)
+      glance.ShorthandField(label, _) -> value(acc, bound, label)
     }
   })
 }
 
-fn in_expr(expr: glance.Expression, acc: Acc) -> Acc {
+fn in_expr(expr: glance.Expression, bound: Set(String), acc: Acc) -> Acc {
   case expr {
     glance.Int(..) | glance.Float(..) | glance.String(..) -> acc
 
-    glance.Variable(_, name) -> value(acc, name)
+    glance.Variable(_, name) -> value(acc, bound, name)
 
-    glance.NegateInt(_, v) | glance.NegateBool(_, v) -> in_expr(v, acc)
+    glance.NegateInt(_, v) | glance.NegateBool(_, v) -> in_expr(v, bound, acc)
 
-    glance.Block(_, statements) -> in_statements(statements, acc)
+    glance.Block(_, statements) -> in_statements(statements, bound, acc)
 
     glance.Panic(_, message) | glance.Todo(_, message) ->
-      in_optional(message, acc)
+      in_optional(message, bound, acc)
 
-    glance.Tuple(_, elements) -> in_exprs(elements, acc)
+    glance.Tuple(_, elements) -> in_exprs(elements, bound, acc)
 
-    glance.List(_, elements, rest) -> in_optional(rest, in_exprs(elements, acc))
+    glance.List(_, elements, rest) ->
+      in_optional(rest, bound, in_exprs(elements, bound, acc))
 
-    glance.Fn(_, _arguments, _return, body) -> in_statements(body, acc)
+    // An anonymous function's parameters shadow within its body.
+    glance.Fn(_, arguments, _return, body) -> {
+      let bound =
+        set.union(bound, set.from_list(list.flat_map(arguments, fn_param_names)))
+      in_statements(body, bound, acc)
+    }
 
     glance.RecordUpdate(_, _, _, record, fields) ->
-      list.fold(fields, in_expr(record, acc), fn(acc, field) {
-        in_optional(field.item, acc)
+      list.fold(fields, in_expr(record, bound, acc), fn(acc, field) {
+        in_optional(field.item, bound, acc)
       })
 
     // `x.label` with a bare-name container records `x` as a *qualifier*: it is
     // usually module access (`string.trim`). A non-variable container
     // (`f().field`) is a real value reference.
     glance.FieldAccess(_, glance.Variable(_, name), _label) ->
-      qualifier(acc, name)
-    glance.FieldAccess(_, container, _label) -> in_expr(container, acc)
+      qualifier(acc, bound, name)
+    glance.FieldAccess(_, container, _label) -> in_expr(container, bound, acc)
 
     glance.Call(_, function, arguments) ->
-      in_fields(arguments, in_expr(function, acc))
+      in_fields(arguments, bound, in_expr(function, bound, acc))
 
-    glance.TupleIndex(_, tuple, _index) -> in_expr(tuple, acc)
+    glance.TupleIndex(_, tuple, _index) -> in_expr(tuple, bound, acc)
 
     glance.FnCapture(_, _label, function, before, after) ->
-      in_fields(after, in_fields(before, in_expr(function, acc)))
+      in_fields(
+        after,
+        bound,
+        in_fields(before, bound, in_expr(function, bound, acc)),
+      )
 
     glance.BitString(_, segments) ->
-      list.fold(segments, acc, fn(acc, segment) { in_expr(segment.0, acc) })
+      list.fold(segments, acc, fn(acc, segment) {
+        in_expr(segment.0, bound, acc)
+      })
 
+    // Each clause's patterns bind names visible in its guard and body.
     glance.Case(_, subjects, clauses) ->
-      list.fold(clauses, in_exprs(subjects, acc), fn(acc, clause) {
-        in_optional(clause.guard, in_expr(clause.body, acc))
+      list.fold(clauses, in_exprs(subjects, bound, acc), fn(acc, clause) {
+        let names =
+          list.flat_map(list.flatten(clause.patterns), pattern_names)
+        let bound = set.union(bound, set.from_list(names))
+        in_optional(clause.guard, bound, in_expr(clause.body, bound, acc))
       })
 
     glance.BinaryOperator(_, _name, left, right) ->
-      in_expr(right, in_expr(left, acc))
+      in_expr(right, bound, in_expr(left, bound, acc))
 
     glance.Echo(_, expression, message) ->
-      in_optional(message, in_optional(expression, acc))
+      in_optional(message, bound, in_optional(expression, bound, acc))
+  }
+}
+
+// --- Bound-name extraction -------------------------------------------------
+
+fn assignment_name(name: glance.AssignmentName) -> List(String) {
+  case name {
+    glance.Named(n) -> [n]
+    glance.Discarded(_) -> []
+  }
+}
+
+fn param_names(param: glance.FunctionParameter) -> List(String) {
+  assignment_name(param.name)
+}
+
+fn fn_param_names(param: glance.FnParameter) -> List(String) {
+  assignment_name(param.name)
+}
+
+/// Every variable a pattern binds.
+fn pattern_names(pattern: glance.Pattern) -> List(String) {
+  case pattern {
+    glance.PatternInt(..)
+    | glance.PatternFloat(..)
+    | glance.PatternString(..)
+    | glance.PatternDiscard(..) -> []
+
+    glance.PatternVariable(_, name) -> [name]
+
+    glance.PatternTuple(_, elements) -> list.flat_map(elements, pattern_names)
+
+    glance.PatternList(_, elements, tail) ->
+      case tail {
+        Some(t) -> list.append(list.flat_map(elements, pattern_names), pattern_names(t))
+        None -> list.flat_map(elements, pattern_names)
+      }
+
+    glance.PatternAssignment(_, pattern, name) -> [name, ..pattern_names(pattern)]
+
+    glance.PatternConcatenate(_, _prefix, prefix_name, rest_name) ->
+      list.append(
+        case prefix_name {
+          Some(n) -> assignment_name(n)
+          None -> []
+        },
+        assignment_name(rest_name),
+      )
+
+    glance.PatternBitString(_, segments) ->
+      list.flat_map(segments, fn(segment) { pattern_names(segment.0) })
+
+    // A shorthand field in a constructor pattern (`Work(work:, receive:)`)
+    // binds the label as a variable.
+    glance.PatternVariant(_, _module, _constructor, arguments, _spread) ->
+      list.flat_map(arguments, fn(field) {
+        case field {
+          glance.UnlabelledField(p) -> pattern_names(p)
+          glance.LabelledField(_, _, p) -> pattern_names(p)
+          glance.ShorthandField(label, _) -> [label]
+        }
+      })
   }
 }

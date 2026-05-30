@@ -855,3 +855,42 @@ pub fn self_recursive_with_imports_generalizes_test() {
     "fn(List(Opt(a)), List(Opt(Int))) -> #(#(List(a), Int), #(List(Int), Int))",
   )
 }
+
+pub fn parameter_shadowing_does_not_create_call_edge_test() {
+  // A parameter named `pool` shadows the top-level `pool` function. Reference
+  // collection must not record the parameter use as a dependency on the
+  // top-level `pool`: doing so wrongly merged `worker_loop` into `pool`'s
+  // recursive component (worker -> worker_loop -> pool -> worker), so it was
+  // never generalized and `worker`'s call — which ties the pool and work
+  // message types via the `Started` constructor — over-unified its parameters.
+  // This is the bug behind the `crew` package's `worker_loop`.
+  let source =
+    "type Subject(a) {\n  Subj\n}\n"
+    <> "type Pid {\n  APid\n}\n"
+    <> "pub type PoolMsg(work, result) {\n"
+    <> "  Started(send: Subject(Work(work, result)))\n"
+    <> "  Idle(pid: Pid)\n"
+    <> "}\n"
+    <> "type Work(work, result) {\n  Work(work: work, result: result)\n}\n"
+    <> "fn send(s: Subject(a), msg: a) -> Nil {\n  Nil\n}\n"
+    <> "fn receive(s: Subject(a)) -> a {\n  panic\n}\n"
+    <> "fn pool(seed: Subject(PoolMsg(Int, Int))) -> Nil {\n"
+    <> "  worker(seed, 0, fn(s, w) { w })\n"
+    <> "}\n"
+    <> "fn worker_loop(pool, subject, state, do_work) -> Nil {\n"
+    <> "  let Work(work:, result: _) = receive(subject)\n"
+    <> "  let result = do_work(state, work)\n"
+    <> "  send(pool, Idle(APid))\n"
+    <> "  worker_loop(pool, subject, state, do_work)\n"
+    <> "}\n"
+    <> "fn worker(pool_subject, state, do_work) -> Nil {\n"
+    <> "  let subject = Subj\n"
+    <> "  send(pool_subject, Started(subject))\n"
+    <> "  worker_loop(pool_subject, subject, state, do_work)\n"
+    <> "}"
+  // PoolMsg's and Work's parameters must stay independent.
+  signature(source, "worker_loop")
+  |> should.equal(
+    "fn(Subject(PoolMsg(e, f)), Subject(Work(g, h)), i, fn(i, g) -> j) -> Nil",
+  )
+}
