@@ -1465,12 +1465,37 @@ fn infer_pipe(
   right: glance.Expression,
 ) -> Result(#(Type, State), Error) {
   case right {
-    // `left |> f(args)` becomes `f(left, args)`.
-    glance.Call(call_span, function, arguments) ->
-      infer_call(env, st, call_span, function, [
-        glance.UnlabelledField(left),
-        ..arguments
-      ])
+    glance.Call(call_span, function, arguments) -> {
+      // `left |> f(args)` is `f(left, args)` when `f` takes one more argument
+      // than is supplied. But if `f(args)` is already a saturated call that
+      // returns a function, the pipe applies `left` to that result:
+      // `f(args)(left)`. Distinguish on the callee's arity.
+      use #(ft, st) <- result.try(infer_expr(env, st, function))
+      let saturated = case resolve(st, ft) {
+        Fn(params, _) -> list.length(params) == list.length(arguments)
+        _ -> False
+      }
+      case saturated {
+        True -> {
+          use #(call_type, st) <- result.try(infer_call(
+            env,
+            st,
+            call_span,
+            function,
+            arguments,
+          ))
+          use #(lt, st) <- result.try(infer_expr(env, st, left))
+          let #(result, st) = fresh(st)
+          use st <- result.try(unify(st, call_type, Fn([lt], result)))
+          Ok(#(result, record(st, span, result)))
+        }
+        False ->
+          infer_call(env, st, call_span, function, [
+            glance.UnlabelledField(left),
+            ..arguments
+          ])
+      }
+    }
     // `left |> f` becomes `f(left)`.
     _ -> {
       use #(lt, st) <- result.try(infer_expr(env, st, left))

@@ -256,6 +256,20 @@ pub fn pipe_test() {
   |> should.equal("fn(Int) -> Int")
 }
 
+pub fn pipe_into_saturated_call_test() {
+  // `make(\"a\")` is a saturated call returning a function, so `x |> make(\"a\")`
+  // applies `x` to the result — `make(\"a\")(x)` — rather than inserting `x` as a
+  // second argument (which would be the wrong arity). (cors_builder's
+  // `res |> set_allowed_origin(cors, origin)`.)
+  let source =
+    "fn make(prefix: String) -> fn(String) -> String {\n"
+    <> "  fn(s) { prefix <> s }\n"
+    <> "}\n"
+    <> "pub fn go(x: String) -> String { x |> make(\"a\") }"
+  signature(source, "go")
+  |> should.equal("fn(String) -> String")
+}
+
 // --- Module-level polymorphism (M2: dependency-ordered inference) -----------
 
 pub fn polymorphic_helper_test() {
