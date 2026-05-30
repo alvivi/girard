@@ -37,15 +37,27 @@ trap 'rm -rf "$work"' EXIT
 # The gleam shim needs a pinned toolchain in scope for every invocation.
 cp "$root/.tool-versions" "$work/.tool-versions"
 
-# 1. Resolve + download the package and its full transitive closure.
-( cd "$work" && "$hexgleam" new probe >/dev/null 2>&1 )
+# 1. Resolve + download the package and its full transitive closure. Hand-write
+#    the probe project with a permissive stdlib range rather than `gleam new` +
+#    `gleam add`: `gleam new` pins `gleam_stdlib >= 1.0.0`, which spuriously
+#    conflicts with packages (or transitive deps) that require an older stdlib,
+#    so the resolver should be free to pick whatever the package's closure needs.
 proj="$work/probe"
+mkdir -p "$proj/src"
 cp "$root/.tool-versions" "$proj/.tool-versions"
-if ! ( cd "$proj" && timeout 120 "$hexgleam" add "$pkg" >/dev/null 2>&1 ); then
-  echo "sweep $pkg: SKIP (could not add — not found or resolution failed)"
+cat > "$proj/gleam.toml" <<EOF
+name = "probe"
+version = "1.0.0"
+[dependencies]
+gleam_stdlib = ">= 0.34.0 and < 2.0.0"
+$pkg = ">= 0.0.0"
+[dev-dependencies]
+EOF
+echo "pub const probe = 0" > "$proj/src/probe.gleam"
+if ! ( cd "$proj" && timeout 240 "$hexgleam" deps download >/dev/null 2>&1 ); then
+  echo "sweep $pkg: SKIP (could not resolve — not found or version conflict)"
   exit 2
 fi
-( cd "$proj" && timeout 240 "$hexgleam" deps download >/dev/null 2>&1 )
 
 deps="$proj/build/packages"
 if [ ! -d "$deps/$pkg/src" ]; then
