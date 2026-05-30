@@ -38,8 +38,11 @@ double: fn(Int) -> Int
 ```
 
 `girard.annotate(source)` returns a structured `Annotated` value
-(`functions: List(#(name, signature))` and `expressions: List(Annotation)`);
-`girard.format(source)` renders the report above.
+(`functions: List(#(name, Type))` and `expressions: List(Annotation)`). Types are
+structured [`girard/types.Type`](src/girard/types.gleam) values — pattern-match
+on `Named`/`Fn`/`Var`/`Tuple` to inspect or transform them — not strings. Render
+one with `girard.type_to_string(type_)`; `girard.format(source)` renders the
+whole report above.
 
 ### Annotating a `glance` AST you already parsed
 
@@ -60,7 +63,9 @@ pub fn typed(source: String) {
   let assert Ok(annotated) =
     girard.annotate_module(module, girard.disk_resolver()) // or fn(_) { Error(Nil) }
 
-  // span -> inferred type, ready to look up against any glance node's span
+  // span -> structured Type, ready to look up against any glance node's span
+  // (a.type_ is a girard/types.Type — pattern-match it, or render with
+  // girard.type_to_string)
   let types =
     list.fold(annotated.expressions, dict.new(), fn(acc, a) {
       dict.insert(acc, #(a.span.start, a.span.end), a.type_)

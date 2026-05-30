@@ -73,7 +73,11 @@ fn check_expressions(name: String, annotated: girard.Annotated) -> Nil {
 
   let ours =
     list.fold(annotated.expressions, dict.new(), fn(acc, a) {
-      dict.insert(acc, #(a.span.start, a.span.end), canonicalize(a.type_))
+      dict.insert(
+        acc,
+        #(a.span.start, a.span.end),
+        canonicalize(printer.to_string(a.type_)),
+      )
     })
 
   // The compiler can overlay several types on one span when it desugars (e.g.
@@ -126,9 +130,9 @@ fn expression_decoder() -> Decoder(#(Int, Int, Type)) {
 
 /// Compare girard's rendered signature string against the compiler's type,
 /// both reduced to a canonical type-variable spelling.
-fn check(name: String, ours: String, theirs: Type) -> Nil {
+fn check(name: String, ours: Type, theirs: Type) -> Nil {
   let expected = canonicalize(printer.to_string(theirs))
-  let actual = canonicalize(ours)
+  let actual = canonicalize(printer.to_string(ours))
   case actual == expected {
     True -> Nil
     False ->

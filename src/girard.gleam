@@ -9,7 +9,7 @@
 //// describing why a module could not be typed rather than crashing.
 
 import argv
-import girard/internal/infer.{type ModuleInterface, type Scheme, Scheme}
+import girard/internal/infer.{type ModuleInterface, Scheme}
 import girard/internal/prelude
 import girard/internal/printer
 import girard/internal/reference
@@ -32,17 +32,21 @@ pub type Error =
   TypeError
 
 /// The inferred type of a single expression, identified by its source span.
+/// `type_` is a structured `girard/types.Type` you can pattern-match on; render
+/// it with `type_to_string`.
 pub type Annotation {
-  Annotation(span: glance.Span, type_: String)
+  Annotation(span: glance.Span, type_: Type)
 }
 
-/// The full result of annotating a module.
+/// The full result of annotating a module. Types are structured `Type` values;
+/// a function's `Type` is its generalized signature (a `Fn(..)` whose `Var`s are
+/// the generic type variables). Render any of them with `type_to_string`.
 pub type Annotated {
   Annotated(
-    /// Top-level function name to inferred signature, in source order.
-    functions: List(#(String, String)),
+    /// Top-level function name to inferred signature type, in source order.
+    functions: List(#(String, Type)),
     /// Top-level constant name to inferred type, in source order.
-    constants: List(#(String, String)),
+    constants: List(#(String, Type)),
     /// Expression span to inferred type, sorted by start offset.
     expressions: List(Annotation),
   )
@@ -584,52 +588,36 @@ fn render(module: glance.Module, env: infer.Env, st: infer.State) -> Annotated {
   let constants =
     list.map(module.constants, fn(d) { ConstantDef(d.definition) })
 
-  let printer_names = printer.new_names()
-  let #(signatures, printer_names) =
-    collect_signatures(functions, env, printer_names)
-  let #(constant_types, printer_names) =
-    collect_signatures(constants, env, printer_names)
-
-  let #(expressions, _names) =
-    list.fold(
-      list.reverse(st.annotations),
-      #([], printer_names),
-      fn(acc, entry) {
-        let #(rendered, names) = acc
-        let #(span, type_) = entry
-        let #(text, names) = printer.print(names, infer.zonk(st, type_))
-        #([Annotation(span, text), ..rendered], names)
-      },
-    )
+  let expressions =
+    list.map(st.annotations, fn(entry) {
+      let #(span, type_) = entry
+      Annotation(span, infer.zonk(st, type_))
+    })
 
   Annotated(
-    functions: signatures,
-    constants: constant_types,
-    expressions: sort_by_span(list.reverse(expressions)),
+    functions: collect_types(functions, env),
+    constants: collect_types(constants, env),
+    expressions: sort_by_span(expressions),
   )
 }
 
-/// Render the inferred signature of each definition, in source order, keeping
-/// type-variable names stable across the shared printer context. Definitions
-/// the environment somehow lacks are skipped.
-fn collect_signatures(
-  defs: List(Def),
-  env: infer.Env,
-  printer_names: printer.Names,
-) -> #(List(#(String, String)), printer.Names) {
-  let #(rev, printer_names) =
-    list.fold(defs, #([], printer_names), fn(acc, def) {
-      let #(sigs, printer_names) = acc
-      let name = def_name(def)
-      case infer.lookup(env, name) {
-        Ok(scheme) -> {
-          let #(rendered, printer_names) = print_scheme(printer_names, scheme)
-          #([#(name, rendered), ..sigs], printer_names)
-        }
-        Error(_) -> #(sigs, printer_names)
-      }
-    })
-  #(list.reverse(rev), printer_names)
+/// The inferred (generalized) signature type of each definition, in source
+/// order. Definitions the environment somehow lacks are skipped.
+fn collect_types(defs: List(Def), env: infer.Env) -> List(#(String, Type)) {
+  list.filter_map(defs, fn(def) {
+    let name = def_name(def)
+    case infer.lookup(env, name) {
+      Ok(scheme) -> Ok(#(name, scheme.type_))
+      Error(_) -> Error(Nil)
+    }
+  })
+}
+
+/// Render an inferred `Type` to Gleam syntax (e.g. `fn(Int) -> a`), naming type
+/// variables `a, b, c, …`. Each call names variables independently; for a report
+/// with names shared across several types, thread `girard/internal/printer`.
+pub fn type_to_string(type_: Type) -> String {
+  printer.to_string(type_)
 }
 
 /// Render an annotated module as text (the human-facing report). On failure the
@@ -638,19 +626,35 @@ pub fn format(source: String) -> String {
   case annotate(source) {
     Error(error) -> "// error: " <> describe_error(error)
     Ok(annotated) -> {
-      let signatures =
-        list.map(list.append(annotated.functions, annotated.constants), fn(f) {
-          f.0 <> ": " <> f.1
+      // Share one printer context so type-variable names are consistent across
+      // every signature and expression in the report.
+      let names = printer.new_names()
+      let #(rev_sigs, names) =
+        list.fold(
+          list.append(annotated.functions, annotated.constants),
+          #([], names),
+          fn(acc, def) {
+            let #(lines, names) = acc
+            let #(text, names) = printer.print(names, def.1)
+            #([def.0 <> ": " <> text, ..lines], names)
+          },
+        )
+      let #(rev_exprs, _names) =
+        list.fold(annotated.expressions, #([], names), fn(acc, a) {
+          let #(lines, names) = acc
+          let #(text, names) = printer.print(names, a.type_)
+          let line =
+            int.to_string(a.span.start)
+            <> "-"
+            <> int.to_string(a.span.end)
+            <> ": "
+            <> text
+          #([line, ..lines], names)
         })
-      let expressions =
-        list.map(annotated.expressions, fn(a) {
-          int.to_string(a.span.start)
-          <> "-"
-          <> int.to_string(a.span.end)
-          <> ": "
-          <> a.type_
-        })
-      string.join(list.append(signatures, expressions), "\n")
+      string.join(
+        list.append(list.reverse(rev_sigs), list.reverse(rev_exprs)),
+        "\n",
+      )
     }
   }
 }
@@ -687,13 +691,6 @@ pub fn describe_error(error: Error) -> String {
 
 fn parse(source: String) -> Result(glance.Module, Error) {
   glance.module(source) |> result.map_error(types.ParseFailed)
-}
-
-fn print_scheme(
-  names: printer.Names,
-  scheme: Scheme,
-) -> #(String, printer.Names) {
-  printer.print(names, scheme.type_)
 }
 
 fn sort_by_span(annotations: List(Annotation)) -> List(Annotation) {

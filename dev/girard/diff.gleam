@@ -118,7 +118,11 @@ fn compare(
 ) -> Int {
   let ours =
     list.fold(annotated.expressions, dict.new(), fn(acc, a) {
-      dict.insert(acc, #(a.span.start, a.span.end), canonicalize(a.type_))
+      dict.insert(
+        acc,
+        #(a.span.start, a.span.end),
+        canonicalize(printer.to_string(a.type_)),
+      )
     })
   let theirs =
     list.fold(oracle_exprs, dict.new(), fn(acc, entry) {

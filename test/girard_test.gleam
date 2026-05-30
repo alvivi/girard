@@ -18,7 +18,7 @@ pub fn main() {
 fn signature(source: String, name: String) -> String {
   let assert Ok(annotated) = girard.annotate(source)
   case list.key_find(annotated.functions, name) {
-    Ok(sig) -> sig
+    Ok(sig) -> girard.type_to_string(sig)
     Error(_) -> panic as { "no function named " <> name }
   }
 }
@@ -34,7 +34,7 @@ fn signature_with(
   let resolver = fn(path) { dict.get(table, path) }
   let assert Ok(annotated) = girard.annotate_with(source, resolver)
   case list.key_find(annotated.functions, name) {
-    Ok(sig) -> sig
+    Ok(sig) -> girard.type_to_string(sig)
     Error(_) -> panic as { "no function named " <> name }
   }
 }
@@ -43,7 +43,7 @@ fn signature_with(
 fn constant_type(source: String, name: String) -> String {
   let assert Ok(annotated) = girard.annotate(source)
   case list.key_find(annotated.constants, name) {
-    Ok(type_) -> type_
+    Ok(type_) -> girard.type_to_string(type_)
     Error(_) -> panic as { "no constant named " <> name }
   }
 }
@@ -62,7 +62,7 @@ fn type_of(source: String, snippet: String) -> String {
       }
     })
   case matches {
-    [type_, ..] -> type_
+    [type_, ..] -> girard.type_to_string(type_)
     [] -> panic as { "no expression with span for: " <> snippet }
   }
 }
@@ -919,7 +919,7 @@ pub fn partial_annotation_variable_is_rigid_test() {
     <> "pub fn render(e: Expr(ty)) -> Int {\n"
     <> "  case e.internal {\n    Lit(v) -> v\n    Bin(a, b) -> render_pair(a, b)\n  }\n}"
   signature(source, "render_pair")
-  |> should.equal("fn(Expr(b), Expr(b)) -> Int")
+  |> should.equal("fn(Expr(a), Expr(a)) -> Int")
 }
 
 pub fn no_polymorphic_recursion_test() {
@@ -997,7 +997,7 @@ pub fn parameter_shadowing_does_not_create_call_edge_test() {
   // PoolMsg's and Work's parameters must stay independent.
   signature(source, "worker_loop")
   |> should.equal(
-    "fn(Subject(PoolMsg(e, f)), Subject(Work(g, h)), i, fn(i, g) -> j) -> Nil",
+    "fn(Subject(PoolMsg(a, b)), Subject(Work(c, d)), e, fn(e, c) -> f) -> Nil",
   )
 }
 
@@ -1012,17 +1012,20 @@ pub fn annotate_pre_parsed_module_test() {
   let assert Ok(annotated) =
     girard.annotate_module(module, fn(_) { Error(Nil) })
 
-  // Same signature as the string-based entry point.
-  list.key_find(annotated.functions, "double")
-  |> should.equal(Ok("fn(Int) -> Int"))
+  // Same signature as the string-based entry point — and `type_` is a
+  // structured `Type` (here `Fn([Int], Int)`), not a string.
+  let assert Ok(types.Fn(
+    [types.Named("gleam", "Int", [])],
+    types.Named("gleam", "Int", []),
+  )) = list.key_find(annotated.functions, "double")
 
   // Every annotation's span indexes into the client's source / AST. The whole
-  // body `x + x` is recorded, and matches the glance call node's span.
+  // body `x + x` is recorded with its structured type, matching the glance node.
   let assert Ok(start) = first_index(source, "x + x")
   let span = #(start, start + string.byte_size("x + x"))
   list.filter_map(annotated.expressions, fn(a) {
     case #(a.span.start, a.span.end) == span {
-      True -> Ok(a.type_)
+      True -> Ok(girard.type_to_string(a.type_))
       False -> Error(Nil)
     }
   })
