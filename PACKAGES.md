@@ -898,7 +898,7 @@ fix is required, add a regression test and link the commit.
 | lifeguard | ✅ clean |  |
 | lightbulb | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | lightspeed | ✅ clean |  |
-| lily | 📝 note | discrepancy under investigation — an arity mismatch in `lily/topic` plus 26 expression mismatches; not yet classified. |
+| lily | 🔧 fixed | a JavaScript-targeted package: `ServerHandle`/topic-handle type aliases are defined per `@target`, so typing them as Erlang mismatched the compiler on every expression using them (plus a module-vs-field arity error in `lily/topic`). Fixed: honor `@target` for both targets, reading the package target from gleam.toml (`0671d7d`); callable-field shadowing (`6d5006f`). |
 | lite_fs | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | llmgleam | ✅ clean |  |
 | loan | ✅ clean |  |
@@ -951,7 +951,7 @@ fix is required, add a regression test and link the commit.
 | mascarpone | ⏭️ skip · resolve | not found / could not download. |
 | mat | ⏭️ skip · build |  |
 | matrix_gleam | ⏭️ skip · resolve | not found / could not download. |
-| maud | 📝 note | discrepancy under investigation — `document.Delim(len:, ..)` labelled pattern on an imported constructor resolves as `type Inline has no field len`; likely a cross-module constructor-field-map issue. |
+| maud | 🔧 fixed | two bugs: `let assert Delim(..) = x` didn't narrow `x` to the variant, so `x.len` failed (`NoSuchField`); and a `components` parameter shadowing the `components` module alias resolved `components.hr()` to the module's `hr` function not the param's callable `hr` field (arity mismatch). Fixed: let-pattern variant narrowing + callable-field shadowing in call position (`6d5006f`). |
 | mcp_client | ✅ clean |  |
 | mcp_toolkit | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | meadow | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
