@@ -856,6 +856,7 @@ fix is required, add a regression test and link the commit.
 | keccak_gleam | ✅ clean |  |
 | keyboard_shortcuts | ✅ clean |  |
 | keystore | ✅ clean |  |
+| kicad_sexpr | 📝 note | girard pins a generic var to a concrete type where the compiler keeps it polymorphic (`Result(#(Symbol, ...), ...)` vs `Result(#($0, ...), ...)`) in a parser combinator — same over-resolution family as gleamgen/omnimessage_lustre (6 mismatches). |
 | kick | ✅ clean |  |
 | kielet | ⏭️ skip · resolve | not found / could not download. |
 | kielet_gen | ⏭️ skip · resolve | not found / could not download. |
@@ -869,6 +870,7 @@ fix is required, add a regression test and link the commit.
 | kmh | ✅ clean |  |
 | knit_string | ✅ clean |  |
 | kreator | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| kryptos | 📝 note | its `kryptos/internal/der` module fails to **parse** in glance (bit-array pattern segment with an arithmetic size); cascades to `unbound variable: der` in dependents. The same glance gap behind acumen — not girard inference. |
 | kv_sessions | ⏭️ skip · resolve | not found / could not download. |
 | kv_sessions_postgres_adapter | ⏭️ skip · resolve | not found / could not download. |
 | kvite | ✅ clean |  |
