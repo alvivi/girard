@@ -856,6 +856,26 @@ pub fn self_recursive_with_imports_generalizes_test() {
   )
 }
 
+pub fn annotated_local_function_generalizes_test() {
+  // A `let`-bound function is generalized over the type variables written in
+  // its annotation, so it may be used at several types (`id(1)` and `id("hi")`).
+  // girard treated local bindings as monomorphic and unified the two uses —
+  // the bug behind the `esdee` package's `try_find` helper.
+  signature("pub fn main() {\n  let id = fn(x: a) -> a { x }\n  #(id(1), id(\"hi\"))\n}", "main")
+  |> should.equal("fn() -> #(Int, String)")
+}
+
+pub fn local_function_generalizes_only_annotated_variables_test() {
+  // Only the *annotated* variable (`a`) is generalized; the unannotated
+  // parameter `x` stays monomorphic, matching Gleam (which rejects varying an
+  // unannotated local parameter across uses).
+  signature(
+    "pub fn main() {\n  let pair = fn(x: Int, y: a) { #(x, y) }\n  #(pair(1, \"s\"), pair(2, 99))\n}",
+    "main",
+  )
+  |> should.equal("fn() -> #(#(Int, String), #(Int, Int))")
+}
+
 pub fn parameter_shadowing_does_not_create_call_edge_test() {
   // A parameter named `pool` shadows the top-level `pool` function. Reference
   // collection must not record the parameter use as a dependency on the

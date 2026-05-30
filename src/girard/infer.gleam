@@ -575,6 +575,68 @@ pub fn generalize(st: State, env: Env, type_: Type) -> Scheme {
   Scheme(quantified, zonked)
 }
 
+/// Generalize a type over a specific set of candidate variable ids only (the
+/// rest stay monomorphic). Used for a `let`-bound function, which Gleam makes
+/// polymorphic over exactly the type variables written in its annotations.
+fn generalize_over(
+  st: State,
+  env: Env,
+  type_: Type,
+  candidate_ids: List(Int),
+) -> Scheme {
+  let zonked = zonk(st, type_)
+  let env_vars = env_free_vars(st, env)
+  let free = free_vars(st, zonked)
+  // Each annotation var may have been unified with another; follow it to its
+  // representative and keep it only if it is still a free variable of the type.
+  let reps =
+    list.filter_map(candidate_ids, fn(id) {
+      case zonk(st, Var(id)) {
+        Var(rep) -> Ok(rep)
+        _ -> Error(Nil)
+      }
+    })
+  let quantified =
+    list.unique(
+      list.filter(reps, fn(id) {
+        list.contains(free, id) && !list.contains(env_vars, id)
+      }),
+    )
+  Scheme(quantified, zonked)
+}
+
+/// The type-variable names written in a `fn`'s parameter and return annotations.
+fn fn_annotation_var_names(
+  params: List(glance.FnParameter),
+  return_annotation: Option(glance.Type),
+) -> List(String) {
+  let from_params =
+    list.flat_map(params, fn(p) {
+      case p.type_ {
+        Some(t) -> type_var_names(t)
+        None -> []
+      }
+    })
+  case return_annotation {
+    Some(t) -> list.append(from_params, type_var_names(t))
+    None -> from_params
+  }
+}
+
+fn type_var_names(ast: glance.Type) -> List(String) {
+  case ast {
+    glance.VariableType(_, name) -> [name]
+    glance.NamedType(_, _, _, parameters) ->
+      list.flat_map(parameters, type_var_names)
+    glance.TupleType(_, elements) -> list.flat_map(elements, type_var_names)
+    glance.FunctionType(_, parameters, return) ->
+      list.append(list.flat_map(parameters, type_var_names), type_var_names(
+        return,
+      ))
+    glance.HoleType(..) -> []
+  }
+}
+
 /// Instantiate a scheme by replacing each quantified variable with a fresh one.
 fn instantiate(st: State, scheme: Scheme) -> #(Type, State) {
   let #(mapping, st) =
@@ -1088,7 +1150,7 @@ fn infer_fn(
 ) -> Result(#(Type, State), Error) {
   // No expected type: each parameter starts as a fresh variable.
   let #(seeds, st) = fresh_n(st, list.length(params))
-  infer_lambda(env, st, params, return_annotation, body, seeds, None)
+  infer_lambda(env, st, params, return_annotation, body, seeds, None, dict.new())
 }
 
 /// Infer a lambda whose parameters are seeded with `seed_params` (the expected
@@ -1102,6 +1164,10 @@ fn infer_lambda(
   body: List(glance.Statement),
   seed_params: List(Type),
   expected_return: Option(Type),
+  // Pre-seeded type-variable names (name -> Var). When a `let`-bound function is
+  // generalized over its explicit annotation variables, those share these ids
+  // across every annotation in the lambda; otherwise this is empty.
+  names: Dict(String, Type),
 ) -> Result(#(Type, State), Error) {
   use #(rev_param_types, body_env, st) <- result.try(
     list.try_fold(list.zip(params, seed_params), #([], env, st), fn(acc, pair) {
@@ -1109,7 +1175,7 @@ fn infer_lambda(
       let #(param, seed) = pair
       use #(t, st) <- result.try(case param.type_ {
         Some(ann) -> {
-          let #(annotated, st) = hydrate(env, st, ann)
+          let #(annotated, st) = hydrate_in(env, names, st, ann)
           use st <- result.try(unify(st, annotated, seed))
           Ok(#(seed, st))
         }
@@ -1126,7 +1192,7 @@ fn infer_lambda(
   use #(body_type, st) <- result.try(infer_statements(body_env, st, body))
   use st <- result.try(case return_annotation {
     Some(ann) -> {
-      let #(t, st) = hydrate(env, st, ann)
+      let #(t, st) = hydrate_in(env, names, st, ann)
       unify(st, body_type, t)
     }
     None -> Ok(st)
@@ -1538,6 +1604,7 @@ fn check(
         body,
         seeds,
         Some(ret),
+        dict.new(),
       ))
       let st = record(st, span, fn_type)
       unify(st, fn_type, expected)
@@ -1707,25 +1774,46 @@ fn infer_statement(
       Ok(#(t, env, st))
     }
 
-    glance.Assignment(_, _kind, pattern, annotation, value) -> {
-      use #(value_type, st) <- result.try(infer_expr(env, st, value))
-      use st <- result.try(case annotation {
-        Some(ann) -> {
-          let #(t, st) = hydrate(env, st, ann)
-          unify(st, value_type, t)
+    // `let name = fn(...)` whose annotations name type variables is generalized
+    // over exactly those variables — Gleam makes such a local binding
+    // polymorphic (`let id = fn(x: a) -> a { x }` may then be used at several
+    // types), unlike an unannotated `let id = fn(x) { x }`, which stays
+    // monomorphic.
+    glance.Assignment(
+      _,
+      _kind,
+      glance.PatternVariable(_, name) as pattern,
+      None,
+      glance.Fn(fspan, fparams, freturn, fbody) as value,
+    ) ->
+      case fn_annotation_var_names(fparams, freturn) {
+        [] -> infer_expr_assignment(env, st, pattern, None, value)
+        ann_names -> {
+          let #(names, ann_ids, st) =
+            list.fold(ann_names, #(dict.new(), [], st), fn(acc, nm) {
+              let #(names, ids, st) = acc
+              let #(id, st) = fresh_id(st)
+              #(dict.insert(names, nm, Var(id)), [id, ..ids], st)
+            })
+          let #(seeds, st) = fresh_n(st, list.length(fparams))
+          use #(value_type, st) <- result.try(infer_lambda(
+            env,
+            st,
+            fparams,
+            freturn,
+            fbody,
+            seeds,
+            None,
+            names,
+          ))
+          let st = record(st, fspan, value_type)
+          let scheme = generalize_over(st, env, value_type, ann_ids)
+          Ok(#(value_type, bind_value(env, name, scheme), st))
         }
-        None -> Ok(st)
-      })
-      use #(env, st) <- result.try(infer_pattern(env, st, pattern, value_type))
-      // `let x = Ctor(..)` narrows `x` to that variant (the compiler's inferred
-      // variant), so a later `x.field` reaches a field present only in `Ctor`.
-      let #(env, st) = case pattern, constructor_call(value) {
-        glance.PatternVariable(_, name), Ok(#(module, constructor)) ->
-          record_variant(env, st, module, constructor, value_type, name)
-        _, _ -> #(env, st)
       }
-      Ok(#(value_type, env, st))
-    }
+
+    glance.Assignment(_, _kind, pattern, annotation, value) ->
+      infer_expr_assignment(env, st, pattern, annotation, value)
 
     glance.Assert(_, expression, _message) -> {
       use st <- result.try(check(env, st, expression, types.bool()))
@@ -1735,6 +1823,34 @@ fn infer_statement(
     // `use` is handled by infer_statements before reaching here.
     glance.Use(..) -> Error(Unsupported("use in non-tail position"))
   }
+}
+
+/// The general `let pattern = value` case: infer the value, optionally check it
+/// against the binding's annotation, then bind the pattern monomorphically.
+fn infer_expr_assignment(
+  env: Env,
+  st: State,
+  pattern: glance.Pattern,
+  annotation: Option(glance.Type),
+  value: glance.Expression,
+) -> Result(#(Type, Env, State), Error) {
+  use #(value_type, st) <- result.try(infer_expr(env, st, value))
+  use st <- result.try(case annotation {
+    Some(ann) -> {
+      let #(t, st) = hydrate(env, st, ann)
+      unify(st, value_type, t)
+    }
+    None -> Ok(st)
+  })
+  use #(env, st) <- result.try(infer_pattern(env, st, pattern, value_type))
+  // `let x = Ctor(..)` narrows `x` to that variant (the compiler's inferred
+  // variant), so a later `x.field` reaches a field present only in `Ctor`.
+  let #(env, st) = case pattern, constructor_call(value) {
+    glance.PatternVariable(_, name), Ok(#(module, constructor)) ->
+      record_variant(env, st, module, constructor, value_type, name)
+    _, _ -> #(env, st)
+  }
+  Ok(#(value_type, env, st))
 }
 
 // --- Case expressions ------------------------------------------------------
