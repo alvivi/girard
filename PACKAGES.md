@@ -29,6 +29,12 @@ fix is required, add a regression test and link the commit.
 
 | Package | Status | Notes |
 | --- | --- | --- |
+| abair | ✅ clean | |
+| acrostic | ⏭️ skip · resolve | not found / could not download. |
+| act | ✅ clean | |
+| actorx | ⏭️ skip · resolve | not found / could not download. |
+| acumen | 📝 note | All modules error `unbound variable: der`. Root cause: its dep `kryptos/internal/der` fails to **parse** in glance — a bit-array *pattern* segment with an arithmetic size, `<<v:bytes-size(len - 1)>>` (glance rejects the `-`; bare vars and construction-side arithmetic parse fine). A glance limitation, not girard inference; cascades to every module importing `der`. |
+| adglent | ⏭️ skip · resolve | not found / could not download. |
 | antigone | ✅ clean | |
 | argv | ✅ clean | |
 | bath | ✅ clean | |
