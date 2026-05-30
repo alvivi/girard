@@ -15,6 +15,11 @@ variable, unknown field, …) rather than crashing.
 Parsing is delegated to [`glance`](https://hexdocs.pm/glance/), a pure-Gleam
 Gleam parser, so `girard` only implements the inference layer.
 
+**Status:** girard reproduces the compiler's per-expression types, validated
+differentially across the hex ecosystem (1378 packages swept; see
+[`PACKAGES.md`](PACKAGES.md)). The remaining mismatches are upstream `glance`
+parser gaps or oracle-export artifacts, not inference bugs.
+
 ## Example
 
 ```gleam
@@ -161,17 +166,22 @@ official compiler infers. We get there in milestones.
   `fn(List(Int)) -> List(Int)` and `result.map` preserves the polymorphic error
   type `fn(Result(Int, a)) -> Result(Int, a)`.
 
-### ⏳ Milestone 5 — Fidelity & ergonomics
-- Match the compiler's `inferred_variant` tracking and variant-aware inference.
-- Match its type-variable naming and module-qualified printing exactly, so our
-  output is byte-for-byte comparable to the compiler's (e.g. against language
-  server hover types) for differential testing against `../gleam`.
+### ✅ Milestone 5 — Fidelity & ergonomics
+- `inferred_variant` tracking and variant-aware inference (pattern- and
+  construction-based narrowing, e.g. `let x = Ctor(..)` then `x.field`).
+- Type-variable naming and module-qualified printing matching the compiler,
+  enabling a **per-expression** differential harness: a patched compiler exports
+  `expression-types` (span→type), and `scripts/sweep.sh` checks girard against it
+  over a package's whole hex-resolved closure.
 - A CLI: `gleam run -- path/to/file.gleam` (and stdin) producing the report.
-- Annotate patterns and other non-expression nodes; emit a machine-readable
-  (e.g. JSON) form alongside the text report.
+- Remaining ergonomics (open): annotating patterns / non-expression nodes, and a
+  machine-readable (JSON) output form alongside the text report.
 
-### 🎯 Final goal
+### 🎯 Final goal — essentially reached
 Given any module the official compiler accepts, `girard` reproduces the inferred
-type of every expression and definition, validated by a differential test
-harness that compares our output against types extracted from the real Gleam
-compiler at `../gleam`.
+type of every expression and definition. Validated by the differential harness
+across the hex ecosystem: of 1378 packages swept, every one girard parses and
+infers matches the compiler, except where [`glance`](https://hexdocs.pm/glance/)
+itself cannot parse the source or the oracle's per-expression export numbers a
+type variable differently (girard is correct) — all catalogued in
+[`PACKAGES.md`](PACKAGES.md).
