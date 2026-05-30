@@ -21,11 +21,32 @@ logdir="${results%.tsv}.logs"
 mkdir -p "$logdir"
 touch "$results"
 
+# Pacing. hex throttles bulk downloads: a tight sequential loop turns most
+# *resolvable* packages into spurious skip-resolve. `SWEEP_DELAY` spaces requests
+# (seconds between packages); a skip-resolve is retried up to `SWEEP_RETRIES`
+# times with a `SWEEP_BACKOFF`-second pause, since it is nearly always transient
+# rate-limiting rather than a genuinely missing package.
+delay="${SWEEP_DELAY:-0}"
+retries="${SWEEP_RETRIES:-0}"
+backoff="${SWEEP_BACKOFF:-30}"
+
 while IFS= read -r pkg; do
   [ -z "$pkg" ] && continue
   grep -q "^${pkg}	" "$results" && continue
   log="$logdir/$pkg.txt"
-  bash "$root/scripts/sweep.sh" "$pkg" >"$log" 2>&1
+  attempt=0
+  while :; do
+    bash "$root/scripts/sweep.sh" "$pkg" >"$log" 2>&1
+    # Retry only resolve failures (transient throttling), not build failures.
+    if grep -q 'SKIP (could not resolve\|SKIP (package source not downloaded' "$log" \
+       && [ "$attempt" -lt "$retries" ]; then
+      attempt=$((attempt + 1))
+      printf '  retry %d/%d (resolve) %s after %ss\n' "$attempt" "$retries" "$pkg" "$backoff"
+      sleep "$backoff"
+      continue
+    fi
+    break
+  done
   summary="$(grep -E '^diff ' "$log" | tail -1)"
   if [ -n "$summary" ]; then
     errored="$(echo "$summary" | grep -oE '[0-9]+ errored' | grep -oE '[0-9]+')"
@@ -45,5 +66,6 @@ while IFS= read -r pkg; do
   fi
   printf '%s\t%s\t%s\n' "$pkg" "$st" "$detail" >>"$results"
   printf '[%s] %s\n' "$st" "$pkg"
+  [ "$delay" != "0" ] && sleep "$delay"
 done <"$list"
 echo "=== batch done ==="
