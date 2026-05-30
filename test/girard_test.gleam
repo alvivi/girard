@@ -1,6 +1,5 @@
 import girard
-import girard/infer
-import girard/printer
+import girard/internal/printer
 import girard/types
 import gleam/dict
 import gleam/list
@@ -77,25 +76,25 @@ fn first_index(haystack: String, needle: String) -> Result(Int, Nil) {
 // --- Ill-typed input is reported, not crashed -------------------------------
 
 pub fn unbound_variable_is_error_test() {
-  let assert Error(infer.UnboundVariable("x")) =
+  let assert Error(types.UnboundVariable("x")) =
     girard.annotate("pub fn f() { x }")
 }
 
 pub fn type_mismatch_is_error_test() {
   // `+.` is float addition, so an Int operand does not unify.
-  let assert Error(infer.TypeMismatch(_, _)) =
+  let assert Error(types.TypeMismatch(_, _)) =
     girard.annotate("pub fn f() { 1 +. 2.0 }")
 }
 
 pub fn unknown_field_is_error_test() {
   let source =
     "pub type User { User(name: String) }\npub fn f(u: User) { u.age }"
-  let assert Error(infer.NoSuchField("User", "age")) = girard.annotate(source)
+  let assert Error(types.NoSuchField("User", "age")) = girard.annotate(source)
 }
 
 pub fn occurs_check_is_error_test() {
   // `fn(f) { f(f) }` has no finite type.
-  let assert Error(infer.RecursiveType(_, _)) =
+  let assert Error(types.RecursiveType(_, _)) =
     girard.annotate("pub fn f(g) { g(g) }")
 }
 
@@ -564,7 +563,7 @@ pub fn unshared_variant_field_is_error_test() {
     "pub type Shape { Circle(radius: Float, name: String)\n"
     <> "Square(side: Float, name: String) }\n"
     <> "pub fn get(s: Shape) { s.radius }"
-  let assert Error(infer.NoSuchField("Shape", "radius")) =
+  let assert Error(types.NoSuchField("Shape", "radius")) =
     girard.annotate(source)
 }
 
@@ -573,7 +572,7 @@ pub fn inconsistent_variant_field_is_error_test() {
   let source =
     "pub type Mix { A(value: Int)\nB(value: String) }\n"
     <> "pub fn get(m: Mix) { m.value }"
-  let assert Error(infer.NoSuchField("Mix", "value")) = girard.annotate(source)
+  let assert Error(types.NoSuchField("Mix", "value")) = girard.annotate(source)
 }
 
 pub fn deferred_tuple_index_test() {

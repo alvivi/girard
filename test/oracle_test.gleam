@@ -9,7 +9,7 @@
 //// context across a module — both are correct, just different spellings).
 
 import girard
-import girard/printer
+import girard/internal/printer
 import girard/types.{type Type, Fn, Named, Tuple, Var}
 import gleam/dict
 import gleam/dynamic/decode.{type Decoder}

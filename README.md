@@ -77,14 +77,19 @@ per-expression once the compiler is patched to emit span→type).
 
 ## Architecture
 
-| Module                  | Responsibility                                                              |
-| ----------------------- | --------------------------------------------------------------------------- |
-| `girard/types`          | The internal `Type` model (`Named`/`Fn`/`Var`/`Tuple`), prelude constructors, `Scheme` |
-| `girard/infer`          | Threaded `State` (substitution + fresh-var counter + span→type map), unification, generalize/instantiate, inference of expressions/statements/patterns, hydration, module interfaces & imports |
-| `girard/scc`            | Tarjan strongly-connected components, for dependency-ordered inference       |
-| `girard/reference`      | Collect the names a definition refers to, to build the call graph            |
-| `girard/printer`        | Rendering a `Type` back to Gleam syntax with `a, b, c …` variable naming     |
-| `girard`                | The driver: parse → resolve imports → register types → infer in SCC order → emit annotations |
+The public API is two modules — `girard` (the driver) and `girard/types` (the
+`Type` and `Error` vocabulary it reports). Everything else is implementation
+detail under `girard/internal/` (not part of the documented/stable API).
+
+| Module                     | Responsibility                                                              |
+| -------------------------- | --------------------------------------------------------------------------- |
+| `girard`                   | **Public.** The driver: parse → resolve imports → register types → infer in SCC order → emit annotations |
+| `girard/types`             | **Public.** The `Type` model (`Named`/`Fn`/`Var`/`Tuple`) and the `Error` reported when a module can't be typed |
+| `girard/internal/infer`    | Threaded `State` (substitution + fresh-var counter + span→type map), `Scheme`, unification, generalize/instantiate, inference of expressions/statements/patterns, hydration, module interfaces & imports |
+| `girard/internal/prelude`  | Constructors for the built-in prelude types (`Int`, `List`, …)              |
+| `girard/internal/scc`      | Tarjan strongly-connected components, for dependency-ordered inference       |
+| `girard/internal/reference`| Collect the names a definition refers to, to build the call graph            |
+| `girard/internal/printer`  | Rendering a `Type` back to Gleam syntax with `a, b, c …` variable naming     |
 
 **Mutability model.** The real compiler mutates type variables in place via
 `Arc<RefCell<TypeVar>>`. Since Gleam-the-language is pure, a `Var(id)` instead

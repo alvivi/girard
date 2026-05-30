@@ -11,7 +11,7 @@
 
 import argv
 import girard
-import girard/printer
+import girard/internal/printer
 import girard/types.{type Type, Fn, Named, Tuple, Var}
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode.{type Decoder}

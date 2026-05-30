@@ -1,7 +1,7 @@
 //// girard: a type annotator for Gleam, written in Gleam.
 ////
 //// Parses a Gleam module with `glance`, runs Hindley-Milner type inference
-//// (see `girard/infer`), and reports the inferred type of every expression (by
+//// (see `girard/internal/infer`), and reports the inferred type of every expression (by
 //// source span) along with each top-level definition's signature.
 ////
 //// Imported modules are resolved through a `Resolver` and inferred to obtain
@@ -9,11 +9,12 @@
 //// describing why a module could not be typed rather than crashing.
 
 import argv
-import girard/infer.{type ModuleInterface}
-import girard/printer
-import girard/reference
-import girard/scc
-import girard/types.{type Scheme, type Type, Scheme}
+import girard/internal/infer.{type ModuleInterface, type Scheme, Scheme}
+import girard/internal/prelude
+import girard/internal/printer
+import girard/internal/reference
+import girard/internal/scc
+import girard/types.{type Error as TypeError, type Type}
 import glance
 import gleam/dict
 import gleam/int
@@ -26,9 +27,9 @@ import gleam/set.{type Set}
 import gleam/string
 import simplifile
 
-/// Why a module could not be typed (re-exported from `girard/infer`).
+/// Why a module could not be typed (re-exported from `girard/types`).
 pub type Error =
-  infer.Error
+  TypeError
 
 /// The inferred type of a single expression, identified by its source span.
 pub type Annotation {
@@ -407,7 +408,7 @@ fn resolve_interface(
   cache: Cache,
   path: String,
 ) -> Result(#(Option(ModuleInterface), Cache), Error) {
-  case path == types.prelude_module {
+  case path == prelude.prelude_module {
     // `import gleam` refers to the built-in prelude module, which has no source
     // file; resolve it to a synthetic interface of the prelude's types/values.
     True -> Ok(#(Some(infer.prelude_interface()), cache))
@@ -641,35 +642,35 @@ pub fn format(source: String) -> String {
 /// A short human description of an inference error.
 pub fn describe_error(error: Error) -> String {
   case error {
-    infer.TypeMismatch(a, b) ->
+    types.TypeMismatch(a, b) ->
       "type mismatch: "
       <> printer.to_string(a)
       <> " vs "
       <> printer.to_string(b)
-    infer.ArityMismatch -> "wrong number of arguments"
-    infer.RecursiveType(_, type_) ->
+    types.ArityMismatch -> "wrong number of arguments"
+    types.RecursiveType(_, type_) ->
       "recursive type: " <> printer.to_string(type_)
-    infer.UnboundVariable(name) -> "unbound variable: " <> name
-    infer.UnknownConstructor(name) -> "unknown constructor: " <> name
-    infer.UnknownModule(alias) -> "unknown module: " <> alias
-    infer.NoSuchExport(module, name) ->
+    types.UnboundVariable(name) -> "unbound variable: " <> name
+    types.UnknownConstructor(name) -> "unknown constructor: " <> name
+    types.UnknownModule(alias) -> "unknown module: " <> alias
+    types.NoSuchExport(module, name) ->
       "module `" <> module <> "` has no `" <> name <> "`"
-    infer.NoSuchField(type_name, label) ->
+    types.NoSuchField(type_name, label) ->
       "type `" <> type_name <> "` has no field `" <> label <> "`"
-    infer.NotARecord -> "field access or update on a non-record value"
-    infer.NotATuple -> "tuple index on a non-tuple value"
-    infer.TupleIndexOutOfRange(index) ->
+    types.NotARecord -> "field access or update on a non-record value"
+    types.NotATuple -> "tuple index on a non-tuple value"
+    types.TupleIndexOutOfRange(index) ->
       "tuple index out of range: " <> int.to_string(index)
-    infer.UnknownLabel(label) -> "unknown argument label: " <> label
-    infer.AmbiguousCall -> "labelled arguments to an unknown callable"
-    infer.MissingArgument -> "missing argument"
-    infer.Unsupported(feature) -> "unsupported: " <> feature
-    infer.ParseFailed(_) -> "could not parse source"
+    types.UnknownLabel(label) -> "unknown argument label: " <> label
+    types.AmbiguousCall -> "labelled arguments to an unknown callable"
+    types.MissingArgument -> "missing argument"
+    types.Unsupported(feature) -> "unsupported: " <> feature
+    types.ParseFailed(_) -> "could not parse source"
   }
 }
 
 fn parse(source: String) -> Result(glance.Module, Error) {
-  glance.module(source) |> result.map_error(infer.ParseFailed)
+  glance.module(source) |> result.map_error(types.ParseFailed)
 }
 
 fn print_scheme(

@@ -12,7 +12,13 @@
 //// Inference is total: anything that cannot be typed returns a `Result` with an
 //// `Error` rather than crashing.
 
-import girard/types.{type Scheme, type Type, Fn, Named, Scheme, Tuple, Var}
+import girard/internal/prelude
+import girard/types.{
+  type Error, type Type, AmbiguousCall, ArityMismatch, Fn, MissingArgument,
+  Named, NoSuchExport, NoSuchField, NotARecord, NotATuple, RecursiveType, Tuple,
+  TupleIndexOutOfRange, TypeMismatch, UnboundVariable, UnknownConstructor,
+  UnknownLabel, UnknownModule, Unsupported, Var,
+}
 import glance
 import gleam/dict.{type Dict}
 import gleam/list
@@ -21,27 +27,13 @@ import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 
-// --- Errors ----------------------------------------------------------------
+// --- Schemes ---------------------------------------------------------------
 
-/// A reason inference could not assign a type. We do not attempt recovery or
-/// rich diagnostics; this is enough to explain and bucket failures.
-pub type Error {
-  TypeMismatch(left: Type, right: Type)
-  ArityMismatch
-  RecursiveType(id: Int, type_: Type)
-  UnboundVariable(name: String)
-  UnknownConstructor(name: String)
-  UnknownModule(alias: String)
-  NoSuchExport(module: String, name: String)
-  NoSuchField(type_name: String, label: String)
-  NotARecord
-  NotATuple
-  TupleIndexOutOfRange(index: Int)
-  UnknownLabel(label: String)
-  AmbiguousCall
-  MissingArgument
-  Unsupported(feature: String)
-  ParseFailed(glance.Error)
+/// A polymorphic type scheme `forall vars. type`. Module-level definitions are
+/// generalized into schemes; monomorphic bindings (lambda parameters, local
+/// `let`s) use `Scheme([], type)`.
+pub type Scheme {
+  Scheme(vars: List(Int), type_: Type)
 }
 
 // --- State & environment ---------------------------------------------------
@@ -240,9 +232,9 @@ pub fn prelude() -> #(Env, State) {
   let st = new_state()
   let env =
     new_env()
-    |> bind_value("True", Scheme([], types.bool()))
-    |> bind_value("False", Scheme([], types.bool()))
-    |> bind_value("Nil", Scheme([], types.nil()))
+    |> bind_value("True", Scheme([], prelude.bool()))
+    |> bind_value("False", Scheme([], prelude.bool()))
+    |> bind_value("Nil", Scheme([], prelude.nil()))
 
   // Ok(a) -> Result(a, e)
   let #(ok_a, st) = fresh_id(st)
@@ -251,7 +243,10 @@ pub fn prelude() -> #(Env, State) {
     bind_value(
       env,
       "Ok",
-      Scheme([ok_a, ok_e], Fn([Var(ok_a)], types.result(Var(ok_a), Var(ok_e)))),
+      Scheme(
+        [ok_a, ok_e],
+        Fn([Var(ok_a)], prelude.result(Var(ok_a), Var(ok_e))),
+      ),
     )
 
   // Error(e) -> Result(a, e)
@@ -263,7 +258,7 @@ pub fn prelude() -> #(Env, State) {
       "Error",
       Scheme(
         [err_a, err_e],
-        Fn([Var(err_e)], types.result(Var(err_a), Var(err_e))),
+        Fn([Var(err_e)], prelude.result(Var(err_a), Var(err_e))),
       ),
     )
 
@@ -275,14 +270,14 @@ pub fn prelude() -> #(Env, State) {
 /// file; the compiler treats `gleam` as a built-in module exposing the prelude
 /// types and value constructors.
 pub fn prelude_interface() -> ModuleInterface {
-  let m = types.prelude_module
+  let m = prelude.prelude_module
   let values =
     dict.from_list([
-      #("True", Scheme([], types.bool())),
-      #("False", Scheme([], types.bool())),
-      #("Nil", Scheme([], types.nil())),
-      #("Ok", Scheme([0, 1], Fn([Var(0)], types.result(Var(0), Var(1))))),
-      #("Error", Scheme([0, 1], Fn([Var(1)], types.result(Var(0), Var(1))))),
+      #("True", Scheme([], prelude.bool())),
+      #("False", Scheme([], prelude.bool())),
+      #("Nil", Scheme([], prelude.nil())),
+      #("Ok", Scheme([0, 1], Fn([Var(0)], prelude.result(Var(0), Var(1))))),
+      #("Error", Scheme([0, 1], Fn([Var(1)], prelude.result(Var(0), Var(1))))),
     ])
   let types_ =
     dict.from_list([
@@ -718,9 +713,9 @@ fn infer_expr_inner(
   expr: glance.Expression,
 ) -> Result(#(Type, State), Error) {
   case expr {
-    glance.Int(..) -> Ok(#(types.int(), st))
-    glance.Float(..) -> Ok(#(types.float(), st))
-    glance.String(..) -> Ok(#(types.string(), st))
+    glance.Int(..) -> Ok(#(prelude.int(), st))
+    glance.Float(..) -> Ok(#(prelude.float(), st))
+    glance.String(..) -> Ok(#(prelude.string(), st))
 
     glance.Variable(_, name) ->
       case dict.get(env.values, name) {
@@ -730,14 +725,14 @@ fn infer_expr_inner(
 
     glance.NegateInt(_, value) -> {
       use #(t, st) <- result.try(infer_expr(env, st, value))
-      use st <- result.try(unify(st, t, types.int()))
-      Ok(#(types.int(), st))
+      use st <- result.try(unify(st, t, prelude.int()))
+      Ok(#(prelude.int(), st))
     }
 
     glance.NegateBool(_, value) -> {
       use #(t, st) <- result.try(infer_expr(env, st, value))
-      use st <- result.try(unify(st, t, types.bool()))
-      Ok(#(types.bool(), st))
+      use st <- result.try(unify(st, t, prelude.bool()))
+      Ok(#(prelude.bool(), st))
     }
 
     glance.Tuple(_, elements) -> {
@@ -756,11 +751,11 @@ fn infer_expr_inner(
       use st <- result.try(case rest {
         Some(r) -> {
           use #(t, st) <- result.try(infer_expr(env, st, r))
-          unify(st, t, types.list(elem))
+          unify(st, t, prelude.list(elem))
         }
         None -> Ok(st)
       })
-      Ok(#(types.list(elem), st))
+      Ok(#(prelude.list(elem), st))
     }
 
     glance.Fn(_, params, return_annotation, body) ->
@@ -803,7 +798,7 @@ fn infer_expr_inner(
     glance.Echo(_, expression, _message) ->
       case expression {
         Some(e) -> infer_expr(env, st, e)
-        None -> Ok(#(types.nil(), st))
+        None -> Ok(#(prelude.nil(), st))
       }
 
     glance.FieldAccess(_, container, label) ->
@@ -817,9 +812,9 @@ fn infer_expr_inner(
         list.try_fold(segments, st, fn(st, segment) {
           let #(value, options) = segment
           let default = case value {
-            glance.String(..) -> types.string()
-            glance.Float(..) -> types.float()
-            _ -> types.int()
+            glance.String(..) -> prelude.string()
+            glance.Float(..) -> prelude.float()
+            _ -> prelude.int()
           }
           use st <- result.try(check(
             env,
@@ -829,13 +824,14 @@ fn infer_expr_inner(
           ))
           list.try_fold(options, st, fn(st, option) {
             case option {
-              glance.SizeValueOption(size) -> check(env, st, size, types.int())
+              glance.SizeValueOption(size) ->
+                check(env, st, size, prelude.int())
               _ -> Ok(st)
             }
           })
         }),
       )
-      Ok(#(types.bit_array(), st))
+      Ok(#(prelude.bit_array(), st))
     }
   }
 }
@@ -1522,22 +1518,22 @@ fn infer_binop(
     glance.Pipe -> infer_pipe(env, st, span, left, right)
 
     glance.And | glance.Or -> {
-      use st <- result.try(check(env, st, left, types.bool()))
-      use st <- result.try(check(env, st, right, types.bool()))
-      Ok(#(types.bool(), st))
+      use st <- result.try(check(env, st, left, prelude.bool()))
+      use st <- result.try(check(env, st, right, prelude.bool()))
+      Ok(#(prelude.bool(), st))
     }
 
     glance.Eq | glance.NotEq -> {
       use #(lt, st) <- result.try(infer_expr(env, st, left))
       use #(rt, st) <- result.try(infer_expr(env, st, right))
       use st <- result.try(unify(st, lt, rt))
-      Ok(#(types.bool(), st))
+      Ok(#(prelude.bool(), st))
     }
 
     glance.Concatenate -> {
-      use st <- result.try(check(env, st, left, types.string()))
-      use st <- result.try(check(env, st, right, types.string()))
-      Ok(#(types.string(), st))
+      use st <- result.try(check(env, st, left, prelude.string()))
+      use st <- result.try(check(env, st, right, prelude.string()))
+      Ok(#(prelude.string(), st))
     }
 
     glance.AddInt
@@ -1545,27 +1541,27 @@ fn infer_binop(
     | glance.MultInt
     | glance.DivInt
     | glance.RemainderInt -> {
-      use st <- result.try(check(env, st, left, types.int()))
-      use st <- result.try(check(env, st, right, types.int()))
-      Ok(#(types.int(), st))
+      use st <- result.try(check(env, st, left, prelude.int()))
+      use st <- result.try(check(env, st, right, prelude.int()))
+      Ok(#(prelude.int(), st))
     }
 
     glance.AddFloat | glance.SubFloat | glance.MultFloat | glance.DivFloat -> {
-      use st <- result.try(check(env, st, left, types.float()))
-      use st <- result.try(check(env, st, right, types.float()))
-      Ok(#(types.float(), st))
+      use st <- result.try(check(env, st, left, prelude.float()))
+      use st <- result.try(check(env, st, right, prelude.float()))
+      Ok(#(prelude.float(), st))
     }
 
     glance.LtInt | glance.LtEqInt | glance.GtInt | glance.GtEqInt -> {
-      use st <- result.try(check(env, st, left, types.int()))
-      use st <- result.try(check(env, st, right, types.int()))
-      Ok(#(types.bool(), st))
+      use st <- result.try(check(env, st, left, prelude.int()))
+      use st <- result.try(check(env, st, right, prelude.int()))
+      Ok(#(prelude.bool(), st))
     }
 
     glance.LtFloat | glance.LtEqFloat | glance.GtFloat | glance.GtEqFloat -> {
-      use st <- result.try(check(env, st, left, types.float()))
-      use st <- result.try(check(env, st, right, types.float()))
-      Ok(#(types.bool(), st))
+      use st <- result.try(check(env, st, left, prelude.float()))
+      use st <- result.try(check(env, st, right, prelude.float()))
+      Ok(#(prelude.bool(), st))
     }
   }
 }
@@ -1671,7 +1667,7 @@ fn infer_statements(
   statements: List(glance.Statement),
 ) -> Result(#(Type, State), Error) {
   case statements {
-    [] -> Ok(#(types.nil(), st))
+    [] -> Ok(#(prelude.nil(), st))
     // `use pats <- rhs` turns the remaining statements into a trailing callback.
     [glance.Use(_, patterns, function), ..rest] ->
       infer_use(env, st, patterns, function, rest)
@@ -1863,8 +1859,8 @@ fn infer_statement(
       infer_expr_assignment(env, st, pattern, annotation, value)
 
     glance.Assert(_, expression, _message) -> {
-      use st <- result.try(check(env, st, expression, types.bool()))
-      Ok(#(types.nil(), env, st))
+      use st <- result.try(check(env, st, expression, prelude.bool()))
+      Ok(#(prelude.nil(), env, st))
     }
 
     // `use` is handled by infer_statements before reaching here.
@@ -1964,7 +1960,7 @@ fn infer_clause(
       ),
     )
     use st <- result.try(case clause.guard {
-      Some(guard) -> check(clause_env, st, guard, types.bool())
+      Some(guard) -> check(clause_env, st, guard, prelude.bool())
       None -> Ok(st)
     })
     use #(body_type, st) <- result.try(infer_expr(clause_env, st, clause.body))
@@ -1981,10 +1977,11 @@ fn infer_pattern(
   expected: Type,
 ) -> Result(#(Env, State), Error) {
   case pattern {
-    glance.PatternInt(..) -> with_env(env, unify(st, expected, types.int()))
-    glance.PatternFloat(..) -> with_env(env, unify(st, expected, types.float()))
+    glance.PatternInt(..) -> with_env(env, unify(st, expected, prelude.int()))
+    glance.PatternFloat(..) ->
+      with_env(env, unify(st, expected, prelude.float()))
     glance.PatternString(..) ->
-      with_env(env, unify(st, expected, types.string()))
+      with_env(env, unify(st, expected, prelude.string()))
     glance.PatternDiscard(..) -> Ok(#(env, st))
 
     glance.PatternVariable(_, name) ->
@@ -2008,7 +2005,7 @@ fn infer_pattern(
 
     glance.PatternList(_, elements, tail) -> {
       let #(elem, st) = fresh(st)
-      use st <- result.try(unify(st, expected, types.list(elem)))
+      use st <- result.try(unify(st, expected, prelude.list(elem)))
       use #(env, st) <- result.try(
         list.try_fold(elements, #(env, st), fn(acc, p) {
           let #(env, st) = acc
@@ -2016,7 +2013,7 @@ fn infer_pattern(
         }),
       )
       case tail {
-        Some(t) -> infer_pattern(env, st, t, types.list(elem))
+        Some(t) -> infer_pattern(env, st, t, prelude.list(elem))
         None -> Ok(#(env, st))
       }
     }
@@ -2034,12 +2031,12 @@ fn infer_pattern(
     }
 
     glance.PatternConcatenate(_, _prefix, prefix_name, rest_name) -> {
-      use st <- result.try(unify(st, expected, types.string()))
+      use st <- result.try(unify(st, expected, prelude.string()))
       // Both the matched prefix (`"a" as c <> rest`) and the remainder bind to
       // String. The prefix binding is optional (`<> rest` with no `as`).
       let bind_name = fn(env, name) {
         case name {
-          glance.Named(n) -> bind_value(env, n, Scheme([], types.string()))
+          glance.Named(n) -> bind_value(env, n, Scheme([], prelude.string()))
           glance.Discarded(_) -> env
         }
       }
@@ -2078,14 +2075,14 @@ fn infer_pattern(
     }
 
     glance.PatternBitString(_, segments) -> {
-      use st <- result.try(unify(st, expected, types.bit_array()))
+      use st <- result.try(unify(st, expected, prelude.bit_array()))
       list.try_fold(segments, #(env, st), fn(acc, segment) {
         let #(env, st) = acc
         let #(pattern, options) = segment
         let default = case pattern {
-          glance.PatternString(..) -> types.string()
-          glance.PatternFloat(..) -> types.float()
-          _ -> types.int()
+          glance.PatternString(..) -> prelude.string()
+          glance.PatternFloat(..) -> prelude.float()
+          _ -> prelude.int()
         }
         use #(env, st) <- result.try(infer_pattern(
           env,
@@ -2097,7 +2094,7 @@ fn infer_pattern(
           let #(env, st) = acc
           case option {
             glance.SizeValueOption(size) ->
-              infer_pattern(env, st, size, types.int())
+              infer_pattern(env, st, size, prelude.int())
             _ -> Ok(#(env, st))
           }
         })
@@ -2147,14 +2144,14 @@ fn segment_value_type(
 ) -> Type {
   list.fold(options, default, fn(acc, option) {
     case option {
-      glance.FloatOption -> types.float()
+      glance.FloatOption -> prelude.float()
       glance.Utf8Option | glance.Utf16Option | glance.Utf32Option ->
-        types.string()
+        prelude.string()
       glance.Utf8CodepointOption
       | glance.Utf16CodepointOption
-      | glance.Utf32CodepointOption -> types.utf_codepoint()
-      glance.BytesOption | glance.BitsOption -> types.bit_array()
-      glance.IntOption -> types.int()
+      | glance.Utf32CodepointOption -> prelude.utf_codepoint()
+      glance.BytesOption | glance.BitsOption -> prelude.bit_array()
+      glance.IntOption -> prelude.int()
       _ -> acc
     }
   })
@@ -2289,7 +2286,7 @@ fn hydrate_with(
                       names,
                     )
                     Error(_) -> #(
-                      #(Named(types.prelude_module, name, arg_types), st),
+                      #(Named(prelude.prelude_module, name, arg_types), st),
                       names,
                     )
                   }
