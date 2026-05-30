@@ -526,7 +526,7 @@ fix is required, add a regression test and link the commit.
 | gleam_yielder | ✅ clean |  |
 | gleambox | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | gleameter | ✅ clean |  |
-| gleamgen | 📝 note | girard pins a phantom type parameter (`Expression(type_.Dynamic)`) where the compiler keeps it polymorphic (`Expression($0)`): girard treats a function signature's type variables as flexible, not rigid/skolemized. A known inference-fidelity gap (rigid type variables), deferred — 34 expression mismatches, all of this shape. |
+| gleamgen | 🔧 fixed | girard pinned a phantom signature type variable (`Expression(Dynamic)`) where the compiler keeps it polymorphic (`Expression($0)`). Fixed: rigid (skolemized) type variables for annotated functions, kept polymorphic across their SCC (`7d7eab0`). |
 | gleamix | ✅ clean |  |
 | gleamlz_string | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | gleamoire | ⏭️ skip · resolve | not found / could not download. |
@@ -856,7 +856,7 @@ fix is required, add a regression test and link the commit.
 | keccak_gleam | ✅ clean |  |
 | keyboard_shortcuts | ✅ clean |  |
 | keystore | ✅ clean |  |
-| kicad_sexpr | 📝 note | girard pins a generic var to a concrete type where the compiler keeps it polymorphic (`Result(#(Symbol, ...), ...)` vs `Result(#($0, ...), ...)`) in a parser combinator — same over-resolution family as gleamgen/omnimessage_lustre (6 mismatches). |
+| kicad_sexpr | 🔧 fixed | a parser combinator's generic var pinned to a concrete type (`Result(#(Symbol, ...))` vs `Result(#($0, ...))`). Fixed by rigid type variables (`7d7eab0`). |
 | kick | ✅ clean |  |
 | kielet | ⏭️ skip · resolve | not found / could not download. |
 | kielet_gen | ⏭️ skip · resolve | not found / could not download. |
@@ -1138,7 +1138,7 @@ fix is required, add a regression test and link the commit.
 | precious | ✅ clean |  |
 | prequel | ⏭️ skip · resolve | not found / could not download. |
 | presentable_soup | ✅ clean |  |
-| pretty_diff | 📝 note | girard pins annotated generic vars to `Dynamic` where the compiler keeps them polymorphic (`Dict($0, Diff)` vs `Dict(Dynamic, Diff)`) — the same rigid-type-variable gap as gleamgen (25 mismatches, all this shape). |
+| pretty_diff | 🔧 fixed | annotated generic vars pinned to `Dynamic` (`Dict($0, Diff)` shown as `Dict(Dynamic, Diff)`). Fixed by rigid type variables (`7d7eab0`). |
 | priorityq | ✅ clean |  |
 | prng | 📝 note | one expression mismatch at a polymorphic function reference (`fixed_size_dict`): the compiler's signature is tied like girard's; the oracle snapshots the reference pre-unification. girard is correct. |
 | problem | ✅ clean |  |
