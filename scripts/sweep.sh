@@ -71,13 +71,17 @@ if ! ( cd "$oroot" && "$gleam" export expression-types --out out.json >/dev/null
 fi
 cp "$oroot/out.json" "$out"
 
-# 3. Sync the resolved closure into girard's build/packages (matching versions).
-mkdir -p "$root/build/packages"
+# 3. Stage the resolved closure in a SEPARATE root. girard reads the target and
+#    its deps from here at runtime; its own build/packages stays pristine so
+#    `gleam run` always compiles girard against its own locked dependencies (a
+#    swept closure pinning an older glance/stdlib must never clobber them).
+pkgroot="${SWEEP_PKGROOT:-/tmp/girard_sweep_pkgs}"
+rm -rf "$pkgroot"
+mkdir -p "$pkgroot"
 for d in "$deps"/*/; do
   name="$(basename "$d")"
-  rm -rf "$root/build/packages/$name"
-  cp -r "$d" "$root/build/packages/$name"
+  cp -r "$d" "$pkgroot/$name"
 done
 
-# 4. Diff girard against the oracle.
-( cd "$root" && gleam run -m girard/diff "$pkg" "$out" 2>/dev/null | grep -E "^diff |ERROR" )
+# 4. Diff girard against the oracle, reading the closure from the staged root.
+( cd "$root" && gleam run -m girard/diff "$pkg" "$out" "$pkgroot" 2>/dev/null | grep -E "^diff |ERROR" )

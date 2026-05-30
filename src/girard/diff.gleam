@@ -26,13 +26,45 @@ import simplifile
 
 pub fn main() -> Nil {
   case argv.load().arguments {
-    [package, json_path] -> diff(package, json_path)
+    [package, json_path] -> diff(package, json_path, "build/packages")
+    [package, json_path, pkg_root] -> diff(package, json_path, pkg_root)
     _ ->
-      io.println("usage: gleam run -m girard/diff <package> <expr-types.json>")
+      io.println(
+        "usage: gleam run -m girard/diff <package> <expr-types.json> [packages-root]",
+      )
   }
 }
 
-fn diff(package: String, json_path: String) -> Nil {
+/// Resolve an imported module's source from a packages root (the directory
+/// holding `<pkg>/src/...`), instead of girard's own `build/packages` — so the
+/// swept closure never collides with girard's own compile dependencies.
+fn dir_resolver(root: String) -> girard.Resolver {
+  fn(path: String) -> Result(String, Nil) {
+    case simplifile.read_directory(root) {
+      Ok(pkgs) ->
+        first_readable(
+          list.map(pkgs, fn(pkg) {
+            root <> "/" <> pkg <> "/src/" <> path <> ".gleam"
+          }),
+        )
+      Error(_) -> Error(Nil)
+    }
+  }
+}
+
+fn first_readable(paths: List(String)) -> Result(String, Nil) {
+  case paths {
+    [] -> Error(Nil)
+    [path, ..rest] ->
+      case simplifile.read(path) {
+        Ok(source) -> Ok(source)
+        Error(_) -> first_readable(rest)
+      }
+  }
+}
+
+fn diff(package: String, json_path: String, pkg_root: String) -> Nil {
+  let resolver = dir_resolver(pkg_root)
   let assert Ok(json_string) = simplifile.read(json_path)
   let assert Ok(modules) =
     json.parse(
@@ -48,11 +80,11 @@ fn diff(package: String, json_path: String) -> Nil {
       let #(checked, mismatches, errored) = acc
       let #(module_name, oracle_exprs) = entry
       let path =
-        "build/packages/" <> package <> "/src/" <> module_name <> ".gleam"
+        pkg_root <> "/" <> package <> "/src/" <> module_name <> ".gleam"
       case simplifile.read(path) {
         Error(_) -> #(checked, mismatches, errored)
         Ok(source) ->
-          case girard.annotate(source) {
+          case girard.annotate_with(source, resolver) {
             Error(e) -> {
               io.println(module_name <> ": ERROR " <> girard.describe_error(e))
               #(checked, mismatches, errored + 1)
