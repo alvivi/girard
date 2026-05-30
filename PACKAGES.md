@@ -1040,7 +1040,7 @@ fix is required, add a regression test and link the commit.
 | okay | ✅ clean |  |
 | olive | ⏭️ skip · resolve | not found / could not download. |
 | ollama_gleam | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
-| omnimessage_lustre | 📝 note | type-variable identity differs only (`#($0, Effect($1))` vs `#($2, Effect($1))`): `lustre.application` later ties `compose`'s returned update fn's input/output model, and girard records the fully-resolved type while the compiler snapshots the call result before that back-propagation. Same class as prng; girard is the more-resolved view, not a bug. |
+| omnimessage_lustre | 📝 note | Same confirmed oracle-numbering artifact as prng: girard reports the resolved type (`#($0, Effect($1))`) where the oracle numbers a reference-node variable distinctly (`#($2, ...)`). `lustre.application` ties `compose`'s returned update fn's input/output model, so the tie is real and girard is correct. |
 | omnimessage_server | ⏭️ skip · resolve | not found / could not download. |
 | on | ✅ clean |  |
 | onigleam | ✅ clean |  |
@@ -1140,7 +1140,7 @@ fix is required, add a regression test and link the commit.
 | presentable_soup | ✅ clean |  |
 | pretty_diff | 🔧 fixed | annotated generic vars pinned to `Dynamic` (`Dict($0, Diff)` shown as `Dict(Dynamic, Diff)`). Fixed by rigid type variables (`7d7eab0`). |
 | priorityq | ✅ clean |  |
-| prng | 📝 note | one expression mismatch at a polymorphic function reference (`fixed_size_dict`): the compiler's signature is tied like girard's; the oracle snapshots the reference pre-unification. girard is correct. |
+| prng | 📝 note | **Confirmed oracle artifact, girard correct.** girard infers the `fixed_size_dict` reference as `... -> Generator(Dict($0, $1))` (Dict tied to the generators) vs the oracle's `Dict($2, $3)`. Proven: the patched compiler *rejects* `fixed_size_dict(int(0,1), int(0,1), 5)` (= `Generator(Dict(Int, Int))`) assigned to `Generator(Dict(Bool, Float))` — so the type genuinely ties Dict to the generators. The oracle's per-expression export numbers the *reference node*'s variable cells with fresh ids; the call result `fixed_size_dict(...)` itself is `Dict($0, $1)` (tied) in both. |
 | problem | ✅ clean |  |
 | probly | ✅ clean |  |
 | process_file | ✅ clean |  |
