@@ -37,11 +37,13 @@ double: fn(Int) -> Int
 23-24: Int
 ```
 
-`girard.annotate(source)` returns a structured `Annotated` value
-(`functions: List(#(name, Type))` and `expressions: List(Annotation)`). Types are
-structured [`girard/types.Type`](src/girard/types.gleam) values — pattern-match
-on `Named`/`Fn`/`Var`/`Tuple` to inspect or transform them — not strings. Render
-one with `girard.type_to_string(type_)`; `girard.format(source)` renders the
+`girard.annotate(source)` returns a structured `Annotated` value. Top-level
+definitions carry a `Scheme` (`functions`/`constants: List(#(name, Scheme))` —
+its `.type_` plus `.vars`, the ids of the quantified/generic `Var`s); each
+expression carries a monomorphic `Type` (`expressions: List(Annotation)`). All
+are structured [`girard/types`](src/girard/types.gleam) values — pattern-match on
+`Named`/`Fn`/`Var`/`Tuple` to inspect or transform them — not strings. Render a
+type with `girard.type_to_string(type_)`; `girard.format(source)` renders the
 whole report above.
 
 ### Annotating a `glance` AST you already parsed

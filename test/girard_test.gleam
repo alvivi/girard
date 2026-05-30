@@ -18,7 +18,7 @@ pub fn main() {
 fn signature(source: String, name: String) -> String {
   let assert Ok(annotated) = girard.annotate(source)
   case list.key_find(annotated.functions, name) {
-    Ok(sig) -> girard.type_to_string(sig)
+    Ok(sig) -> girard.type_to_string(sig.type_)
     Error(_) -> panic as { "no function named " <> name }
   }
 }
@@ -34,7 +34,7 @@ fn signature_with(
   let resolver = fn(path) { dict.get(table, path) }
   let assert Ok(annotated) = girard.annotate_with(source, resolver)
   case list.key_find(annotated.functions, name) {
-    Ok(sig) -> girard.type_to_string(sig)
+    Ok(sig) -> girard.type_to_string(sig.type_)
     Error(_) -> panic as { "no function named " <> name }
   }
 }
@@ -43,7 +43,7 @@ fn signature_with(
 fn constant_type(source: String, name: String) -> String {
   let assert Ok(annotated) = girard.annotate(source)
   case list.key_find(annotated.constants, name) {
-    Ok(type_) -> girard.type_to_string(type_)
+    Ok(type_) -> girard.type_to_string(type_.type_)
     Error(_) -> panic as { "no constant named " <> name }
   }
 }
@@ -1012,11 +1012,11 @@ pub fn annotate_pre_parsed_module_test() {
   let assert Ok(annotated) =
     girard.annotate_module(module, fn(_) { Error(Nil) })
 
-  // Same signature as the string-based entry point — and `type_` is a
-  // structured `Type` (here `Fn([Int], Int)`), not a string.
-  let assert Ok(types.Fn(
-    [types.Named("gleam", "Int", [])],
-    types.Named("gleam", "Int", []),
+  // The signature is a structured `Scheme` (here no quantified vars and a
+  // `Fn([Int], Int)` type), not a string.
+  let assert Ok(types.Scheme(
+    [],
+    types.Fn([types.Named("gleam", "Int", [])], types.Named("gleam", "Int", [])),
   )) = list.key_find(annotated.functions, "double")
 
   // Every annotation's span indexes into the client's source / AST. The whole
@@ -1030,4 +1030,17 @@ pub fn annotate_pre_parsed_module_test() {
     }
   })
   |> should.equal(["Int"])
+}
+
+pub fn signature_scheme_exposes_quantified_vars_test() {
+  // A generic function's scheme lists its quantified type variables...
+  let assert Ok(annotated) = girard.annotate("pub fn id(x) { x }")
+  let assert Ok(scheme) = list.key_find(annotated.functions, "id")
+  list.length(scheme.vars) |> should.equal(1)
+  girard.type_to_string(scheme.type_) |> should.equal("fn(a) -> a")
+
+  // ...while a monomorphic one has none.
+  let assert Ok(annotated2) = girard.annotate("pub fn inc(x) { x + 1 }")
+  let assert Ok(mono) = list.key_find(annotated2.functions, "inc")
+  mono.vars |> should.equal([])
 }

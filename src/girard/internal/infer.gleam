@@ -14,10 +14,11 @@
 
 import girard/internal/prelude
 import girard/types.{
-  type Error, type Type, AmbiguousCall, ArityMismatch, Fn, MissingArgument,
-  Named, NoSuchExport, NoSuchField, NotARecord, NotATuple, RecursiveType, Tuple,
-  TupleIndexOutOfRange, TypeMismatch, UnboundVariable, UnknownConstructor,
-  UnknownLabel, UnknownModule, Unsupported, Var,
+  type Error, type Scheme, type Type, AmbiguousCall, ArityMismatch, Fn,
+  MissingArgument, Named, NoSuchExport, NoSuchField, NotARecord, NotATuple,
+  RecursiveType, Scheme, Tuple, TupleIndexOutOfRange, TypeMismatch,
+  UnboundVariable, UnknownConstructor, UnknownLabel, UnknownModule, Unsupported,
+  Var,
 }
 import glance
 import gleam/dict.{type Dict}
@@ -26,15 +27,6 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
-
-// --- Schemes ---------------------------------------------------------------
-
-/// A polymorphic type scheme `forall vars. type`. Module-level definitions are
-/// generalized into schemes; monomorphic bindings (lambda parameters, local
-/// `let`s) use `Scheme([], type)`.
-pub type Scheme {
-  Scheme(vars: List(Int), type_: Type)
-}
 
 // --- State & environment ---------------------------------------------------
 

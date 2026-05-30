@@ -48,13 +48,13 @@ fn check_sample(name: String) -> Nil {
   list.each(dict.to_list(oracle_functions), fn(entry) {
     let #(fn_name, oracle_type) = entry
     let assert Ok(ours) = list.key_find(annotated.functions, fn_name)
-    check(name <> "." <> fn_name, ours, oracle_type)
+    check(name <> "." <> fn_name, ours.type_, oracle_type)
   })
 
   list.each(dict.to_list(oracle_constants), fn(entry) {
     let #(const_name, oracle_type) = entry
     let assert Ok(ours) = list.key_find(annotated.constants, const_name)
-    check(name <> "." <> const_name, ours, oracle_type)
+    check(name <> "." <> const_name, ours.type_, oracle_type)
   })
 
   check_expressions(name, annotated)

@@ -17,6 +17,14 @@ pub type Type {
   Tuple(elements: List(Type))
 }
 
+/// A polymorphic type scheme `forall vars. type_`: the generalized type of a
+/// top-level function or constant. `vars` are the ids of the `Var`s in `type_`
+/// that are universally quantified (generic); a monomorphic binding is
+/// `Scheme([], type_)`.
+pub type Scheme {
+  Scheme(vars: List(Int), type_: Type)
+}
+
 /// Why a module could not be typed. Variants describe the failure in terms of
 /// the type system and the offending source construct.
 pub type Error {

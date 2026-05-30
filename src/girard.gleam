@@ -9,12 +9,12 @@
 //// describing why a module could not be typed rather than crashing.
 
 import argv
-import girard/internal/infer.{type ModuleInterface, Scheme}
+import girard/internal/infer.{type ModuleInterface}
 import girard/internal/prelude
 import girard/internal/printer
 import girard/internal/reference
 import girard/internal/scc
-import girard/types.{type Error as TypeError, type Type}
+import girard/types.{type Error as TypeError, type Scheme, type Type, Scheme}
 import glance
 import gleam/dict
 import gleam/int
@@ -38,15 +38,16 @@ pub type Annotation {
   Annotation(span: glance.Span, type_: Type)
 }
 
-/// The full result of annotating a module. Types are structured `Type` values;
-/// a function's `Type` is its generalized signature (a `Fn(..)` whose `Var`s are
-/// the generic type variables). Render any of them with `type_to_string`.
+/// The full result of annotating a module. Top-level definitions carry a
+/// `Scheme` (their generalized signature: a `type_` plus the ids of its
+/// quantified `Var`s); expressions carry a monomorphic `Type`. Render either's
+/// type with `type_to_string`.
 pub type Annotated {
   Annotated(
-    /// Top-level function name to inferred signature type, in source order.
-    functions: List(#(String, Type)),
-    /// Top-level constant name to inferred type, in source order.
-    constants: List(#(String, Type)),
+    /// Top-level function name to inferred signature scheme, in source order.
+    functions: List(#(String, Scheme)),
+    /// Top-level constant name to inferred scheme, in source order.
+    constants: List(#(String, Scheme)),
     /// Expression span to inferred type, sorted by start offset.
     expressions: List(Annotation),
   )
@@ -595,19 +596,19 @@ fn render(module: glance.Module, env: infer.Env, st: infer.State) -> Annotated {
     })
 
   Annotated(
-    functions: collect_types(functions, env),
-    constants: collect_types(constants, env),
+    functions: collect_schemes(functions, env),
+    constants: collect_schemes(constants, env),
     expressions: sort_by_span(expressions),
   )
 }
 
-/// The inferred (generalized) signature type of each definition, in source
-/// order. Definitions the environment somehow lacks are skipped.
-fn collect_types(defs: List(Def), env: infer.Env) -> List(#(String, Type)) {
+/// The inferred (generalized) scheme of each definition, in source order.
+/// Definitions the environment somehow lacks are skipped.
+fn collect_schemes(defs: List(Def), env: infer.Env) -> List(#(String, Scheme)) {
   list.filter_map(defs, fn(def) {
     let name = def_name(def)
     case infer.lookup(env, name) {
-      Ok(scheme) -> Ok(#(name, scheme.type_))
+      Ok(scheme) -> Ok(#(name, scheme))
       Error(_) -> Error(Nil)
     }
   })
@@ -635,7 +636,7 @@ pub fn format(source: String) -> String {
           #([], names),
           fn(acc, def) {
             let #(lines, names) = acc
-            let #(text, names) = printer.print(names, def.1)
+            let #(text, names) = printer.print(names, { def.1 }.type_)
             #([def.0 <> ": " <> text, ..lines], names)
           },
         )
