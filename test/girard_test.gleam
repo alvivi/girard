@@ -779,6 +779,23 @@ pub fn scrutinee_variant_narrowing_test() {
   |> should.equal("fn(Node(a)) -> List(Node(a))")
 }
 
+pub fn constructed_variant_field_access_test() {
+  // `let b = Branch(..)` narrows `b` to that variant, so `b.kids` (a field
+  // absent from `Leaf`) is reachable without a pattern match (shore's
+  // `let focused = FocusedInput(..)` then `focused.offset`).
+  let source =
+    "pub type Node(a) {\n"
+    <> "  Branch(value: a, kids: List(Node(a)))\n"
+    <> "  Leaf(value: a)\n"
+    <> "}\n"
+    <> "pub fn make(x: a) -> List(Node(a)) {\n"
+    <> "  let b = Branch(value: x, kids: [])\n"
+    <> "  b.kids\n"
+    <> "}"
+  signature(source, "make")
+  |> should.equal("fn(a) -> List(Node(a))")
+}
+
 pub fn record_update_non_shared_field_test() {
   // Updating via the `Branch` constructor copies the kept field `kids`, which
   // exists only in `Branch`. The kept field's type is derived from the named

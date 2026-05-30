@@ -18,6 +18,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 
 // --- Errors ----------------------------------------------------------------
 
@@ -990,6 +991,38 @@ fn constructor_field_map(
   }
 }
 
+/// If `expr` is a direct constructor call (`Ctor(..)` or `module.Ctor(..)`),
+/// its `#(module, constructor)`. Constructors are recognised by their leading
+/// upper-case letter, the Gleam naming convention.
+fn constructor_call(
+  expr: glance.Expression,
+) -> Result(#(Option(String), String), Nil) {
+  let callee = case expr {
+    glance.Call(_, function, _) -> function
+    _ -> expr
+  }
+  case callee {
+    glance.Variable(_, name) ->
+      case is_upper(name) {
+        True -> Ok(#(None, name))
+        False -> Error(Nil)
+      }
+    glance.FieldAccess(_, glance.Variable(_, module), name) ->
+      case is_upper(name) {
+        True -> Ok(#(Some(module), name))
+        False -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+fn is_upper(name: String) -> Bool {
+  case string.first(name) {
+    Ok(c) -> string.uppercase(c) == c && string.lowercase(c) != c
+    Error(_) -> False
+  }
+}
+
 /// Record, for a variable bound by `Ctor(..) as name`, that variant's labelled
 /// fields with types tied to `value_type` (the variable's own type). Later
 /// `name.field` reads from this even when the field is absent from other
@@ -1659,6 +1692,13 @@ fn infer_statement(
         None -> Ok(st)
       })
       use #(env, st) <- result.try(infer_pattern(env, st, pattern, value_type))
+      // `let x = Ctor(..)` narrows `x` to that variant (the compiler's inferred
+      // variant), so a later `x.field` reaches a field present only in `Ctor`.
+      let #(env, st) = case pattern, constructor_call(value) {
+        glance.PatternVariable(_, name), Ok(#(module, constructor)) ->
+          record_variant(env, st, module, constructor, value_type, name)
+        _, _ -> #(env, st)
+      }
       Ok(#(value_type, env, st))
     }
 
