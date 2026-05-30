@@ -226,26 +226,66 @@ fn infer_defs(
       list.filter_map(group, dict.get(by_name, _))
     })
 
-  // Members of a component are inferred monomorphically together; afterwards
-  // each is generalized against the surrounding environment and added back for
-  // later components.
+  // Members of a component are inferred together; afterwards each is generalized
+  // against the surrounding environment and added back for later components.
+  //
+  // A *fully-annotated* function's type is known from its signature, so — like
+  // the compiler — it is bound at its generalized type up front (so recursion
+  // and siblings see it polymorphically) and its body is checked against that
+  // signature with the signature's type variables rigid. Every other definition
+  // is inferred monomorphically against a fresh placeholder, then generalized.
   list.try_fold(groups, #(env, st), fn(acc, group) {
     let #(env, st) = acc
-    let #(group_env, group_vars, st) =
+    let #(group_env, items, st) =
       list.fold(group, #(env, [], st), fn(acc, def) {
-        let #(env, vars, st) = acc
-        let #(var, st) = infer.fresh_var(st)
-        #(
-          infer.define(env, def_name(def), Scheme([], var)),
-          [#(def, var), ..vars],
-          st,
-        )
+        let #(env, items, st) = acc
+        case def {
+          FunctionDef(f) ->
+            case infer.has_annotation_vars(f) {
+              True -> {
+                let #(params, return_type, rigid_ids, st) =
+                  infer.signature_skeleton(env, st, f)
+                #(
+                  infer.define(
+                    env,
+                    def_name(def),
+                    infer.rigid_scheme(rigid_ids, params, return_type),
+                  ),
+                  [AnnotatedDef(def, f, params, return_type), ..items],
+                  st,
+                )
+              }
+              False -> placeholder(env, items, st, def)
+            }
+          ConstantDef(_) -> placeholder(env, items, st, def)
+        }
       })
     use st <- result.try(
-      list.try_fold(group_vars, st, fn(st, pair) {
-        let #(def, var) = pair
-        use #(inferred, st) <- result.try(infer_def(group_env, st, def))
-        infer.unify(st, var, inferred)
+      list.try_fold(items, st, fn(st, item) {
+        case item {
+          AnnotatedDef(def, f, params, return_type) -> {
+            // Inside its own body the function sees itself at the rigid
+            // (un-generalized) signature, so a self-recursive call must be at
+            // the same type — no polymorphic recursion. Bind the self-name
+            // first, then the parameters on top, so a parameter that shares the
+            // function's name shadows it (as in the source).
+            let body_env =
+              infer.bind_params(
+                infer.define(
+                  group_env,
+                  def_name(def),
+                  infer.rigid_self_scheme(params, return_type),
+                ),
+                f,
+                params,
+              )
+            infer.check_body(body_env, st, f, return_type)
+          }
+          PlaceholderDef(def, var) -> {
+            use #(inferred, st) <- result.try(infer_def(group_env, st, def))
+            infer.unify(st, var, inferred)
+          }
+        }
       }),
     )
     // The component's bodies are fully inferred, so any field accesses deferred
@@ -253,12 +293,49 @@ fn infer_defs(
     // generalize, so the field types are reflected in the schemes.
     use st <- result.try(infer.resolve_pending(group_env, st))
     let env =
-      list.fold(group_vars, env, fn(env, pair) {
-        let #(def, var) = pair
-        infer.define(env, def_name(def), infer.generalize(st, env, var))
+      list.fold(items, env, fn(env, item) {
+        case item {
+          AnnotatedDef(def, _, params, return_type) ->
+            infer.define(
+              env,
+              def_name(def),
+              infer.function_scheme(env, st, params, return_type),
+            )
+          PlaceholderDef(def, var) ->
+            infer.define(env, def_name(def), infer.generalize(st, env, var))
+        }
       })
     Ok(#(env, st))
   })
+}
+
+/// A member of a strongly-connected component during inference.
+type GroupItem {
+  /// A fully-annotated function: bound at its declared scheme up front; its body
+  /// is checked against the signature (rigid variables).
+  AnnotatedDef(
+    def: Def,
+    function: glance.Function,
+    params: List(Type),
+    return_type: Type,
+  )
+  /// Any other definition: inferred monomorphically against `var`, then
+  /// generalized.
+  PlaceholderDef(def: Def, var: Type)
+}
+
+fn placeholder(
+  env: infer.Env,
+  items: List(GroupItem),
+  st: infer.State,
+  def: Def,
+) -> #(infer.Env, List(GroupItem), infer.State) {
+  let #(var, st) = infer.fresh_var(st)
+  #(
+    infer.define(env, def_name(def), Scheme([], var)),
+    [PlaceholderDef(def, var), ..items],
+    st,
+  )
 }
 
 // --- Imports ---------------------------------------------------------------

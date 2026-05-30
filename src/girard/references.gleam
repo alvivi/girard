@@ -73,7 +73,8 @@ fn in_statements(
         )
         glance.Use(_, patterns, function) -> {
           let acc = in_expr(function, bound, acc)
-          let names = list.flat_map(patterns, fn(p) { pattern_names(p.pattern) })
+          let names =
+            list.flat_map(patterns, fn(p) { pattern_names(p.pattern) })
           #(set.union(bound, set.from_list(names)), acc)
         }
       }
@@ -92,7 +93,11 @@ fn in_optional(
   }
 }
 
-fn in_exprs(exprs: List(glance.Expression), bound: Set(String), acc: Acc) -> Acc {
+fn in_exprs(
+  exprs: List(glance.Expression),
+  bound: Set(String),
+  acc: Acc,
+) -> Acc {
   list.fold(exprs, acc, fn(acc, e) { in_expr(e, bound, acc) })
 }
 
@@ -131,7 +136,10 @@ fn in_expr(expr: glance.Expression, bound: Set(String), acc: Acc) -> Acc {
     // An anonymous function's parameters shadow within its body.
     glance.Fn(_, arguments, _return, body) -> {
       let bound =
-        set.union(bound, set.from_list(list.flat_map(arguments, fn_param_names)))
+        set.union(
+          bound,
+          set.from_list(list.flat_map(arguments, fn_param_names)),
+        )
       in_statements(body, bound, acc)
     }
 
@@ -167,8 +175,7 @@ fn in_expr(expr: glance.Expression, bound: Set(String), acc: Acc) -> Acc {
     // Each clause's patterns bind names visible in its guard and body.
     glance.Case(_, subjects, clauses) ->
       list.fold(clauses, in_exprs(subjects, bound, acc), fn(acc, clause) {
-        let names =
-          list.flat_map(list.flatten(clause.patterns), pattern_names)
+        let names = list.flat_map(list.flatten(clause.patterns), pattern_names)
         let bound = set.union(bound, set.from_list(names))
         in_optional(clause.guard, bound, in_expr(clause.body, bound, acc))
       })
@@ -212,11 +219,15 @@ fn pattern_names(pattern: glance.Pattern) -> List(String) {
 
     glance.PatternList(_, elements, tail) ->
       case tail {
-        Some(t) -> list.append(list.flat_map(elements, pattern_names), pattern_names(t))
+        Some(t) ->
+          list.append(list.flat_map(elements, pattern_names), pattern_names(t))
         None -> list.flat_map(elements, pattern_names)
       }
 
-    glance.PatternAssignment(_, pattern, name) -> [name, ..pattern_names(pattern)]
+    glance.PatternAssignment(_, pattern, name) -> [
+      name,
+      ..pattern_names(pattern)
+    ]
 
     glance.PatternConcatenate(_, _prefix, prefix_name, rest_name) ->
       list.append(

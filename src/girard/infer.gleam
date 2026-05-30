@@ -18,6 +18,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 
 // --- Errors ----------------------------------------------------------------
@@ -57,6 +58,12 @@ pub type State {
     /// when encountered; resolved by `resolve_pending` once inference has fixed
     /// the container type (deferred resolution, like the real compiler).
     pending: List(Pending),
+    /// Variable ids that are *rigid*: a type variable written in a function's
+    /// signature annotation, skolemized for that function's body. A rigid var
+    /// unifies only with itself or a flexible var (which binds to it), never
+    /// with a concrete type or a different rigid — matching the compiler, which
+    /// keeps annotated type variables generic and rejects pinning them.
+    rigid: Set(Int),
   )
 }
 
@@ -126,7 +133,21 @@ pub type ModuleInterface {
 }
 
 fn new_state() -> State {
-  State(next_id: 0, subst: dict.new(), annotations: [], pending: [])
+  State(
+    next_id: 0,
+    subst: dict.new(),
+    annotations: [],
+    pending: [],
+    rigid: set.new(),
+  )
+}
+
+fn mark_rigid(st: State, ids: List(Int)) -> State {
+  State(..st, rigid: list.fold(ids, st.rigid, set.insert))
+}
+
+fn is_rigid(st: State, id: Int) -> Bool {
+  set.contains(st.rigid, id)
 }
 
 fn new_env() -> Env {
@@ -524,8 +545,24 @@ pub fn unify(st: State, a: Type, b: Type) -> Result(State, Error) {
   let b = resolve(st, b)
   case a, b {
     Var(i), Var(j) if i == j -> Ok(st)
-    Var(i), other -> bind_var(st, i, other)
-    other, Var(j) -> bind_var(st, j, other)
+    // A rigid variable never binds; a flexible one may bind to it. Two distinct
+    // rigids, or a rigid against a concrete type, are a mismatch.
+    Var(i), Var(j) ->
+      case is_rigid(st, i), is_rigid(st, j) {
+        True, True -> Error(TypeMismatch(a, b))
+        True, False -> bind_var(st, j, a)
+        False, _ -> bind_var(st, i, b)
+      }
+    Var(i), other ->
+      case is_rigid(st, i) {
+        True -> Error(TypeMismatch(a, b))
+        False -> bind_var(st, i, other)
+      }
+    other, Var(j) ->
+      case is_rigid(st, j) {
+        True -> Error(TypeMismatch(a, b))
+        False -> bind_var(st, j, other)
+      }
 
     Named(m1, n1, a1), Named(m2, n2, a2) if m1 == m2 && n1 == n2 ->
       unify_many(st, a1, a2)
@@ -630,9 +667,10 @@ fn type_var_names(ast: glance.Type) -> List(String) {
       list.flat_map(parameters, type_var_names)
     glance.TupleType(_, elements) -> list.flat_map(elements, type_var_names)
     glance.FunctionType(_, parameters, return) ->
-      list.append(list.flat_map(parameters, type_var_names), type_var_names(
-        return,
-      ))
+      list.append(
+        list.flat_map(parameters, type_var_names),
+        type_var_names(return),
+      )
     glance.HoleType(..) -> []
   }
 }
@@ -1150,7 +1188,16 @@ fn infer_fn(
 ) -> Result(#(Type, State), Error) {
   // No expected type: each parameter starts as a fresh variable.
   let #(seeds, st) = fresh_n(st, list.length(params))
-  infer_lambda(env, st, params, return_annotation, body, seeds, None, dict.new())
+  infer_lambda(
+    env,
+    st,
+    params,
+    return_annotation,
+    body,
+    seeds,
+    None,
+    dict.new(),
+  )
 }
 
 /// Infer a lambda whose parameters are seeded with `seed_params` (the expected
@@ -2309,6 +2356,136 @@ fn hydrate_with(
 
 // --- Top-level definitions -------------------------------------------------
 
+/// Whether a function's signature names any type variable. The compiler makes
+/// such a variable rigid for the body and keeps the function polymorphic over it
+/// in its own recursion / SCC (rather than inferring it monomorphically against
+/// a placeholder, which would pin a phantom parameter). A function with only
+/// concrete annotations, or none, takes the ordinary placeholder path.
+pub fn has_annotation_vars(function: glance.Function) -> Bool {
+  function_annotation_var_names(function) != []
+}
+
+fn function_annotation_var_names(function: glance.Function) -> List(String) {
+  let from_params =
+    list.flat_map(function.parameters, fn(p) {
+      case p.type_ {
+        Some(t) -> type_var_names(t)
+        None -> []
+      }
+    })
+  case function.return {
+    Some(t) -> list.append(from_params, type_var_names(t))
+    None -> from_params
+  }
+}
+
+/// Hydrate a function's signature into a *skeleton*: each annotated part uses
+/// its written type with the signature's type variables made rigid (skolemized)
+/// for the body; each unannotated part is a fresh flexible variable (inferred
+/// and shared monomorphically, like a placeholder). Returns the parameter types,
+/// return type, and the ids made rigid; those ids are also recorded in `State`.
+pub fn signature_skeleton(
+  env: Env,
+  st: State,
+  function: glance.Function,
+) -> #(List(Type), Type, List(Int), State) {
+  // One rigid id per distinct annotation variable name, shared across the whole
+  // signature (so a parameter `a` and the return `a` are the same variable).
+  let #(names, rigid_ids, st) =
+    list.fold(
+      list.unique(function_annotation_var_names(function)),
+      #(dict.new(), [], st),
+      fn(acc, name) {
+        let #(names, ids, st) = acc
+        let #(id, st) = fresh_id(st)
+        #(dict.insert(names, name, Var(id)), [id, ..ids], st)
+      },
+    )
+  let st = mark_rigid(st, rigid_ids)
+  let #(rev_param_types, st) =
+    list.fold(function.parameters, #([], st), fn(acc, param) {
+      let #(types_, st) = acc
+      let #(t, st) = case param.type_ {
+        Some(ann) -> hydrate_in(env, names, st, ann)
+        None -> fresh(st)
+      }
+      #([t, ..types_], st)
+    })
+  let #(return_type, st) = case function.return {
+    Some(ann) -> hydrate_in(env, names, st, ann)
+    None -> fresh(st)
+  }
+  #(list.reverse(rev_param_types), return_type, rigid_ids, st)
+}
+
+/// Bind a function's parameters to the given types in `env`.
+pub fn bind_params(
+  env: Env,
+  function: glance.Function,
+  param_types: List(Type),
+) -> Env {
+  list.fold(list.zip(function.parameters, param_types), env, fn(env, pair) {
+    let #(param, t) = pair
+    case param.name {
+      glance.Named(name) -> bind_value(env, name, Scheme([], t))
+      glance.Discarded(_) -> env
+    }
+  })
+}
+
+/// Infer a fully-annotated function's body and check it against the declared
+/// return type. `@external` functions have no body and pass trivially.
+pub fn check_body(
+  env: Env,
+  st: State,
+  function: glance.Function,
+  return_type: Type,
+) -> Result(State, Error) {
+  case function.body {
+    [] -> Ok(st)
+    _ -> {
+      use #(body_type, st) <- result.try(infer_statements(
+        env,
+        st,
+        function.body,
+      ))
+      unify(st, body_type, return_type)
+    }
+  }
+}
+
+/// The scheme a function with signature variables is bound at within its SCC:
+/// polymorphic over its rigid signature variables, but with any unannotated
+/// (flexible placeholder) parts left free, so they stay shared/monomorphic
+/// across the component until the body fixes them.
+pub fn rigid_scheme(
+  rigid_ids: List(Int),
+  param_types: List(Type),
+  return_type: Type,
+) -> Scheme {
+  Scheme(rigid_ids, Fn(param_types, return_type))
+}
+
+/// Generalize a function's final parameter/return types into a scheme,
+/// quantifying every variable still free after the body is inferred.
+pub fn function_scheme(
+  env: Env,
+  st: State,
+  param_types: List(Type),
+  return_type: Type,
+) -> Scheme {
+  generalize(st, env, Fn(param_types, return_type))
+}
+
+/// The *monomorphic* scheme a fully-annotated function sees for itself inside
+/// its own body. Its signature variables stay rigid (un-quantified), so a
+/// self-recursive call must be at the same type — Gleam has no polymorphic
+/// recursion, and recursing at a concrete type where the signature is generic
+/// is a mismatch, exactly as the compiler reports.
+pub fn rigid_self_scheme(param_types: List(Type), return_type: Type) -> Scheme {
+  Scheme([], Fn(param_types, return_type))
+}
+
 /// Infer a top-level function, returning its (still ungeneralized) `Fn` type.
 pub fn infer_function(
   env: Env,
@@ -2536,11 +2713,10 @@ fn find_module_interface(
             True -> find_module_interface(rest, target, seen)
             False ->
               case
-                find_module_interface(
-                  dict.values(interface.modules),
-                  target,
-                  [interface.name, ..seen],
-                )
+                find_module_interface(dict.values(interface.modules), target, [
+                  interface.name,
+                  ..seen
+                ])
               {
                 Ok(found) -> Ok(found)
                 Error(_) -> find_module_interface(rest, target, seen)

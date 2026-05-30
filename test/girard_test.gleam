@@ -889,12 +889,65 @@ pub fn target_specific_definition_is_filtered_test() {
   |> should.equal("fn(String) -> Result(Int, MyError)")
 }
 
+pub fn signature_variable_stays_polymorphic_test() {
+  // A fully-annotated function whose phantom parameter the body never forces
+  // stays polymorphic, matching the compiler (`Expr(a)`, not `Expr(Dyn)`). The
+  // recursion is reached through helpers/coercions, so the rigid `ty` is never
+  // pinned. This is the gleamgen / pretty_diff / kicad_sexpr bug.
+  let source =
+    "pub type Dyn\n"
+    <> "pub opaque type Expr(ty) {\n  Expr(internal: Internal(ty))\n}\n"
+    <> "type Internal(ty) {\n  Lit(Int)\n  Pair(Expr(Dyn), Expr(Dyn))\n}\n"
+    <> "fn render_pair(a: Expr(Dyn), b: Expr(Dyn)) -> Int {\n"
+    <> "  render(a) + render(b)\n}\n"
+    <> "pub fn render(e: Expr(ty)) -> Int {\n"
+    <> "  case e.internal {\n    Lit(v) -> v\n    Pair(a, b) -> render_pair(a, b)\n  }\n}"
+  signature(source, "render")
+  |> should.equal("fn(Expr(a)) -> Int")
+}
+
+pub fn partial_annotation_variable_is_rigid_test() {
+  // A type variable in a *parameter* annotation is rigid even when the return is
+  // not annotated, so the function stays polymorphic over it rather than being
+  // monomorphised by a sibling that passes a concrete type. This is gleamgen's
+  // `render_operator(expr1: Expression(type_), ...)` with an inferred return.
+  let source =
+    "pub type Dyn\n"
+    <> "pub opaque type Expr(ty) {\n  Expr(internal: Internal(ty))\n}\n"
+    <> "type Internal(ty) {\n  Lit(Int)\n  Bin(Expr(Dyn), Expr(Dyn))\n}\n"
+    <> "fn render_pair(a: Expr(t), b: Expr(t)) {\n  render(a) + render(b)\n}\n"
+    <> "pub fn render(e: Expr(ty)) -> Int {\n"
+    <> "  case e.internal {\n    Lit(v) -> v\n    Bin(a, b) -> render_pair(a, b)\n  }\n}"
+  signature(source, "render_pair")
+  |> should.equal("fn(Expr(b), Expr(b)) -> Int")
+}
+
+pub fn no_polymorphic_recursion_test() {
+  // A self-recursive call at a different (concrete) type than the rigid
+  // signature is rejected, exactly as the compiler rejects polymorphic
+  // recursion — `render(a)` where `a : Expr(Dyn)` but `render` expects
+  // `Expr(ty)` (rigid).
+  let source =
+    "pub type Dyn\n"
+    <> "pub opaque type Expr(ty) {\n  Expr(internal: Internal(ty))\n}\n"
+    <> "type Internal(ty) {\n  Lit(Int)\n  Pair(Expr(Dyn), Expr(Dyn))\n}\n"
+    <> "pub fn render(e: Expr(ty)) -> Int {\n"
+    <> "  case e.internal {\n    Lit(v) -> v\n    Pair(a, b) -> render(a) + render(b)\n  }\n}"
+  case girard.annotate(source) {
+    Error(_) -> Nil
+    Ok(_) -> panic as "expected a type error (no polymorphic recursion)"
+  }
+}
+
 pub fn annotated_local_function_generalizes_test() {
   // A `let`-bound function is generalized over the type variables written in
   // its annotation, so it may be used at several types (`id(1)` and `id("hi")`).
   // girard treated local bindings as monomorphic and unified the two uses —
   // the bug behind the `esdee` package's `try_find` helper.
-  signature("pub fn main() {\n  let id = fn(x: a) -> a { x }\n  #(id(1), id(\"hi\"))\n}", "main")
+  signature(
+    "pub fn main() {\n  let id = fn(x: a) -> a { x }\n  #(id(1), id(\"hi\"))\n}",
+    "main",
+  )
   |> should.equal("fn() -> #(Int, String)")
 }
 
