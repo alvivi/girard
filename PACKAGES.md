@@ -420,19 +420,98 @@ fix is required, add a regression test and link the commit.
 | gary | ✅ clean |  |
 | gauth | ✅ clean |  |
 | gauzy | ✅ clean |  |
+| gaveta | ✅ clean |  |
+| gbase32_clockwork | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gblake2 | ✅ clean |  |
+| gblake3 | ✅ clean |  |
+| gbor | ✅ clean |  |
+| gbr_disk_log | ⏭️ skip · resolve | not found / could not download. |
+| gbr_erl | ✅ clean |  |
+| gbr_gh | ⏭️ skip · resolve | not found / could not download. |
+| gbr_js | ⏭️ skip · resolve | not found / could not download. |
+| gbr_md_lustre | ⏭️ skip · resolve | not found / could not download. |
+| gbr_msal | ✅ clean |  |
+| gbr_shared | ⏭️ skip · resolve | not found / could not download. |
+| gbr_ui | ⏭️ skip · resolve | not found / could not download. |
+| gcalc | ✅ clean |  |
+| gchess | ⏭️ skip · resolve | not found / could not download. |
+| gclog | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gcourier | ⏭️ skip · resolve | not found / could not download. |
+| gdo | ✅ clean |  |
+| geckolex | ✅ clean |  |
+| ged25519 | ✅ clean |  |
 | gel | ⏭️ skip · resolve | source not downloaded. |
+| gelman | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gemo | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gemqtt | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gen_core_erlang | ⏭️ skip · resolve | not found / could not download. |
+| gen_gleam | ✅ clean |  |
+| gens | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| genserver | ✅ clean |  |
+| geny | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| geokit | ✅ clean |  |
+| germinal | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gexcept | ⏭️ skip · resolve | not found / could not download. |
+| gextra | ✅ clean |  |
+| gflambe | ✅ clean |  |
+| gftp | ✅ clean |  |
+| ggleam | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| ghtml | ✅ clean |  |
+| gild | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gild_frontend | ✅ clean |  |
+| gilly | ✅ clean |  |
+| ginger | ✅ clean |  |
+| gip | ✅ clean |  |
+| git_store | ✅ clean |  |
+| github_sdk | ✅ clean |  |
 | given | 🔧 fixed | self-recursive `partition_loop` using imported constructors wasn't generalized → monomorphic across uses. Fixed: quantified scheme variables treated as opaque in `env_free_vars`. |
+| gjwt | ✅ clean |  |
+| gl | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gl_dfjson | ✅ clean |  |
+| gl_gtin | ✅ clean |  |
+| gl_wasm | ⏭️ skip · resolve | not found / could not download. |
+| glace | ⏭️ skip · resolve | not found / could not download. |
+| glacier | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glacier_gleeunit | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | gladvent | ⏭️ skip · build | a transitive `decode` version is broken against the resolved stdlib. |
+| glailglind | ✅ clean |  |
+| glailwind_merge | ✅ clean |  |
 | glam | ✅ clean |  |
+| glambda | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glame | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glaml | ✅ clean |  |
+| glamour | ✅ clean |  |
 | glance | ✅ clean |  |
+| glance_armstrong | ✅ clean |  |
 | glance_printer | ✅ clean |  |
+| glanoid | ✅ clean |  |
+| glap | ✅ clean |  |
+| glare | ⏭️ skip · resolve | not found / could not download. |
+| glat | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glatch | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glatistics | ✅ clean |  |
+| glats | ⏭️ skip · resolve | not found / could not download. |
+| glatus | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glaze_basecoat | ✅ clean |  |
+| glaze_oat | ✅ clean |  |
+| glazed_corn | ✅ clean |  |
+| glbencode | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glcode | ⏭️ skip · resolve | not found / could not download. |
+| gleaf | ✅ clean |  |
+| gleaflet | ✅ clean |  |
+| gleam_bitwise | ✅ clean |  |
 | gleam_community_ansi | ✅ clean |  |
 | gleam_community_colour | ✅ clean |  |
 | gleam_community_maths | ✅ clean |  |
+| gleam_community_path | ⏭️ skip · resolve | not found / could not download. |
+| gleam_cowboy | ✅ clean |  |
 | gleam_crypto | ✅ clean |  |
 | gleam_deque | ✅ clean |  |
+| gleam_elli | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | gleam_erlang | ✅ clean |  |
 | gleam_fetch | ✅ clean |  |
+| gleam_hackney | ✅ clean |  |
+| gleam_hexpm | ✅ clean |  |
 | gleam_http | ✅ clean |  |
 | gleam_httpc | ✅ clean |  |
 | gleam_javascript | ✅ clean | JS-target package. |
@@ -445,24 +524,332 @@ fix is required, add a regression test and link the commit.
 | gleam_time | ✅ clean |  |
 | gleam_yaml | ✅ clean |  |
 | gleam_yielder | ✅ clean |  |
+| gleambox | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gleameter | ✅ clean |  |
+| gleamgen | 📝 note | girard pins a phantom type parameter (`Expression(type_.Dynamic)`) where the compiler keeps it polymorphic (`Expression($0)`): girard treats a function signature's type variables as flexible, not rigid/skolemized. A known inference-fidelity gap (rigid type variables), deferred — 34 expression mismatches, all of this shape. |
+| gleamix | ✅ clean |  |
+| gleamlz_string | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gleamoire | ⏭️ skip · resolve | not found / could not download. |
+| gleamql | ⏭️ skip · resolve | not found / could not download. |
+| gleamrpc | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gleamrpc_http_client | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gleamrpc_http_server | ⏭️ skip · resolve | not found / could not download. |
+| gleamstar | ✅ clean |  |
+| gleamstral | ✅ clean |  |
+| gleamsver | ✅ clean |  |
+| gleamx | ⏭️ skip · resolve | not found / could not download. |
 | gleamy_bench | ✅ clean |  |
+| gleamy_lights | ✅ clean |  |
 | gleamy_structures | ✅ clean |  |
+| gleamy_zipper | ✅ clean |  |
+| gleamyshell | ✅ clean |  |
+| glean | ⏭️ skip · resolve | not found / could not download. |
+| gleanix | ✅ clean |  |
+| gleaph | ✅ clean |  |
 | glearray | ✅ clean |  |
+| gleastsq | ✅ clean |  |
+| gleatfy | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gleative | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gleatter | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gleatter_lustre | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gleave | ✅ clean |  |
+| gleb128 | ✅ clean |  |
+| glebs | ✅ clean |  |
 | glector | ✅ clean |  |
+| glecuid | ✅ clean |  |
+| gledis | ⏭️ skip · resolve | not found / could not download. |
+| gledo | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glee | ✅ clean |  |
+| glee_gd | ⏭️ skip · resolve | not found / could not download. |
+| gleeam_code | ✅ clean |  |
+| gleebor | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gleedoc | ✅ clean |  |
+| gleem | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gleemenu | ⏭️ skip · resolve | not found / could not download. |
+| gleenix | ⏭️ skip · resolve | not found / could not download. |
+| gleepl | ⏭️ skip · resolve | not found / could not download. |
+| gleeps | ⏭️ skip · resolve | not found / could not download. |
+| gleeps_dev_tools | ⏭️ skip · resolve | not found / could not download. |
+| gleeps_stdlib | ⏭️ skip · resolve | not found / could not download. |
+| gleerup | ⏭️ skip · resolve | not found / could not download. |
+| gleescript | ⏭️ skip · resolve | not found / could not download. |
+| gleesend | ⏭️ skip · resolve | not found / could not download. |
+| gleeth | ⏭️ skip · resolve | not found / could not download. |
+| gleetube | ⏭️ skip · resolve | not found / could not download. |
+| gleeunit | ⏭️ skip · resolve | not found / could not download. |
+| gleewhois | ⏭️ skip · resolve | not found / could not download. |
+| gleez | ⏭️ skip · resolve | not found / could not download. |
+| gleither | ⏭️ skip · resolve | not found / could not download. |
+| glelm | ⏭️ skip · resolve | not found / could not download. |
+| glemcached | ⏭️ skip · resolve | not found / could not download. |
+| glemini | ⏭️ skip · resolve | not found / could not download. |
+| glemo | ⏭️ skip · resolve | not found / could not download. |
+| glemplate | ⏭️ skip · resolve | not found / could not download. |
+| glemtext | ⏭️ skip · resolve | not found / could not download. |
 | glen | ✅ clean |  |
+| glen_node | ⏭️ skip · resolve | not found / could not download. |
+| glency | ⏭️ skip · resolve | not found / could not download. |
+| glendix | ⏭️ skip · resolve | not found / could not download. |
+| glentities | ⏭️ skip · resolve | not found / could not download. |
+| glenv | ⏭️ skip · resolve | not found / could not download. |
+| glenvy | ⏭️ skip · resolve | not found / could not download. |
+| gleojson | ⏭️ skip · resolve | not found / could not download. |
+| glepack | ⏭️ skip · resolve | not found / could not download. |
+| glerd | ⏭️ skip · resolve | not found / could not download. |
+| glerd_json | ⏭️ skip · resolve | not found / could not download. |
+| glerd_valid | ⏭️ skip · resolve | not found / could not download. |
+| glerm | ⏭️ skip · resolve | not found / could not download. |
+| gleroglero | ⏭️ skip · resolve | not found / could not download. |
+| glerror | ⏭️ skip · resolve | not found / could not download. |
+| glesha | ⏭️ skip · resolve | not found / could not download. |
+| glesha2 | ⏭️ skip · resolve | not found / could not download. |
+| glethers | ⏭️ skip · resolve | not found / could not download. |
+| glevatar | ⏭️ skip · resolve | not found / could not download. |
+| glevenshtein | ⏭️ skip · resolve | not found / could not download. |
+| glex | ⏭️ skip · resolve | not found / could not download. |
+| glexec | ⏭️ skip · resolve | not found / could not download. |
 | glexer | ✅ clean |  |
+| glexif | ⏭️ skip · resolve | not found / could not download. |
+| gleyre | ⏭️ skip · resolve | not found / could not download. |
+| glib | ⏭️ skip · resolve | not found / could not download. |
+| gliberapay | ⏭️ skip · resolve | not found / could not download. |
+| glibsql | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glidicon | ⏭️ skip · resolve | not found / could not download. |
+| glidna | ✅ clean |  |
+| gliew | ⏭️ skip · resolve | not found / could not download. |
+| gliff | ✅ clean |  |
+| glight | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glimit | ✅ clean |  |
+| glimiter | ✅ clean |  |
+| glimmer | ⏭️ skip · resolve | not found / could not download. |
+| glimp | ✅ clean |  |
+| glimpse | ⏭️ skip · resolve | not found / could not download. |
+| glimpse_log | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glimr | ✅ clean |  |
+| glimr_auth | ⏭️ skip · resolve | not found / could not download. |
+| glimr_postgres | ⏭️ skip · resolve | not found / could not download. |
+| glimr_redis | ⏭️ skip · resolve | not found / could not download. |
+| glimr_sqlite | ⏭️ skip · resolve | not found / could not download. |
+| glimra | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glimt | ⏭️ skip · resolve | not found / could not download. |
+| glindex | ✅ clean |  |
+| glindo | ✅ clean |  |
+| gling | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glink | ✅ clean |  |
 | glint | ✅ clean |  |
 | glinter | ✅ clean |  |
+| glip | ✅ clean |  |
+| glipt | ✅ clean |  |
+| glisbn | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glisdigit | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glisp | ⏭️ skip · resolve | not found / could not download. |
 | glisten | 🔧 fixed | `Socket` (local alias) vs `InternalSocket` (`type Socket as InternalSocket` import). Fixed: renamed type imports hydrate to their origin name (`9e5833b`). |
+| glistix_birl | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glistix_gleeunit | ⏭️ skip · resolve | not found / could not download. |
+| glistix_json | ⏭️ skip · resolve | not found / could not download. |
+| glistix_nix | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glistix_stdlib | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glitch | ⏭️ skip · resolve | not found / could not download. |
+| glite | ⏭️ skip · resolve | not found / could not download. |
+| glitr | ⏭️ skip · resolve | not found / could not download. |
+| glitr_convert | ⏭️ skip · resolve | not found / could not download. |
+| glitr_convert_cake | ⏭️ skip · resolve | not found / could not download. |
+| glitr_convert_sql | ⏭️ skip · resolve | not found / could not download. |
+| glitr_lustre | ⏭️ skip · resolve | not found / could not download. |
+| glitr_wisp | ⏭️ skip · resolve | not found / could not download. |
+| glitzer | ⏭️ skip · resolve | not found / could not download. |
+| gliua | ⏭️ skip · resolve | not found / could not download. |
+| glixir | ⏭️ skip · resolve | not found / could not download. |
+| glizzy | ⏭️ skip · resolve | not found / could not download. |
+| gllm | ⏭️ skip · resolve | not found / could not download. |
+| glm_cidr | ⏭️ skip · resolve | not found / could not download. |
+| glm_encrypted_file | ⏭️ skip · resolve | not found / could not download. |
+| glm_freebsd | ⏭️ skip · resolve | not found / could not download. |
+| glm_vault | ⏭️ skip · resolve | not found / could not download. |
+| global_value | ✅ clean |  |
+| globe | ⏭️ skip · resolve | not found / could not download. |
+| globlin | ✅ clean |  |
+| globlin_fs | ✅ clean |  |
+| glodbc | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glog | ⏭️ skip · resolve | not found / could not download. |
+| glogg | ✅ clean |  |
+| glome | ⏭️ skip · resolve | not found / could not download. |
+| gloml | ⏭️ skip · resolve | not found / could not download. |
+| glomp | ✅ clean |  |
+| glon | ✅ clean |  |
+| gloo | 🔧 fixed | a record reached through a helper in another module (`schema.users().decoder`, `Table` from `gloo/schema`) failed field access because an alias collision evicted the origin module; resolve accessors through the transitive interface graph (`ce69a55`). |
+| gloom | ⏭️ skip · resolve | not found / could not download. |
+| gloop | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glopenai | ✅ clean |  |
+| gloq | ✅ clean |  |
+| glor | ✅ clean |  |
+| glorage | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glormat | ✅ clean |  |
+| gloss | ⏭️ skip · resolve | not found / could not download. |
+| glotel | ✅ clean |  |
+| glove | ✅ clean |  |
+| glow | ⏭️ skip · resolve | not found / could not download. |
+| glow_auth | ✅ clean |  |
+| glqr | ✅ clean |  |
+| glriff | ✅ clean |  |
+| glrss_parser | ⏭️ skip · resolve | not found / could not download. |
+| glua | ✅ clean |  |
+| glubs | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glubsub | ✅ clean |  |
+| glucose | ⏭️ skip · resolve | not found / could not download. |
+| glue | ⏭️ skip · resolve | not found / could not download. |
+| glugify | ✅ clean |  |
 | gluid | ✅ clean |  |
+| glum | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gluon | ⏭️ skip · resolve | not found / could not download. |
+| glupbit | ⏭️ skip · resolve | not found / could not download. |
+| gluple | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gluri | ✅ clean |  |
+| glurp6 | ✅ clean |  |
+| glv8 | ⏭️ skip · resolve | not found / could not download. |
+| glwav | ✅ clean |  |
+| glx | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| glychee | ✅ clean |  |
+| glyn | ✅ clean |  |
+| glyph | ⏭️ skip · resolve | not found / could not download. |
+| glyph_codegen | ⏭️ skip · resolve | not found / could not download. |
+| glypst | ⏭️ skip · resolve | not found / could not download. |
+| glzoneinfo | ⏭️ skip · resolve | not found / could not download. |
+| gmsg | ✅ clean |  |
+| gmysql | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| go_over | ✅ clean |  |
+| gond | ✅ clean |  |
+| goose | ✅ clean |  |
+| gopenai | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gorrion | ⏭️ skip · resolve | not found / could not download. |
+| gose | ⏭️ skip · resolve | not found / could not download. |
+| gossamer | ⏭️ skip · resolve | not found / could not download. |
+| gpkm | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gpop | ⏭️ skip · resolve | not found / could not download. |
+| gpsd_json | ⏭️ skip · resolve | not found / could not download. |
+| gpxb | ⏭️ skip · resolve | not found / could not download. |
+| gquery | ⏭️ skip · resolve | not found / could not download. |
+| graded | ⏭️ skip · resolve | not found / could not download. |
+| grammy | ⏭️ skip · resolve | not found / could not download. |
 | gramps | ✅ clean | earlier `Header` error was a missing `gleam_http` dependency, not a girard bug. |
+| graph | ⏭️ skip · resolve | not found / could not download. |
+| grille_pain | ⏭️ skip · resolve | not found / could not download. |
+| gripe | ⏭️ skip · resolve | not found / could not download. |
+| grom | ⏭️ skip · resolve | not found / could not download. |
+| grom_stratus | ⏭️ skip · resolve | not found / could not download. |
+| group_registry | ⏭️ skip · resolve | not found / could not download. |
+| gs | ⏭️ skip · resolve | not found / could not download. |
+| gserde | ⏭️ skip · resolve | not found / could not download. |
+| gsiphash | ⏭️ skip · resolve | not found / could not download. |
+| gsmtp | ⏭️ skip · resolve | not found / could not download. |
+| gssg | ⏭️ skip · resolve | not found / could not download. |
+| gstripe | ⏭️ skip · resolve | not found / could not download. |
 | gsv | ✅ clean |  |
+| gtabler | ⏭️ skip · resolve | not found / could not download. |
+| gtemplate | ⏭️ skip · resolve | not found / could not download. |
 | gtempo | ✅ clean |  |
+| gtfs_gleam | ⏭️ skip · resolve | not found / could not download. |
+| gtfs_rt_nyct | ⏭️ skip · resolve | not found / could not download. |
+| gtransducer | ⏭️ skip · resolve | not found / could not download. |
+| gts | ⏭️ skip · resolve | not found / could not download. |
+| gtui | ⏭️ skip · resolve | not found / could not download. |
+| gtz | ⏭️ skip · resolve | not found / could not download. |
+| gu | ⏭️ skip · resolve | not found / could not download. |
+| guddle | ⏭️ skip · resolve | not found / could not download. |
+| gulid | ⏭️ skip · resolve | not found / could not download. |
+| gva | ⏭️ skip · resolve | not found / could not download. |
+| gvarint | ⏭️ skip · resolve | not found / could not download. |
+| gwg_pathfinding | ⏭️ skip · resolve | not found / could not download. |
+| gwg_rng | ⏭️ skip · resolve | not found / could not download. |
+| gwi | ⏭️ skip · resolve | not found / could not download. |
+| gwitch | ⏭️ skip · resolve | not found / could not download. |
+| gwr | ⏭️ skip · resolve | not found / could not download. |
+| gwt | ⏭️ skip · resolve | not found / could not download. |
+| gxid | ⏭️ skip · resolve | not found / could not download. |
 | gxml | ⏭️ skip · resolve |  |
+| gxyz | ⏭️ skip · resolve | not found / could not download. |
+| gzlib | ⏭️ skip · resolve | not found / could not download. |
+| gzxcvbn | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gzxcvbn_common | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| gzxcvbn_en | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| h2_frame | 📝 note | fails to **parse** in glance — a bit-array segment whose value is a qualified field access (`stream_priority.stream_dependency:size(31)`). A glance limitation, not girard inference. |
+| halo | ⏭️ skip · resolve | not found / could not download. |
+| handles | ✅ clean |  |
+| handles_foxed | ✅ clean |  |
+| hanguleam | ✅ clean |  |
+| hardcache | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| hello_joe | ✅ clean |  |
+| hexdocs_offline | ✅ clean |  |
+| high_mountains | ✅ clean |  |
+| hoist | ✅ clean |  |
+| honk | ✅ clean |  |
 | houdini | ✅ clean |  |
+| howdy | ⏭️ skip · resolve | not found / could not download. |
+| howdy_authentication_cookies | ⏭️ skip · resolve | not found / could not download. |
+| howdy_uuid | ⏭️ skip · resolve | not found / could not download. |
+| hstack | ✅ clean |  |
+| htmb | ✅ clean |  |
+| htmgrrrl | ✅ clean |  |
+| html_components | ✅ clean |  |
+| html_dsl | ✅ clean |  |
+| html_lustre_converter | ✅ clean |  |
+| html_parser | ✅ clean |  |
+| htmz | ⏭️ skip · resolve | not found / could not download. |
+| http_server_mock | ✅ clean |  |
+| http_server_mock_erlang | ✅ clean |  |
+| http_server_mock_js | ✅ clean |  |
+| httpp | ⏭️ skip · resolve | not found / could not download. |
+| hug | ⏭️ skip · resolve | not found / could not download. |
+| humanise | ✅ clean |  |
+| humanize | ✅ clean |  |
+| hx | ✅ clean |  |
+| hypersig | ✅ clean |  |
+| hyphenation | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| idb | ✅ clean |  |
+| ids | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| ieee_float | ✅ clean |  |
+| illustrious | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| immutable_lru | ✅ clean |  |
+| in | ✅ clean |  |
+| inertia_wisp | ✅ clean |  |
+| inertia_wisp_ssr | ✅ clean |  |
+| infiniyield | ✅ clean |  |
+| inlay | ✅ clean |  |
+| input | ✅ clean |  |
+| integer_complexity | ⏭️ skip · resolve | not found / could not download. |
+| interior | ✅ clean |  |
+| intldate | ✅ clean |  |
+| ior | ✅ clean |  |
+| iox | ⏭️ skip · resolve | not found / could not download. |
+| iso_8859 | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| iterators | ⏭️ skip · resolve | not found / could not download. |
 | iv | ✅ clean |  |
+| ivy | ⏭️ skip · resolve | not found / could not download. |
+| jackson | ⏭️ skip · resolve | not found / could not download. |
+| jasper | ⏭️ skip · resolve | not found / could not download. |
+| javascript_dom_parser | ⏭️ skip · resolve | not found / could not download. |
+| javascript_mutable_reference | ⏭️ skip · resolve | not found / could not download. |
+| jbs | ⏭️ skip · resolve | not found / could not download. |
+| jelly | ⏭️ skip · resolve | not found / could not download. |
+| jokeapi | ⏭️ skip · resolve | not found / could not download. |
 | jot | 🔧 fixed | `"a" as c <> rest` string-prefix pattern dropped the prefix `as` binding → `c` unbound. Fixed in `PatternConcatenate` (`1cfb3a2`). |
+| jot_to_lustre | ⏭️ skip · resolve | not found / could not download. |
+| jotkey | ⏭️ skip · resolve | not found / could not download. |
+| js_parser | ⏭️ skip · resolve | not found / could not download. |
+| jscheam | ⏭️ skip · resolve | not found / could not download. |
+| json_blueprint | ⏭️ skip · resolve | not found / could not download. |
+| json_canvas | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| json_typedef | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| json_value | ✅ clean |  |
+| jsonlogic | ✅ clean |  |
+| jsonrpc | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| jsonrpcx | ✅ clean |  |
+| julienne | ✅ clean |  |
+| juno | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
+| just | ✅ clean |  |
 | justin | ✅ clean |  |
+| kafein | ✅ clean |  |
+| kata | ✅ clean |  |
 | logging | ✅ clean |  |
 | lustre | 🔧 fixed | multiple: inferred-variant field access (`Element.attributes`), multi-variant record update, cross-module generalization (`74a3278`); `cache.events(cache)` module-vs-field by call position (`8693b66`). |
 | lustre_dev_tools | 🔧 fixed | `import gleam.{Error as Err}` (via polly) — prelude module not resolvable (`07129a2`); `string.trim` qualified access wrongly grouped `flag`/`string` → `Int vs String` (`3209cb8`/`656e830`). |
