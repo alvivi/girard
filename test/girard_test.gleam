@@ -856,6 +856,23 @@ pub fn self_recursive_with_imports_generalizes_test() {
   )
 }
 
+pub fn target_specific_definition_is_filtered_test() {
+  // A `@target(javascript)` sibling must not shadow the Erlang definition.
+  // girard types the Erlang target, so `do_thing` here is the Erlang external
+  // returning `Result(Int, MyError)`, not the JS one returning
+  // `Result(Int, String)` — the bug behind simplifile's `do_file_info` (and so
+  // the `dot_env` package).
+  let source =
+    "pub type MyError {\n  Boom\n}\n"
+    <> "@target(erlang)\n@external(erlang, \"m\", \"f\")\n"
+    <> "fn do_thing(x: String) -> Result(Int, MyError)\n"
+    <> "@target(javascript)\n@external(javascript, \"./m.mjs\", \"f\")\n"
+    <> "fn do_thing(x: String) -> Result(Int, String)\n"
+    <> "pub fn thing(x: String) {\n  do_thing(x)\n}"
+  signature(source, "thing")
+  |> should.equal("fn(String) -> Result(Int, MyError)")
+}
+
 pub fn annotated_local_function_generalizes_test() {
   // A `let`-bound function is generalized over the type variables written in
   // its annotation, so it may be used at several types (`id(1)` and `id("hi")`).

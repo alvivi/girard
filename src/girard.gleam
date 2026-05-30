@@ -123,6 +123,11 @@ fn infer_module(
   module_name: String,
   module: glance.Module,
 ) -> Result(#(#(infer.Env, infer.State), ModuleInterface, Cache), Error) {
+  // Drop definitions and imports compiled only for another target. girard types
+  // the Erlang target (matching the oracle), so a `@target(javascript)` sibling
+  // — e.g. simplifile's JS `do_file_info` returning a different error type —
+  // must not shadow the Erlang one.
+  let module = for_target(module)
   let #(prelude_env, st) = infer.prelude()
   let env = infer.set_module(prelude_env, module_name)
 
@@ -379,6 +384,28 @@ fn last_segment(path: String) -> String {
     Ok(segment) -> segment
     Error(_) -> path
   }
+}
+
+/// Keep only the definitions and imports compiled for the Erlang target: those
+/// with no `@target` attribute, or `@target(erlang)`. A `@target(javascript)`
+/// definition is dropped.
+fn for_target(module: glance.Module) -> glance.Module {
+  glance.Module(
+    imports: list.filter(module.imports, on_erlang_target),
+    custom_types: list.filter(module.custom_types, on_erlang_target),
+    type_aliases: list.filter(module.type_aliases, on_erlang_target),
+    constants: list.filter(module.constants, on_erlang_target),
+    functions: list.filter(module.functions, on_erlang_target),
+  )
+}
+
+fn on_erlang_target(definition: glance.Definition(a)) -> Bool {
+  list.all(definition.attributes, fn(attr) {
+    case attr.name, attr.arguments {
+      "target", [glance.Variable(_, target)] -> target == "erlang"
+      _, _ -> True
+    }
+  })
 }
 
 fn public_value_names(module: glance.Module) -> List(String) {
