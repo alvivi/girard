@@ -1,27 +1,42 @@
-//// Collect the names a definition's body refers to, used to build the
-//// call graph between top-level definitions. This is an over-approximation:
-//// it gathers every `Variable` reference without tracking local shadowing.
-//// Spurious edges can only merge components (reducing polymorphism in rare
-//// shadowing cases), never produce an incorrect type.
+//// Collect the names a definition's body refers to, used to build the call
+//// graph between top-level definitions. This is an over-approximation: it
+//// gathers `Variable` references without tracking local shadowing.
+////
+//// References are split into two kinds:
+////   - *values*: names used in value position (`f`, `f(x)`, shorthand fields).
+////   - *qualifiers*: the bare name of a field access (`x` in `x.label`), which
+////     is usually qualified module access (`string.trim`) rather than a real
+////     dependency. The caller keeps a qualifier edge only when the name is a
+////     local definition rather than an imported module — so a `string` helper
+////     does not get grouped with `gleam/string`, while a `config.field` access
+////     on a local `config` constant still orders that constant first.
 
 import glance
 import gleam/list
 import gleam/option.{type Option, None, Some}
 
-/// All variable names referenced anywhere in a function body.
-pub fn in_function(function: glance.Function) -> List(String) {
-  in_statements(function.body, [])
+/// `#(value references, field-access qualifier names)` in a function body.
+pub fn in_function(function: glance.Function) -> #(List(String), List(String)) {
+  in_statements(function.body, #([], []))
 }
 
-/// All variable names referenced in a constant's value.
-pub fn in_constant(constant: glance.Constant) -> List(String) {
-  in_expr(constant.value, [])
+/// `#(value references, field-access qualifier names)` in a constant's value.
+pub fn in_constant(constant: glance.Constant) -> #(List(String), List(String)) {
+  in_expr(constant.value, #([], []))
 }
 
-fn in_statements(
-  statements: List(glance.Statement),
-  acc: List(String),
-) -> List(String) {
+type Acc =
+  #(List(String), List(String))
+
+fn value(acc: Acc, name: String) -> Acc {
+  #([name, ..acc.0], acc.1)
+}
+
+fn qualifier(acc: Acc, name: String) -> Acc {
+  #(acc.0, [name, ..acc.1])
+}
+
+fn in_statements(statements: List(glance.Statement), acc: Acc) -> Acc {
   list.fold(statements, acc, fn(acc, statement) {
     case statement {
       glance.Expression(expr) -> in_expr(expr, acc)
@@ -33,41 +48,34 @@ fn in_statements(
   })
 }
 
-fn in_optional(
-  expr: Option(glance.Expression),
-  acc: List(String),
-) -> List(String) {
+fn in_optional(expr: Option(glance.Expression), acc: Acc) -> Acc {
   case expr {
     Some(e) -> in_expr(e, acc)
     None -> acc
   }
 }
 
-fn in_exprs(exprs: List(glance.Expression), acc: List(String)) -> List(String) {
+fn in_exprs(exprs: List(glance.Expression), acc: Acc) -> Acc {
   list.fold(exprs, acc, fn(acc, e) { in_expr(e, acc) })
 }
 
-fn in_fields(
-  fields: List(glance.Field(glance.Expression)),
-  acc: List(String),
-) -> List(String) {
+fn in_fields(fields: List(glance.Field(glance.Expression)), acc: Acc) -> Acc {
   list.fold(fields, acc, fn(acc, field) {
     case field {
       glance.UnlabelledField(item) -> in_expr(item, acc)
       glance.LabelledField(_, _, item) -> in_expr(item, acc)
-      glance.ShorthandField(label, _) -> [label, ..acc]
+      glance.ShorthandField(label, _) -> value(acc, label)
     }
   })
 }
 
-fn in_expr(expr: glance.Expression, acc: List(String)) -> List(String) {
+fn in_expr(expr: glance.Expression, acc: Acc) -> Acc {
   case expr {
     glance.Int(..) | glance.Float(..) | glance.String(..) -> acc
 
-    glance.Variable(_, name) -> [name, ..acc]
+    glance.Variable(_, name) -> value(acc, name)
 
-    glance.NegateInt(_, value) | glance.NegateBool(_, value) ->
-      in_expr(value, acc)
+    glance.NegateInt(_, v) | glance.NegateBool(_, v) -> in_expr(v, acc)
 
     glance.Block(_, statements) -> in_statements(statements, acc)
 
@@ -85,12 +93,11 @@ fn in_expr(expr: glance.Expression, acc: List(String)) -> List(String) {
         in_optional(field.item, acc)
       })
 
-    // `x.label` where `x` is a bare name is qualified access — `x` is an
-    // imported module (`string.trim`), not a dependency on a same-named local
-    // definition. Counting it would wrongly group, e.g., a `string` helper with
-    // `gleam/string` into one mutually-recursive component. A non-variable
-    // container (`f().field`) is still a real value reference.
-    glance.FieldAccess(_, glance.Variable(..), _label) -> acc
+    // `x.label` with a bare-name container records `x` as a *qualifier*: it is
+    // usually module access (`string.trim`). A non-variable container
+    // (`f().field`) is a real value reference.
+    glance.FieldAccess(_, glance.Variable(_, name), _label) ->
+      qualifier(acc, name)
     glance.FieldAccess(_, container, _label) -> in_expr(container, acc)
 
     glance.Call(_, function, arguments) ->

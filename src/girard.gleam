@@ -64,7 +64,8 @@ fn def_name(def: Def) -> String {
   }
 }
 
-fn def_refs(def: Def) -> List(String) {
+/// `#(value references, field-access qualifier names)` of a definition.
+fn def_refs(def: Def) -> #(List(String), List(String)) {
   case def {
     FunctionDef(f) -> references.in_function(f)
     ConstantDef(c) -> references.in_constant(c)
@@ -166,7 +167,14 @@ fn infer_module(
   let constants =
     list.map(module.constants, fn(d) { ConstantDef(d.definition) })
   let defs = list.append(functions, constants)
-  use #(final_env, st) <- result.try(infer_defs(env, st, defs))
+  // Names in scope as imported modules. A field access `name.member` whose
+  // `name` is one of these is qualified module access, not a dependency on a
+  // same-named local definition.
+  let module_aliases =
+    set.from_list(
+      list.filter_map(module.imports, fn(d) { qualified_alias(d.definition) }),
+    )
+  use #(final_env, st) <- result.try(infer_defs(env, st, module_aliases, defs))
 
   let interface =
     infer.build_interface(
@@ -182,6 +190,7 @@ fn infer_module(
 fn infer_defs(
   env: infer.Env,
   st: infer.State,
+  module_aliases: Set(String),
   defs: List(Def),
 ) -> Result(#(infer.Env, infer.State), Error) {
   let by_name = dict.from_list(list.map(defs, fn(d) { #(def_name(d), d) }))
@@ -190,7 +199,19 @@ fn infer_defs(
   let edges =
     dict.from_list(
       list.map(defs, fn(d) {
-        #(def_name(d), list.filter(def_refs(d), set.contains(name_set, _)))
+        let #(values, qualifiers) = def_refs(d)
+        // A qualifier edge survives only for a local definition that is not a
+        // shadowed module name; value references always count.
+        let kept_qualifiers =
+          list.filter(qualifiers, fn(name) {
+            !set.contains(module_aliases, name)
+          })
+        let refs =
+          list.filter(list.append(values, kept_qualifiers), set.contains(
+            name_set,
+            _,
+          ))
+        #(def_name(d), refs)
       }),
     )
   // Each component is a group of mutually recursive definitions, in dependency

@@ -280,6 +280,18 @@ pub fn qualified_access_not_a_dependency_test() {
   |> should.equal("fn() -> Bool")
 }
 
+pub fn qualified_local_constant_is_a_dependency_test() {
+  // `config.value` is field access on the local constant `config` (defined
+  // after `get`) — a real dependency that must order `config` first, unlike a
+  // module qualifier. (cigogne's `default_migrations_config.dependencies`.)
+  let source =
+    "pub fn get() -> Int { config.value }\n"
+    <> "pub type Config {\n  Config(value: Int)\n}\n"
+    <> "pub const config = Config(value: 1)"
+  signature(source, "get")
+  |> should.equal("fn() -> Int")
+}
+
 pub fn prelude_module_import_test() {
   // `import gleam.{...}` imports from the implicit prelude module, which has no
   // source file; the prelude's constructors must still resolve, even aliased
