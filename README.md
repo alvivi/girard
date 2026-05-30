@@ -49,30 +49,45 @@ whole report above.
 ### Annotating a `glance` AST you already parsed
 
 If you have already parsed the source with [`glance`](https://hexdocs.pm/glance/),
-pass the `glance.Module` straight to `girard.annotate_module(module, resolver)`
-to avoid parsing twice. Each `Annotation` carries a `glance.Span`, which is the
-same span glance puts on every AST node — so you can join girard's types onto
-your tree by span:
+hand the `glance.Module` to `girard.annotate_module` instead of a source string,
+so the source is parsed once, not twice. Each expression `Annotation` carries a
+`glance.Span` — the same span glance puts on every AST node — so you join the
+inferred types onto your own tree by span, and inspect them as structured values.
 
 ```gleam
 import girard
+import girard/types.{type Type, Fn, Named}
 import glance
-import gleam/dict
+import gleam/dict.{type Dict}
 import gleam/list
 
-pub fn typed(source: String) {
-  let assert Ok(module) = glance.module(source)            // parse once
+/// Parse once with glance, then annotate that AST. Returns each expression's
+/// inferred type keyed by its glance span, to join onto your own AST nodes.
+pub fn types_by_span(source: String) -> Dict(#(Int, Int), Type) {
+  let assert Ok(module) = glance.module(source)
   let assert Ok(annotated) =
     girard.annotate_module(module, girard.disk_resolver()) // or fn(_) { Error(Nil) }
+  list.fold(annotated.expressions, dict.new(), fn(acc, a) {
+    dict.insert(acc, #(a.span.start, a.span.end), a.type_)
+  })
+}
 
-  // span -> structured Type, ready to look up against any glance node's span
-  // (a.type_ is a girard/types.Type — pattern-match it, or render with
-  // girard.type_to_string)
-  let types =
-    list.fold(annotated.expressions, dict.new(), fn(acc, a) {
-      dict.insert(acc, #(a.span.start, a.span.end), a.type_)
-    })
-  #(module, types)
+/// A definition's generalized signature is a structured `Scheme` (`.type_` is
+/// the type, `.vars` are its quantified type-variable ids) you can pattern-match.
+pub fn return_kind(source: String, name: String) -> String {
+  let assert Ok(module) = glance.module(source)
+  let assert Ok(annotated) =
+    girard.annotate_module(module, girard.disk_resolver())
+  case list.key_find(annotated.functions, name) {
+    Ok(scheme) ->
+      case scheme.type_ {
+        Fn(_args, Named("gleam", "Int", [])) -> "returns Int"
+        Fn(_args, Named("gleam", "List", [_])) -> "returns a List"
+        Fn(_args, other) -> girard.type_to_string(other) // render to text
+        other -> girard.type_to_string(other)
+      }
+    Error(_) -> "no such function"
+  }
 }
 ```
 
@@ -149,77 +164,3 @@ carries an integer id that is resolved through a substitution `Dict(Int, Type)`
 threaded in the inference `State` (absent = unbound, present = bound). Like the
 real compiler, generalization happens only at module-level definition
 boundaries; local `let` bindings stay monomorphic.
-
-## Roadmap
-
-The goal is to annotate **any** well-typed Gleam module with the same types the
-official compiler infers. We get there in milestones.
-
-### ✅ Milestone 0 — Bootstrap
-- Gleam project, `glance` dependency, pinned toolchain, test harness.
-
-### ✅ Milestone 1 — Single-module HM core
-- `Type` model + prelude constructors; unification with occurs check; let-style
-  generalization/instantiation; the substitution-backed `State`.
-- Inference for: literals, variables, `fn` definitions and calls, function
-  captures (`f(1, _)`), `let` bindings, blocks, all binary operators
-  (Int/Float/comparison/concat/boolean/pipe), `case` with patterns (int, float,
-  string, variable, discard, tuple, list, assignment, string-prefix, variant),
-  lists, tuples, tuple indexing, negation, `todo`/`panic`, `echo`.
-- Local custom types (generic and enums) and their constructors; prelude value
-  constructors (`True`, `False`, `Nil`, `Ok`, `Error`).
-- Per-expression span→type output plus generalized function signatures.
-
-### ✅ Milestone 2 — Correct module-level polymorphism
-- Build a call graph between top-level definitions, compute strongly-connected
-  components, and infer in dependency order, generalizing after each SCC
-  (mirrors the compiler's `call_graph` + `dep_tree`).
-- A generic helper is now generalized before its callers, so it can be used at
-  several types within one module; mutually recursive functions are inferred
-  together.
-
-### ✅ Milestone 3 — Full single-module surface
-- Module constants and `type` aliases (including parametric aliases), expanded
-  during hydration; constants join functions in the dependency graph.
-- Record field access (`record.field`) and record update (`Foo(..r, x: 1)`)
-  via per-type accessors, including labels shared across all variants of a
-  multi-variant type (with a consistent field type).
-- **Labelled arguments**: field maps for functions and constructors, with
-  argument and pattern reordering plus `..` spread in patterns.
-- `use` expressions (desugaring to a callback-passing call).
-- Bit array expressions and patterns with segment options.
-- Type-variable sharing within a single signature (a written `fn(a) -> a` ties
-  the occurrences of `a` together).
-
-### ✅ Milestone 4 — Imports, prelude & standard library
-- Resolve `import` statements (qualified, aliased, and unqualified value/type
-  imports) through a `Resolver`; the default resolver reads `src/` and
-  `build/packages/*/src` from disk, and `annotate_with` accepts a custom one.
-- Imported modules are inferred to a public `ModuleInterface`; cyclic imports
-  are broken with a loading set. Types carry their origin module so cross-module
-  identity is correct, including qualified type annotations (`opt.Maybe`).
-- Qualified calls (`list.map`), qualified constructor patterns (`order.Gt`),
-  unqualified imported values/types/constructors, and `@external` functions.
-- Verified end-to-end against the real `gleam_stdlib`: e.g. `list.map` infers
-  `fn(List(Int)) -> List(Int)` and `result.map` preserves the polymorphic error
-  type `fn(Result(Int, a)) -> Result(Int, a)`.
-
-### ✅ Milestone 5 — Fidelity & ergonomics
-- `inferred_variant` tracking and variant-aware inference (pattern- and
-  construction-based narrowing, e.g. `let x = Ctor(..)` then `x.field`).
-- Type-variable naming and module-qualified printing matching the compiler,
-  enabling a **per-expression** differential harness: a patched compiler exports
-  `expression-types` (span→type), and `scripts/sweep.sh` checks girard against it
-  over a package's whole hex-resolved closure.
-- A CLI: `gleam run -- path/to/file.gleam` (and stdin) producing the report.
-- Remaining ergonomics (open): annotating patterns / non-expression nodes, and a
-  machine-readable (JSON) output form alongside the text report.
-
-### 🎯 Final goal — essentially reached
-Given any module the official compiler accepts, `girard` reproduces the inferred
-type of every expression and definition. Validated by the differential harness
-across the hex ecosystem: of 1378 packages swept, every one girard parses and
-infers matches the compiler, except where [`glance`](https://hexdocs.pm/glance/)
-itself cannot parse the source or the oracle's per-expression export numbers a
-type variable differently (girard is correct) — all catalogued in
-[`PACKAGES.md`](PACKAGES.md).
