@@ -304,26 +304,40 @@ fn resolve_interface(
   cache: Cache,
   path: String,
 ) -> Result(#(Option(ModuleInterface), Cache), Error) {
-  case dict.get(cache, path) {
-    // Already inferred in this run: reuse it rather than inferring again.
-    Ok(interface) -> Ok(#(Some(interface), cache))
-    Error(_) ->
-      case resolver(path) {
+  case path == types.prelude_module {
+    // `import gleam` refers to the built-in prelude module, which has no source
+    // file; resolve it to a synthetic interface of the prelude's types/values.
+    True -> Ok(#(Some(infer.prelude_interface()), cache))
+    False ->
+      case dict.get(cache, path) {
+        // Already inferred in this run: reuse it rather than inferring again.
+        Ok(interface) -> Ok(#(Some(interface), cache))
+        Error(_) -> resolve_uncached(resolver, loading, cache, path)
+      }
+  }
+}
+
+fn resolve_uncached(
+  resolver: Resolver,
+  loading: Set(String),
+  cache: Cache,
+  path: String,
+) -> Result(#(Option(ModuleInterface), Cache), Error) {
+  case resolver(path) {
+    Error(_) -> Ok(#(None, cache))
+    Ok(source) ->
+      case glance.module(source) {
         Error(_) -> Ok(#(None, cache))
-        Ok(source) ->
-          case glance.module(source) {
-            Error(_) -> Ok(#(None, cache))
-            Ok(module) -> {
-              use #(_, interface, cache) <- result.try(infer_module(
-                resolver,
-                set.insert(loading, path),
-                cache,
-                path,
-                module,
-              ))
-              Ok(#(Some(interface), dict.insert(cache, path, interface)))
-            }
-          }
+        Ok(module) -> {
+          use #(_, interface, cache) <- result.try(infer_module(
+            resolver,
+            set.insert(loading, path),
+            cache,
+            path,
+            module,
+          ))
+          Ok(#(Some(interface), dict.insert(cache, path, interface)))
+        }
       }
   }
 }

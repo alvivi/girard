@@ -265,6 +265,33 @@ pub fn polymorphic_helper_test() {
   |> should.equal("fn() -> #(Int, String)")
 }
 
+pub fn qualified_access_not_a_dependency_test() {
+  // `string.trim` is qualified access to the `gleam/string` module, not a
+  // reference to the local `string` function. Treating it as one would group
+  // `flag` and `string` into one mutually-recursive component, monomorphising
+  // `flag`'s type variable so `other` (using it at `Bool`) would clash with the
+  // `Int` from `string`. `flag` must stay generic. (lustre_dev_tools' cli.)
+  let source =
+    "import gleam/string\n"
+    <> "fn flag(make: fn(String) -> a) -> a { make(string.trim(\"x\")) }\n"
+    <> "pub fn string() -> Int { flag(fn(_) { 1 }) }\n"
+    <> "pub fn other() -> Bool { flag(fn(_) { True }) }"
+  signature(source, "other")
+  |> should.equal("fn() -> Bool")
+}
+
+pub fn prelude_module_import_test() {
+  // `import gleam.{...}` imports from the implicit prelude module, which has no
+  // source file; the prelude's constructors must still resolve, even aliased
+  // (polly's `import gleam.{Error as Err}`).
+  let source =
+    "import gleam.{Error as Err, Ok as Yes}\n"
+    <> "pub fn f(b: Bool) -> Result(Int, String) {\n"
+    <> "  case b {\n    True -> Yes(1)\n    False -> Err(\"x\")\n  }\n}"
+  signature(source, "f")
+  |> should.equal("fn(Bool) -> Result(Int, String)")
+}
+
 pub fn dependency_does_not_pollute_test() {
   let source = "pub fn id(x) { x }\npub fn one() { id(1) }"
   signature(source, "id")

@@ -248,6 +248,43 @@ pub fn prelude() -> #(Env, State) {
   #(env, st)
 }
 
+/// The implicit `gleam` prelude module's public interface, used to resolve
+/// `import gleam` / `import gleam.{Error as Err}`. The prelude has no source
+/// file; the compiler treats `gleam` as a built-in module exposing the prelude
+/// types and value constructors.
+pub fn prelude_interface() -> ModuleInterface {
+  let m = types.prelude_module
+  let values =
+    dict.from_list([
+      #("True", Scheme([], types.bool())),
+      #("False", Scheme([], types.bool())),
+      #("Nil", Scheme([], types.nil())),
+      #("Ok", Scheme([0, 1], Fn([Var(0)], types.result(Var(0), Var(1))))),
+      #("Error", Scheme([0, 1], Fn([Var(1)], types.result(Var(0), Var(1))))),
+    ])
+  let types_ =
+    dict.from_list([
+      #("Int", #(m, "Int", 0)),
+      #("Float", #(m, "Float", 0)),
+      #("String", #(m, "String", 0)),
+      #("Bool", #(m, "Bool", 0)),
+      #("Nil", #(m, "Nil", 0)),
+      #("BitArray", #(m, "BitArray", 0)),
+      #("UtfCodepoint", #(m, "UtfCodepoint", 0)),
+      #("List", #(m, "List", 1)),
+      #("Result", #(m, "Result", 2)),
+    ])
+  ModuleInterface(
+    name: m,
+    values: values,
+    types: types_,
+    aliases: dict.new(),
+    accessors: dict.new(),
+    field_maps: dict.new(),
+    modules: dict.new(),
+  )
+}
+
 fn bind_value(env: Env, name: String, scheme: Scheme) -> Env {
   Env(..env, values: dict.insert(env.values, name, scheme))
 }
