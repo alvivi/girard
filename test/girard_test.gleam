@@ -856,6 +856,22 @@ pub fn self_recursive_with_imports_generalizes_test() {
   )
 }
 
+pub fn cross_module_accessor_survives_alias_collision_test() {
+  // `rec.make()` returns a record defined in `thing/rec`, accessed via `ex/rec`
+  // (both modules' last segment is `rec`, so they collide on the qualified
+  // alias). Resolving `.decoder` must still find `thing/rec`'s accessor through
+  // the transitive interface graph rather than only the alias-keyed top level —
+  // the bug behind the `gloo` package (`schema.users().decoder`, where the
+  // `Table` type lives in `gloo/schema` but is reached via `example/schema`).
+  let inner = "pub type Rec(t) {\n  Rec(decoder: t)\n}"
+  let mid =
+    "import thing/rec\n"
+    <> "pub fn make() -> rec.Rec(Int) {\n  rec.Rec(decoder: 1)\n}"
+  let main = "import ex/rec\npub fn get() {\n  rec.make().decoder\n}"
+  signature_with(main, [#("thing/rec", inner), #("ex/rec", mid)], "get")
+  |> should.equal("fn() -> Int")
+}
+
 pub fn target_specific_definition_is_filtered_test() {
   // A `@target(javascript)` sibling must not shadow the Erlang definition.
   // girard types the Erlang target, so `do_thing` here is the Erlang external

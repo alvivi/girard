@@ -2508,9 +2508,44 @@ fn accessors_of_module(
   case module == env.current_module {
     True -> env.accessors
     False ->
-      case list.find(dict.values(env.modules), fn(i) { i.name == module }) {
+      case find_module_interface(dict.values(env.modules), module, []) {
         Ok(interface) -> interface.accessors
         Error(_) -> env.accessors
+      }
+  }
+}
+
+/// Find an interface for `target` by module name, searching the directly
+/// reachable interfaces and, transitively, the modules they expose. A type can
+/// surface from a module the current one never imports directly (a helper that
+/// returns another module's record), and an alias collision can evict that
+/// module from the top-level alias map — so resolving accessors by origin name
+/// must look through the nested `modules` maps too. `seen` guards the DAG.
+fn find_module_interface(
+  interfaces: List(ModuleInterface),
+  target: String,
+  seen: List(String),
+) -> Result(ModuleInterface, Nil) {
+  case interfaces {
+    [] -> Error(Nil)
+    [interface, ..rest] ->
+      case interface.name == target {
+        True -> Ok(interface)
+        False ->
+          case list.contains(seen, interface.name) {
+            True -> find_module_interface(rest, target, seen)
+            False ->
+              case
+                find_module_interface(
+                  dict.values(interface.modules),
+                  target,
+                  [interface.name, ..seen],
+                )
+              {
+                Ok(found) -> Ok(found)
+                Error(_) -> find_module_interface(rest, target, seen)
+              }
+          }
       }
   }
 }
