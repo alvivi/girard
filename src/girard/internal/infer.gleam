@@ -707,7 +707,12 @@ fn instantiate(st: State, scheme: Scheme) -> #(Type, State) {
 /// variable) is reflected — and then freshened along with the quantified set,
 /// exactly as the compiler's shared mutable cells propagate to a sibling. For
 /// any other binding the scheme is already final, so this is plain instantiate.
-fn instantiate_in(env: Env, st: State, name: String, scheme: Scheme) -> #(Type, State) {
+fn instantiate_in(
+  env: Env,
+  st: State,
+  name: String,
+  scheme: Scheme,
+) -> #(Type, State) {
   case set.contains(env.live, name) {
     True -> instantiate(st, Scheme(scheme.vars, zonk(st, scheme.type_)))
     False -> instantiate(st, scheme)
@@ -1971,7 +1976,8 @@ fn infer_expr_assignment(
       }
     // `let Ctor(..) = x` / `let assert Ctor(..) = x`: matching a variant pattern
     // against a bare variable narrows that variable to the variant.
-    glance.PatternVariant(_, module, constructor, _, _), glance.Variable(_, name)
+    glance.PatternVariant(_, module, constructor, _, _),
+      glance.Variable(_, name)
     -> record_variant(env, st, module, constructor, value_type, name)
     _, _ -> #(env, st)
   }
