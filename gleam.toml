@@ -22,6 +22,8 @@ gleam_json = ">= 3.1.0 and < 4.0.0"
 # unused by other modules by convention, which trips several rules.
 [tools.glinter]
 include = ["src/"]
+# Any remaining warning fails the lint (CI runs `gleam run -m glinter`).
+warnings_as_errors = true
 
 [tools.glinter.rules]
 # Dict.get and friends return Result(_, Nil); the discarded error carries no
@@ -29,3 +31,7 @@ include = ["src/"]
 thrown_away_error = "off"
 # Labels are stylistic here; flagging every multi-argument call is too noisy.
 label_possible = "off"
+# girard is a library: its public API (`annotate*`, `disk_resolver`,
+# `describe_error`, …) is called by consumers, never by another module in this
+# package, so this rule is a false positive here.
+unused_exports = "off"

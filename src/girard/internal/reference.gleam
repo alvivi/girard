@@ -19,6 +19,7 @@
 ////     on a local `config` constant still orders that constant first.
 
 import glance
+import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/set.{type Set}
@@ -38,17 +39,13 @@ type Acc =
   #(List(String), List(String))
 
 fn value(acc: Acc, bound: Set(String), name: String) -> Acc {
-  case set.contains(bound, name) {
-    True -> acc
-    False -> #([name, ..acc.0], acc.1)
-  }
+  use <- bool.guard(when: set.contains(bound, name), return: acc)
+  #([name, ..acc.0], acc.1)
 }
 
 fn qualifier(acc: Acc, bound: Set(String), name: String) -> Acc {
-  case set.contains(bound, name) {
-    True -> acc
-    False -> #(acc.0, [name, ..acc.1])
-  }
+  use <- bool.guard(when: set.contains(bound, name), return: acc)
+  #(acc.0, [name, ..acc.1])
 }
 
 fn in_statements(

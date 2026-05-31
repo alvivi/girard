@@ -16,6 +16,7 @@ import girard/internal/reference
 import girard/internal/scc
 import girard/types.{type Error as TypeError, type Scheme, type Type, Scheme}
 import glance
+import gleam/bool
 import gleam/dict
 import gleam/int
 import gleam/io
@@ -214,11 +215,11 @@ fn infer_module(
     })
   let env =
     list.fold(module.functions, env, fn(env, d) {
-      let f = d.definition
+      let function = d.definition
       infer.register_field_map(
         env,
-        f.name,
-        list.map(f.parameters, fn(p) { p.label }),
+        function.name,
+        list.map(function.parameters, fn(p) { p.label }),
       )
     })
 
@@ -304,26 +305,7 @@ fn infer_defs(
     let #(group_env, rev_items, st) =
       list.fold(group, #(env, [], st), fn(acc, def) {
         let #(env, items, st) = acc
-        case def {
-          FunctionDef(f) ->
-            case infer.has_annotation_vars(f) {
-              True -> {
-                let #(params, return_type, rigid_ids, st) =
-                  infer.signature_skeleton(env, st, f)
-                #(
-                  infer.define(
-                    env,
-                    def_name(def),
-                    infer.rigid_scheme(rigid_ids, params, return_type),
-                  ),
-                  [AnnotatedDef(def, f, params, return_type), ..items],
-                  st,
-                )
-              }
-              False -> placeholder(env, items, st, def)
-            }
-          ConstantDef(_) -> placeholder(env, items, st, def)
-        }
+        prereg_def(env, items, st, def)
       })
     let group_env = infer.mark_live(group_env, list.map(group, def_name))
     let items = list.reverse(rev_items)
@@ -416,6 +398,41 @@ fn placeholder(
   )
 }
 
+/// Pre-register one SCC member: a function with signature variables is bound at
+/// its declared scheme (`AnnotatedDef`); any other definition gets a fresh
+/// monomorphic placeholder.
+fn prereg_def(
+  env: infer.Env,
+  items: List(GroupItem),
+  st: infer.State,
+  def: Def,
+) -> #(infer.Env, List(GroupItem), infer.State) {
+  let annotated = case def {
+    FunctionDef(f) ->
+      case infer.has_annotation_vars(f) {
+        True -> Ok(f)
+        False -> Error(Nil)
+      }
+    ConstantDef(_) -> Error(Nil)
+  }
+  case annotated {
+    Error(_) -> placeholder(env, items, st, def)
+    Ok(f) -> {
+      let #(params, return_type, rigid_ids, st) =
+        infer.signature_skeleton(env, st, f)
+      #(
+        infer.define(
+          env,
+          def_name(def),
+          infer.rigid_scheme(rigid_ids, params, return_type),
+        ),
+        [AnnotatedDef(def, f, params, return_type), ..items],
+        st,
+      )
+    }
+  }
+}
+
 // --- Imports ---------------------------------------------------------------
 
 fn process_imports(
@@ -430,54 +447,47 @@ fn process_imports(
     let #(env, cache) = acc
     let import_ = definition.definition
     let path = import_.module
-    case set.contains(loading, path) {
-      // Cyclic import: break the cycle by skipping.
-      True -> Ok(#(env, cache))
-      False -> {
-        use #(maybe_interface, cache) <- result.try(resolve_interface(
-          resolver,
-          loading,
-          cache,
-          path,
-          target,
-        ))
-        case maybe_interface {
-          // Unresolvable or unparsable: best effort, skip (uses of it surface
-          // later as unbound variables).
-          None -> Ok(#(env, cache))
-          Some(interface) -> {
-            // A discarded alias (`import x as _y`) imports the module for its
-            // unqualified items only — it must NOT be bound under any qualified
-            // name. Otherwise we'd bind it under the module's last segment and
-            // shadow a real import sharing that name (mist's `gleam/http as
-            // _ghttp` vs `mist/internal/http`).
-            let env = case qualified_alias(import_) {
-              Ok(alias) -> infer.import_qualified(env, alias, interface)
-              Error(_) -> env
-            }
-            let env =
-              list.fold(import_.unqualified_values, env, fn(env, u) {
-                infer.import_value(
-                  env,
-                  option.unwrap(u.alias, u.name),
-                  interface,
-                  u.name,
-                )
-              })
-            let env =
-              list.fold(import_.unqualified_types, env, fn(env, u) {
-                infer.import_type(
-                  env,
-                  option.unwrap(u.alias, u.name),
-                  interface,
-                  u.name,
-                )
-              })
-            Ok(#(env, cache))
-          }
-        }
-      }
+    // Cyclic import: break the cycle by skipping.
+    use <- bool.guard(
+      when: set.contains(loading, path),
+      return: Ok(#(env, cache)),
+    )
+    use #(maybe_interface, cache) <- result.try(resolve_interface(
+      resolver,
+      loading,
+      cache,
+      path,
+      target,
+    ))
+    case maybe_interface {
+      // Unresolvable or unparsable: best effort, skip (uses of it surface later
+      // as unbound variables).
+      None -> Ok(#(env, cache))
+      Some(interface) -> Ok(#(import_items(env, import_, interface), cache))
     }
+  })
+}
+
+/// Bring an import's qualified alias and unqualified values/types into scope.
+fn import_items(
+  env: infer.Env,
+  import_: glance.Import,
+  interface: ModuleInterface,
+) -> infer.Env {
+  // A discarded alias (`import x as _y`) imports the module for its unqualified
+  // items only — it must NOT be bound under any qualified name, or we'd bind it
+  // under the module's last segment and shadow a real import sharing that name
+  // (mist's `gleam/http as _ghttp` vs `mist/internal/http`).
+  let env = case qualified_alias(import_) {
+    Ok(alias) -> infer.import_qualified(env, alias, interface)
+    Error(_) -> env
+  }
+  let env =
+    list.fold(import_.unqualified_values, env, fn(env, u) {
+      infer.import_value(env, option.unwrap(u.alias, u.name), interface, u.name)
+    })
+  list.fold(import_.unqualified_types, env, fn(env, u) {
+    infer.import_type(env, option.unwrap(u.alias, u.name), interface, u.name)
   })
 }
 
@@ -488,16 +498,15 @@ fn resolve_interface(
   path: String,
   target: Target,
 ) -> Result(#(Option(ModuleInterface), Cache), Error) {
-  case path == prelude.prelude_module {
-    // `import gleam` refers to the built-in prelude module, which has no source
-    // file; resolve it to a synthetic interface of the prelude's types/values.
-    True -> Ok(#(Some(infer.prelude_interface()), cache))
-    False ->
-      case dict.get(cache, path) {
-        // Already inferred in this run: reuse it rather than inferring again.
-        Ok(interface) -> Ok(#(Some(interface), cache))
-        Error(_) -> resolve_uncached(resolver, loading, cache, path, target)
-      }
+  // `import gleam` refers to the built-in prelude module, which has no source
+  // file; resolve it to a synthetic interface of the prelude's types/values.
+  use <- bool.lazy_guard(when: path == prelude.prelude_module, return: fn() {
+    Ok(#(Some(infer.prelude_interface()), cache))
+  })
+  case dict.get(cache, path) {
+    // Already inferred in this run: reuse it rather than inferring again.
+    Ok(interface) -> Ok(#(Some(interface), cache))
+    Error(_) -> resolve_uncached(resolver, loading, cache, path, target)
   }
 }
 
@@ -805,21 +814,34 @@ pub fn main() -> Nil {
   }
 }
 
-fn emit(source: Result(String, String)) -> Nil {
+/// Why the CLI could not read its input.
+type InputError {
+  FileUnreadable(path: String)
+  StdinUnreadable
+}
+
+fn emit(source: Result(String, InputError)) -> Nil {
   case source {
     Ok(text) -> io.println(format(text))
-    Error(message) -> io.println_error("error: " <> message)
+    Error(error) -> io.println_error("error: " <> input_error_message(error))
   }
 }
 
-fn read_file(path: String) -> Result(String, String) {
-  simplifile.read(path)
-  |> result.replace_error("could not read file: " <> path)
+fn input_error_message(error: InputError) -> String {
+  case error {
+    FileUnreadable(path) -> "could not read file: " <> path
+    StdinUnreadable -> "could not read stdin"
+  }
 }
 
-fn read_stdin() -> Result(String, String) {
+fn read_file(path: String) -> Result(String, InputError) {
+  simplifile.read(path)
+  |> result.replace_error(FileUnreadable(path))
+}
+
+fn read_stdin() -> Result(String, InputError) {
   simplifile.read("/dev/stdin")
-  |> result.replace_error("could not read stdin")
+  |> result.replace_error(StdinUnreadable)
 }
 
 fn usage() -> String {

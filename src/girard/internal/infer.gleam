@@ -21,6 +21,7 @@ import girard/types.{
   Var,
 }
 import glance
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -169,10 +170,8 @@ pub fn register_field_map(
   labels: List(Option(String)),
 ) -> Env {
   // Only worth recording if at least one position is labelled.
-  case list.any(labels, fn(l) { l != None }) {
-    True -> Env(..env, field_maps: dict.insert(env.field_maps, name, labels))
-    False -> env
-  }
+  use <- bool.guard(when: !list.any(labels, fn(l) { l != None }), return: env)
+  Env(..env, field_maps: dict.insert(env.field_maps, name, labels))
 }
 
 /// Declare a local type name (and arity) so references to it during hydration
@@ -278,7 +277,7 @@ pub fn prelude() -> #(Env, State) {
 /// file; the compiler treats `gleam` as a built-in module exposing the prelude
 /// types and value constructors.
 pub fn prelude_interface() -> ModuleInterface {
-  let m = prelude.prelude_module
+  let module = prelude.prelude_module
   let values =
     dict.from_list([
       #("True", Scheme([], prelude.bool())),
@@ -289,18 +288,18 @@ pub fn prelude_interface() -> ModuleInterface {
     ])
   let types_ =
     dict.from_list([
-      #("Int", #(m, "Int", 0)),
-      #("Float", #(m, "Float", 0)),
-      #("String", #(m, "String", 0)),
-      #("Bool", #(m, "Bool", 0)),
-      #("Nil", #(m, "Nil", 0)),
-      #("BitArray", #(m, "BitArray", 0)),
-      #("UtfCodepoint", #(m, "UtfCodepoint", 0)),
-      #("List", #(m, "List", 1)),
-      #("Result", #(m, "Result", 2)),
+      #("Int", #(module, "Int", 0)),
+      #("Float", #(module, "Float", 0)),
+      #("String", #(module, "String", 0)),
+      #("Bool", #(module, "Bool", 0)),
+      #("Nil", #(module, "Nil", 0)),
+      #("BitArray", #(module, "BitArray", 0)),
+      #("UtfCodepoint", #(module, "UtfCodepoint", 0)),
+      #("List", #(module, "List", 1)),
+      #("Result", #(module, "Result", 2)),
     ])
   ModuleInterface(
-    name: m,
+    name: module,
     values: values,
     types: types_,
     aliases: dict.new(),
@@ -555,27 +554,27 @@ fn scheme_free_vars(
 
 // --- Unification -----------------------------------------------------------
 
-pub fn unify(st: State, a: Type, b: Type) -> Result(State, Error) {
-  let a = resolve(st, a)
-  let b = resolve(st, b)
-  case a, b {
+pub fn unify(st: State, left: Type, right: Type) -> Result(State, Error) {
+  let left = resolve(st, left)
+  let right = resolve(st, right)
+  case left, right {
     Var(i), Var(j) if i == j -> Ok(st)
-    // A rigid variable never binds; a flexible one may bind to it. Two distinct
-    // rigids, or a rigid against a concrete type, are a mismatch.
+    // A rigid variable never binds; left flexible one may bind to it. Two distinct
+    // rigids, or left rigid against left concrete type, are left mismatch.
     Var(i), Var(j) ->
       case is_rigid(st, i), is_rigid(st, j) {
-        True, True -> Error(TypeMismatch(a, b))
-        True, False -> bind_var(st, j, a)
-        False, _ -> bind_var(st, i, b)
+        True, True -> Error(TypeMismatch(left, right))
+        True, False -> bind_var(st, j, left)
+        False, _ -> bind_var(st, i, right)
       }
     Var(i), other ->
       case is_rigid(st, i) {
-        True -> Error(TypeMismatch(a, b))
+        True -> Error(TypeMismatch(left, right))
         False -> bind_var(st, i, other)
       }
     other, Var(j) ->
       case is_rigid(st, j) {
-        True -> Error(TypeMismatch(a, b))
+        True -> Error(TypeMismatch(left, right))
         False -> bind_var(st, j, other)
       }
 
@@ -589,12 +588,16 @@ pub fn unify(st: State, a: Type, b: Type) -> Result(State, Error) {
 
     Tuple(e1), Tuple(e2) -> unify_many(st, e1, e2)
 
-    _, _ -> Error(TypeMismatch(a, b))
+    _, _ -> Error(TypeMismatch(left, right))
   }
 }
 
-fn unify_many(st: State, a: List(Type), b: List(Type)) -> Result(State, Error) {
-  case a, b {
+fn unify_many(
+  st: State,
+  left: List(Type),
+  right: List(Type),
+) -> Result(State, Error) {
+  case left, right {
     [], [] -> Ok(st)
     [x, ..xs], [y, ..ys] -> {
       use st <- result.try(unify(st, x, y))
@@ -605,10 +608,11 @@ fn unify_many(st: State, a: List(Type), b: List(Type)) -> Result(State, Error) {
 }
 
 fn bind_var(st: State, id: Int, type_: Type) -> Result(State, Error) {
-  case occurs(st, id, type_) {
-    True -> Error(RecursiveType(id, type_))
-    False -> Ok(State(..st, subst: dict.insert(st.subst, id, type_)))
-  }
+  use <- bool.guard(
+    when: occurs(st, id, type_),
+    return: Error(RecursiveType(id, type_)),
+  )
+  Ok(State(..st, subst: dict.insert(st.subst, id, type_)))
 }
 
 fn occurs(st: State, id: Int, type_: Type) -> Bool {
@@ -848,30 +852,66 @@ fn infer_expr_inner(
     glance.BitString(_, segments) -> {
       use st <- result.try(
         list.try_fold(segments, st, fn(st, segment) {
-          let #(value, options) = segment
-          let default = case value {
-            glance.String(..) -> prelude.string()
-            glance.Float(..) -> prelude.float()
-            _ -> prelude.int()
-          }
-          use st <- result.try(check(
-            env,
-            st,
-            value,
-            segment_value_type(options, default),
-          ))
-          list.try_fold(options, st, fn(st, option) {
-            case option {
-              glance.SizeValueOption(size) ->
-                check(env, st, size, prelude.int())
-              _ -> Ok(st)
-            }
-          })
+          infer_bit_segment(env, st, segment)
         }),
       )
       Ok(#(prelude.bit_array(), st))
     }
   }
+}
+
+/// Check one record-update field: its new value (or shorthand variable) must
+/// match the field's declared type.
+fn update_field(
+  env: Env,
+  st: State,
+  field: glance.RecordUpdateField(glance.Expression),
+  label_types: Dict(String, Type),
+  type_name: String,
+) -> Result(State, Error) {
+  use #(value_type, st) <- result.try(case field.item {
+    Some(value) -> infer_expr(env, st, value)
+    // Shorthand `label:` refers to the variable named `label`.
+    None ->
+      case dict.get(env.values, field.label) {
+        Ok(scheme) -> Ok(instantiate(st, scheme))
+        Error(_) -> Error(UnboundVariable(field.label))
+      }
+  })
+  case dict.get(label_types, field.label) {
+    Ok(expected) -> unify(st, value_type, expected)
+    Error(_) -> Error(NoSuchField(type_name, field.label))
+  }
+}
+
+/// Check one bit-array segment's value and its size option against their
+/// expected types.
+fn infer_bit_segment(
+  env: Env,
+  st: State,
+  segment: #(
+    glance.Expression,
+    List(glance.BitStringSegmentOption(glance.Expression)),
+  ),
+) -> Result(State, Error) {
+  let #(value, options) = segment
+  let default = case value {
+    glance.String(..) -> prelude.string()
+    glance.Float(..) -> prelude.float()
+    _ -> prelude.int()
+  }
+  use st <- result.try(check(
+    env,
+    st,
+    value,
+    segment_value_type(options, default),
+  ))
+  list.try_fold(options, st, fn(st, option) {
+    case option {
+      glance.SizeValueOption(size) -> check(env, st, size, prelude.int())
+      _ -> Ok(st)
+    }
+  })
 }
 
 fn infer_field_access(
@@ -1060,19 +1100,7 @@ fn infer_record_update(
       // Updated fields take their new value's type.
       use st <- result.try(
         list.try_fold(fields, st, fn(st, field) {
-          use #(value_type, st) <- result.try(case field.item {
-            Some(value) -> infer_expr(env, st, value)
-            // Shorthand `label:` refers to the variable named `label`.
-            None ->
-              case dict.get(env.values, field.label) {
-                Ok(scheme) -> Ok(instantiate(st, scheme))
-                Error(_) -> Error(UnboundVariable(field.label))
-              }
-          })
-          case dict.get(label_types, field.label) {
-            Ok(expected) -> unify(st, value_type, expected)
-            Error(_) -> Error(NoSuchField(type_name, field.label))
-          }
+          update_field(env, st, field, label_types, type_name)
         }),
       )
 
@@ -1333,22 +1361,26 @@ fn infer_callee(
 /// instantiation are discarded.
 fn field_is_callable(env: Env, st: State, name: String, label: String) -> Bool {
   case dict.get(env.values, name) {
+    Error(_) -> False
     Ok(scheme) -> {
       let #(value_type, st) = instantiate(st, scheme)
       case resolve(st, value_type) {
-        Named(_, _, _) as record ->
-          case field_type(env, st, record, label) {
-            Ok(#(field, st)) ->
-              case resolve(st, field) {
-                Fn(_, _) -> True
-                _ -> False
-              }
-            Error(_) -> False
-          }
+        Named(_, _, _) as record -> field_label_is_fn(env, st, record, label)
         _ -> False
       }
     }
+  }
+}
+
+/// Whether `record`'s `label` field resolves to a function type.
+fn field_label_is_fn(env: Env, st: State, record: Type, label: String) -> Bool {
+  case field_type(env, st, record, label) {
     Error(_) -> False
+    Ok(#(field, st)) ->
+      case resolve(st, field) {
+        Fn(_, _) -> True
+        _ -> False
+      }
   }
 }
 
@@ -1383,14 +1415,10 @@ fn infer_call(
 }
 
 fn fresh_n(st: State, n: Int) -> #(List(Type), State) {
-  case n <= 0 {
-    True -> #([], st)
-    False -> {
-      let #(t, st) = fresh(st)
-      let #(rest, st) = fresh_n(st, n - 1)
-      #([t, ..rest], st)
-    }
-  }
+  use <- bool.guard(when: n <= 0, return: #([], st))
+  let #(t, st) = fresh(st)
+  let #(rest, st) = fresh_n(st, n - 1)
+  #([t, ..rest], st)
 }
 
 fn field_item(field: glance.Field(glance.Expression)) -> glance.Expression {
@@ -1410,21 +1438,20 @@ fn order_fields(
   fields: List(glance.Field(t)),
   shorthand: fn(String, glance.Span) -> t,
 ) -> Result(List(t), Error) {
-  case list.all(fields, is_unlabelled) {
-    True ->
-      Ok(
-        list.filter_map(fields, fn(field) {
-          case field {
-            glance.UnlabelledField(item) -> Ok(item)
-            _ -> Error(Nil)
-          }
-        }),
-      )
-    False ->
-      case callee_labels(env, callee) {
-        Ok(labels) -> reorder(fields, labels, shorthand)
-        Error(_) -> Error(AmbiguousCall)
-      }
+  // All-unlabelled is the fast path: keep the fields in order.
+  use <- bool.lazy_guard(when: list.all(fields, is_unlabelled), return: fn() {
+    Ok(
+      list.filter_map(fields, fn(field) {
+        case field {
+          glance.UnlabelledField(item) -> Ok(item)
+          _ -> Error(Nil)
+        }
+      }),
+    )
+  })
+  case callee_labels(env, callee) {
+    Ok(labels) -> reorder(fields, labels, shorthand)
+    Error(_) -> Error(AmbiguousCall)
   }
 }
 
@@ -1514,6 +1541,37 @@ fn label_index(
   case dict.get(index_of, label) {
     Ok(index) -> Ok(index)
     Error(_) -> Error(UnknownLabel(label))
+  }
+}
+
+/// Infer one call argument, accumulating labelled arguments by their position
+/// index and positional ones (reversed) for the free slots.
+fn classify_call_arg(
+  env: Env,
+  index_of: Dict(String, Int),
+  acc: #(Dict(Int, Type), List(Type), State),
+  field: glance.Field(glance.Expression),
+) -> Result(#(Dict(Int, Type), List(Type), State), Error) {
+  let #(labelled, positional, st) = acc
+  case field {
+    glance.UnlabelledField(item) -> {
+      use #(t, st) <- result.try(infer_expr(env, st, item))
+      Ok(#(labelled, [t, ..positional], st))
+    }
+    glance.LabelledField(label, _, item) -> {
+      use index <- result.try(label_index(index_of, label))
+      use #(t, st) <- result.try(infer_expr(env, st, item))
+      Ok(#(dict.insert(labelled, index, t), positional, st))
+    }
+    glance.ShorthandField(label, location) -> {
+      use index <- result.try(label_index(index_of, label))
+      use #(t, st) <- result.try(infer_expr(
+        env,
+        st,
+        glance.Variable(location, label),
+      ))
+      Ok(#(dict.insert(labelled, index, t), positional, st))
+    }
   }
 }
 
@@ -1840,27 +1898,7 @@ fn infer_use_call(
       // positional (which, with the trailing callback, fill the free slots).
       use #(labelled, rev_positional, st) <- result.try(
         list.try_fold(arguments, #(dict.new(), [], st), fn(acc, field) {
-          let #(labelled, positional, st) = acc
-          case field {
-            glance.UnlabelledField(item) -> {
-              use #(t, st) <- result.try(infer_expr(env, st, item))
-              Ok(#(labelled, [t, ..positional], st))
-            }
-            glance.LabelledField(label, _, item) -> {
-              use index <- result.try(label_index(index_of, label))
-              use #(t, st) <- result.try(infer_expr(env, st, item))
-              Ok(#(dict.insert(labelled, index, t), positional, st))
-            }
-            glance.ShorthandField(label, location) -> {
-              use index <- result.try(label_index(index_of, label))
-              use #(t, st) <- result.try(infer_expr(
-                env,
-                st,
-                glance.Variable(location, label),
-              ))
-              Ok(#(dict.insert(labelled, index, t), positional, st))
-            }
-          }
+          classify_call_arg(env, index_of, acc, field)
         }),
       )
       let trailing = list.append(list.reverse(rev_positional), [callback_type])
@@ -2166,29 +2204,42 @@ fn infer_pattern(
       use st <- result.try(unify(st, expected, prelude.bit_array()))
       list.try_fold(segments, #(env, st), fn(acc, segment) {
         let #(env, st) = acc
-        let #(pattern, options) = segment
-        let default = case pattern {
-          glance.PatternString(..) -> prelude.string()
-          glance.PatternFloat(..) -> prelude.float()
-          _ -> prelude.int()
-        }
-        use #(env, st) <- result.try(infer_pattern(
-          env,
-          st,
-          pattern,
-          segment_value_type(options, default),
-        ))
-        list.try_fold(options, #(env, st), fn(acc, option) {
-          let #(env, st) = acc
-          case option {
-            glance.SizeValueOption(size) ->
-              infer_pattern(env, st, size, prelude.int())
-            _ -> Ok(#(env, st))
-          }
-        })
+        infer_bit_pattern_segment(env, st, segment)
       })
     }
   }
+}
+
+/// Check one bit-array *pattern* segment: bind the segment pattern and check
+/// its size option, threading the environment for any bound variables.
+fn infer_bit_pattern_segment(
+  env: Env,
+  st: State,
+  segment: #(
+    glance.Pattern,
+    List(glance.BitStringSegmentOption(glance.Pattern)),
+  ),
+) -> Result(#(Env, State), Error) {
+  let #(pattern, options) = segment
+  let default = case pattern {
+    glance.PatternString(..) -> prelude.string()
+    glance.PatternFloat(..) -> prelude.float()
+    _ -> prelude.int()
+  }
+  use #(env, st) <- result.try(infer_pattern(
+    env,
+    st,
+    pattern,
+    segment_value_type(options, default),
+  ))
+  list.try_fold(options, #(env, st), fn(acc, option) {
+    let #(env, st) = acc
+    case option {
+      glance.SizeValueOption(size) ->
+        infer_pattern(env, st, size, prelude.int())
+      _ -> Ok(#(env, st))
+    }
+  })
 }
 
 /// Pair a (possibly failed) new state with an unchanged environment.
@@ -2319,10 +2370,8 @@ fn indices(n: Int) -> List(Int) {
 }
 
 fn indices_loop(i: Int, acc: List(Int)) -> List(Int) {
-  case i < 0 {
-    True -> acc
-    False -> indices_loop(i - 1, [i, ..acc])
-  }
+  use <- bool.guard(when: i < 0, return: acc)
+  indices_loop(i - 1, [i, ..acc])
 }
 
 // --- Type annotation hydration ---------------------------------------------
@@ -2332,6 +2381,78 @@ fn indices_loop(i: Int, acc: List(Int)) -> List(Int) {
 /// references it cannot resolve fall back to a plausible interpretation.
 fn hydrate(env: Env, st: State, ast: glance.Type) -> #(Type, State) {
   hydrate_with(env, dict.new(), st, ast).0
+}
+
+/// Resolve a (possibly qualified) type name applied to `arg_types` to a concrete
+/// `Type`, expanding aliases (local, unqualified-imported, or qualified) and
+/// attributing a named type to its origin module.
+fn resolve_named_type(
+  env: Env,
+  st: State,
+  module: Option(String),
+  name: String,
+  arg_types: List(Type),
+) -> #(Type, State) {
+  case module {
+    None -> resolve_unqualified_type(env, st, name, arg_types)
+    Some(alias) -> resolve_qualified_type(env, st, alias, name, arg_types)
+  }
+}
+
+fn resolve_unqualified_type(
+  env: Env,
+  st: State,
+  name: String,
+  arg_types: List(Type),
+) -> #(Type, State) {
+  case dict.get(env.aliases, name) {
+    // A local alias: expand its AST in this environment.
+    Ok(#(params, aliased)) -> {
+      let alias_names = dict.from_list(list.zip(params, arg_types))
+      let #(#(t, st), _) = hydrate_with(env, alias_names, st, aliased)
+      #(t, st)
+    }
+    Error(_) -> #(resolve_named_origin(env, name, arg_types), st)
+  }
+}
+
+/// A non-local-alias unqualified name: an unqualified imported alias (already
+/// resolved), else a named type at its origin module, else the prelude.
+fn resolve_named_origin(env: Env, name: String, arg_types: List(Type)) -> Type {
+  case dict.get(env.imported_aliases, name) {
+    Ok(#(params, body)) -> instantiate_alias(params, body, arg_types)
+    Error(_) ->
+      case dict.get(env.local_types, name) {
+        Ok(#(origin, origin_name, _arity)) ->
+          Named(origin, origin_name, arg_types)
+        Error(_) -> Named(prelude.prelude_module, name, arg_types)
+      }
+  }
+}
+
+/// A qualified type name `alias.Name`: resolve via the imported module's alias
+/// or type, falling back to the alias as the module name.
+fn resolve_qualified_type(
+  env: Env,
+  st: State,
+  alias: String,
+  name: String,
+  arg_types: List(Type),
+) -> #(Type, State) {
+  case dict.get(env.modules, alias) {
+    Error(_) -> #(Named(alias, name, arg_types), st)
+    Ok(interface) ->
+      case dict.get(interface.aliases, name) {
+        Ok(#(params, body)) -> #(instantiate_alias(params, body, arg_types), st)
+        Error(_) -> {
+          let origin = case dict.get(interface.types, name) {
+            Ok(#(origin, _origin_name, _arity)) -> origin
+            Error(_) -> alias
+          }
+          #(Named(origin, name, arg_types), st)
+        }
+      }
+  }
 }
 
 fn hydrate_with(
@@ -2349,57 +2470,8 @@ fn hydrate_with(
           #([t, ..types_], st, names)
         })
       let arg_types = list.reverse(arg_types)
-      case module {
-        None ->
-          case dict.get(env.aliases, name) {
-            // A local alias: expand its AST in this environment.
-            Ok(#(params, aliased)) -> {
-              let alias_names = dict.from_list(list.zip(params, arg_types))
-              let #(#(t, st), _) = hydrate_with(env, alias_names, st, aliased)
-              #(#(t, st), names)
-            }
-            Error(_) ->
-              case dict.get(env.imported_aliases, name) {
-                // An unqualified imported alias: already resolved.
-                Ok(#(params, body)) -> #(
-                  #(instantiate_alias(params, body, arg_types), st),
-                  names,
-                )
-                // Otherwise a named type: its origin module if known, else the
-                // prelude.
-                Error(_) ->
-                  case dict.get(env.local_types, name) {
-                    Ok(#(origin, origin_name, _arity)) -> #(
-                      #(Named(origin, origin_name, arg_types), st),
-                      names,
-                    )
-                    Error(_) -> #(
-                      #(Named(prelude.prelude_module, name, arg_types), st),
-                      names,
-                    )
-                  }
-              }
-          }
-        // A qualified type name `alias.Name`: resolve via the imported module.
-        Some(alias) ->
-          case dict.get(env.modules, alias) {
-            Ok(interface) ->
-              case dict.get(interface.aliases, name) {
-                Ok(#(params, body)) -> #(
-                  #(instantiate_alias(params, body, arg_types), st),
-                  names,
-                )
-                Error(_) -> {
-                  let origin = case dict.get(interface.types, name) {
-                    Ok(#(origin, _origin_name, _arity)) -> origin
-                    Error(_) -> alias
-                  }
-                  #(#(Named(origin, name, arg_types), st), names)
-                }
-              }
-            Error(_) -> #(#(Named(alias, name, arg_types), st), names)
-          }
-      }
+      let #(t, st) = resolve_named_type(env, st, module, name, arg_types)
+      #(#(t, st), names)
     }
 
     glance.TupleType(_, elements) -> {
