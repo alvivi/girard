@@ -850,9 +850,9 @@ fix is required, add a regression test and link the commit.
 | justin | ✅ clean |  |
 | kafein | ✅ clean |  |
 | kata | ✅ clean |  |
-| kata_env | 📝 note | regressed to `wrong number of arguments` on `schema.decode(schema, value)` after a `kata` version bump made `Schema(a)` a type alias with a function `decode` field — the same alias-through-field edge as search_algorithms_gleam. NOT caused by the SCC fix (the committed code before it errors identically). |
+| kata_env | 🔧 fixed | `schema.decode(schema, value)` where a `schema` parameter shadows the `kata/schema` module alias and `Schema` is `opaque`: the opaque `decode` field (1-arg) is inaccessible externally, so the module's 2-arg `decode` function must win. girard exported opaque types' accessors, so the callable-field rule picked the 1-arg field → `wrong number of arguments`. Fixed: don't expose opaque types' accessors beyond their module (`8b4b07a`). |
 | kata_form | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
-| kata_json | 📝 note | same as kata_env: a `kata` version bump turned `Schema(a)` into a type alias with a function `decode` field, hitting the alias-through-field edge (search_algorithms_gleam class). Not caused by the SCC fix. |
+| kata_json | 🔧 fixed | same opaque-field-vs-module-call case as kata_env (kata's opaque `Schema` with a `decode` field beside a `decode` function). Fixed by not exposing opaque types' accessors beyond their module (`8b4b07a`). |
 | keccak_gleam | ✅ clean |  |
 | keyboard_shortcuts | ✅ clean |  |
 | keystore | ✅ clean |  |
