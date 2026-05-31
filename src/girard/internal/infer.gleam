@@ -329,13 +329,16 @@ pub fn build_interface(
   name: String,
   value_names: List(String),
   type_names: List(String),
+  accessor_type_names: List(String),
 ) -> ModuleInterface {
   ModuleInterface(
     name: name,
     values: take(env.values, value_names),
     types: take(env.local_types, type_names),
     aliases: resolve_aliases(env, st, type_names),
-    accessors: take(env.accessors, type_names),
+    // Only non-opaque public types expose their field accessors: an opaque
+    // type's fields are private to its defining module.
+    accessors: take(env.accessors, accessor_type_names),
     field_maps: take(env.field_maps, value_names),
     modules: env.modules,
   )

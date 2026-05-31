@@ -760,6 +760,23 @@ pub fn field_call_beats_module_test() {
   |> should.equal("fn(Comps(a)) -> a")
 }
 
+pub fn opaque_field_yields_to_module_call_test() {
+  // An `opaque` type's field is private to its defining module, so a callable
+  // field does NOT win over a same-named module function at an external call
+  // site. A `schema` parameter shadows the `schema` module alias; `Schema` is
+  // opaque, so `schema.decode(schema, v)` calls the module's 2-argument `decode`
+  // function, not the (inaccessible) 1-argument `decode` field (kata's
+  // `Schema`). Without honouring opacity this is `wrong number of arguments`.
+  let schema =
+    "pub opaque type Schema(a) {\n  Schema(decode: fn(Int) -> a)\n}\n"
+    <> "pub fn decode(s: Schema(a), value: Int) -> a { s.decode(value) }"
+  let source =
+    "import schema.{type Schema}\n"
+    <> "pub fn run(schema: Schema(a), v: Int) -> a {\n  schema.decode(schema, v)\n}"
+  signature_with(source, [#("schema", schema)], "run")
+  |> should.equal("fn(Schema(a), Int) -> a")
+}
+
 pub fn lambda_annotation_shares_type_var_names_test() {
   // An annotated lambda whose `a` appears in both a parameter and the return is
   // ONE variable across the whole signature, even when the body leaves the

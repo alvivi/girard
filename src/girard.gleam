@@ -244,6 +244,7 @@ fn infer_module(
       module_name,
       public_value_names(module),
       public_type_names(module),
+      public_accessor_type_names(module),
     )
   Ok(#(#(final_env, st), interface, cache))
 }
@@ -614,6 +615,21 @@ fn public_type_names(module: glance.Module) -> List(String) {
       }
     })
   list.append(types, aliases)
+}
+
+/// Public types whose field accessors are reachable from other modules: public,
+/// non-opaque custom types. An `opaque` type's fields are private to its
+/// defining module, so its accessors are not exported — a same-named module
+/// function then wins over the (inaccessible) field at an external call site, as
+/// the compiler does (kata's opaque `Schema` with a `decode` field and a
+/// `decode` function).
+fn public_accessor_type_names(module: glance.Module) -> List(String) {
+  list.filter_map(module.custom_types, fn(d) {
+    case d.definition.publicity, d.definition.opaque_ {
+      glance.Public, False -> Ok(d.definition.name)
+      _, _ -> Error(Nil)
+    }
+  })
 }
 
 // --- Default disk resolver -------------------------------------------------
