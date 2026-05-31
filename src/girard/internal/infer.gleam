@@ -96,6 +96,14 @@ pub type Env {
     /// Imported modules available for qualified access, keyed by the alias used
     /// in source (e.g. `list` for `import gleam/list`).
     modules: Dict(String, ModuleInterface),
+    /// Names of the strongly-connected-component members currently being
+    /// inferred. A reference to one of these resolves its bound scheme through
+    /// the current substitution before instantiating, so a type the provider's
+    /// already-inferred body has settled (an unannotated parameter absorbed into
+    /// a signature variable, say) is seen by a later sibling — the compiler's
+    /// shared mutable type cells, in girard's threaded substitution. Empty
+    /// outside an SCC, so finished schemes instantiate verbatim.
+    live: Set(String),
   )
 }
 
@@ -145,6 +153,7 @@ fn new_env() -> Env {
     variants: dict.new(),
     current_module: "",
     modules: dict.new(),
+    live: set.new(),
   )
 }
 
@@ -216,6 +225,13 @@ pub fn fresh_var(st: State) -> #(Type, State) {
 /// functions and constructors).
 pub fn define(env: Env, name: String, scheme: Scheme) -> Env {
   bind_value(env, name, scheme)
+}
+
+/// Mark `names` as the live members of the strongly-connected component being
+/// inferred, so a reference to one resolves its scheme through the current
+/// substitution before instantiating (see `Env.live`).
+pub fn mark_live(env: Env, names: List(String)) -> Env {
+  Env(..env, live: set.from_list(names))
 }
 
 /// The initial environment and state, seeded with the prelude value
@@ -673,6 +689,19 @@ fn instantiate(st: State, scheme: Scheme) -> #(Type, State) {
   #(substitute(mapping, scheme.type_), st)
 }
 
+/// Instantiate `name`'s scheme. For a live SCC member, resolve its type through
+/// the current substitution first, so a variable the provider's body has since
+/// settled (e.g. an unannotated parameter absorbed into a quantified signature
+/// variable) is reflected — and then freshened along with the quantified set,
+/// exactly as the compiler's shared mutable cells propagate to a sibling. For
+/// any other binding the scheme is already final, so this is plain instantiate.
+fn instantiate_in(env: Env, st: State, name: String, scheme: Scheme) -> #(Type, State) {
+  case set.contains(env.live, name) {
+    True -> instantiate(st, Scheme(scheme.vars, zonk(st, scheme.type_)))
+    False -> instantiate(st, scheme)
+  }
+}
+
 fn substitute(mapping: Dict(Int, Type), type_: Type) -> Type {
   case type_ {
     Var(id) ->
@@ -711,7 +740,7 @@ fn infer_expr_inner(
 
     glance.Variable(_, name) ->
       case dict.get(env.values, name) {
-        Ok(scheme) -> Ok(instantiate(st, scheme))
+        Ok(scheme) -> Ok(instantiate_in(env, st, name, scheme))
         Error(_) -> Error(UnboundVariable(name))
       }
 

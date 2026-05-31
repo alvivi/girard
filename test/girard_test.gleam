@@ -802,6 +802,33 @@ pub fn transitive_import_test() {
   |> should.equal("fn() -> Int")
 }
 
+pub fn mutually_recursive_unannotated_accumulator_test() {
+  // shine_tree's `fold_l`/`fold_l_root`: mutually recursive, where `fold_l_root`
+  // calls `fold_l` at the deeper `Tree(Node(u))` and `fold_l`'s accumulator is
+  // unannotated. The provider (`fold_l`) is typed first; its body absorbs the
+  // accumulator into the return variable, and a live reference from the consumer
+  // then instantiates the resolved scheme. (Not polymorphic recursion — the
+  // compiler accepts this and rejects true polymorphic recursion, as girard
+  // does. This must type without a `type mismatch: a vs a`.)
+  let source =
+    "pub type Tree(u) {\n"
+    <> "  Tip(u)\n"
+    <> "  Deep(Tree(Node(u)))\n"
+    <> "}\n"
+    <> "pub type Node(u) {\n"
+    <> "  One(u)\n"
+    <> "}\n"
+    <> "pub fn fold_l(tree: Tree(u), acc) -> v {\n"
+    <> "  case tree {\n"
+    <> "    Tip(_) -> acc\n"
+    <> "    Deep(root) -> fold_l_root(acc, root)\n"
+    <> "  }\n"
+    <> "}\n"
+    <> "fn fold_l_root(acc: v, root: Tree(Node(u))) -> v { fold_l(root, acc) }"
+  signature(source, "fold_l")
+  |> should.equal("fn(Tree(a), b) -> b")
+}
+
 // --- Inferred-variant field access and multi-variant records (M5) -----------
 
 pub fn variant_narrowed_field_access_test() {

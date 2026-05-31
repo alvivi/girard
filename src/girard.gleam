@@ -285,14 +285,22 @@ fn infer_defs(
   // Members of a component are inferred together; afterwards each is generalized
   // against the surrounding environment and added back for later components.
   //
-  // A *fully-annotated* function's type is known from its signature, so — like
-  // the compiler — it is bound at its generalized type up front (so recursion
-  // and siblings see it polymorphically) and its body is checked against that
-  // signature with the signature's type variables rigid. Every other definition
-  // is inferred monomorphically against a fresh placeholder, then generalized.
+  // A function with signature variables is pre-registered at a scheme over those
+  // variables so recursion and siblings see it polymorphically; its body is
+  // checked against the signature with those variables rigid, and within its own
+  // body it sees itself at the rigid monotype (no polymorphic recursion). Every
+  // other definition is inferred monomorphically against a fresh placeholder.
+  // The members are marked *live* (see `infer.mark_live`): a reference to a
+  // sibling resolves its scheme through the current substitution, so once a
+  // member's body has settled an unannotated part (absorbing it into a signature
+  // variable) a later sibling sees the resolved type — the compiler's shared
+  // mutable cells, reproduced through girard's threaded substitution. Because of
+  // that, bodies are inferred *provider-first*: a member whose signature has an
+  // unannotated part is typed before the fully-annotated members that consume it
+  // (a dependency-respecting order within the component, as Tarjan provides).
   list.try_fold(groups, #(env, st), fn(acc, group) {
     let #(env, st) = acc
-    let #(group_env, items, st) =
+    let #(group_env, rev_items, st) =
       list.fold(group, #(env, [], st), fn(acc, def) {
         let #(env, items, st) = acc
         case def {
@@ -316,8 +324,21 @@ fn infer_defs(
           ConstantDef(_) -> placeholder(env, items, st, def)
         }
       })
+    let group_env = infer.mark_live(group_env, list.map(group, def_name))
+    let items = list.reverse(rev_items)
+    // Type members with an unannotated parameter or return first: their bodies
+    // settle those placeholders, which a later sibling reference then resolves.
+    let #(providers, consumers) =
+      list.partition(items, fn(item) {
+        case item {
+          AnnotatedDef(_, f, _, _) ->
+            f.return == option.None
+            || list.any(f.parameters, fn(p) { p.type_ == option.None })
+          PlaceholderDef(..) -> False
+        }
+      })
     use st <- result.try(
-      list.try_fold(items, st, fn(st, item) {
+      list.try_fold(list.append(providers, consumers), st, fn(st, item) {
         case item {
           AnnotatedDef(def, f, params, return_type) -> {
             // Inside its own body the function sees itself at the rigid
