@@ -311,7 +311,16 @@ pub fn prelude_interface() -> ModuleInterface {
 }
 
 fn bind_value(env: Env, name: String, scheme: Scheme) -> Env {
-  Env(..env, values: dict.insert(env.values, name, scheme))
+  // A new binding for `name` is a different value, so any variant narrowing
+  // recorded for the previous binding of that name no longer applies — drop it
+  // (a parameter shadowing a `let x = Ctor(..)`-narrowed outer variable must not
+  // inherit the outer value's recorded fields). `record_variant` re-adds the
+  // narrowing afterwards for bindings that are themselves narrowed.
+  Env(
+    ..env,
+    values: dict.insert(env.values, name, scheme),
+    variants: dict.delete(env.variants, name),
+  )
 }
 
 /// Look up a value's scheme in the environment.

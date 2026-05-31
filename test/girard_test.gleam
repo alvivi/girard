@@ -902,6 +902,25 @@ pub fn constructed_variant_field_access_test() {
   |> should.equal("fn(a) -> List(Node(a))")
 }
 
+pub fn shadowing_binding_clears_variant_narrowing_test() {
+  // `let x = Box(seed)` narrows the outer `x` to the `Box` variant. A nested
+  // function whose parameter is *also* named `x` must NOT inherit that stale
+  // narrowing: `x.item` inside it reads the parameter's field (tied to the
+  // parameter's own type `b`), not the outer value's recorded field (`a`).
+  // (search_algorithms_gleam's `get_steps` reading `search_state.paths`.)
+  let source =
+    "pub type Box(a) {\n"
+    <> "  Box(item: a)\n"
+    <> "}\n"
+    <> "pub fn run(seed: a) {\n"
+    <> "  let x = Box(seed)\n"
+    <> "  let get = fn(x: Box(b)) { x.item }\n"
+    <> "  #(x, get)\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn(a) -> #(Box(a), fn(Box(b)) -> b)")
+}
+
 pub fn record_update_non_shared_field_test() {
   // Updating via the `Branch` constructor copies the kept field `kids`, which
   // exists only in `Branch`. The kept field's type is derived from the named
