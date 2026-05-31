@@ -850,9 +850,9 @@ fix is required, add a regression test and link the commit.
 | justin | ✅ clean |  |
 | kafein | ✅ clean |  |
 | kata | ✅ clean |  |
-| kata_env | ✅ clean |  |
+| kata_env | 📝 note | regressed to `wrong number of arguments` on `schema.decode(schema, value)` after a `kata` version bump made `Schema(a)` a type alias with a function `decode` field — the same alias-through-field edge as search_algorithms_gleam. NOT caused by the SCC fix (the committed code before it errors identically). |
 | kata_form | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
-| kata_json | ✅ clean |  |
+| kata_json | 📝 note | same as kata_env: a `kata` version bump turned `Schema(a)` into a type alias with a function `decode` field, hitting the alias-through-field edge (search_algorithms_gleam class). Not caused by the SCC fix. |
 | keccak_gleam | ✅ clean |  |
 | keyboard_shortcuts | ✅ clean |  |
 | keystore | ✅ clean |  |
@@ -1232,7 +1232,7 @@ fix is required, add a regression test and link the commit.
 | shellout | ✅ clean |  |
 | shimmer | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | shimmy | ✅ clean |  |
-| shine_tree | 📝 note | a finger tree: `fold_l`/`fold_l_root` are mutually recursive, with `fold_l_root` calling `fold_l` at `ShineTree(Node(u))`. NOT polymorphic recursion (the compiler rejects that too, verified); the compiler types it via per-reference instantiation of the sibling's *generic* annotation vars while sharing its unannotated parts as live mutable cells. girard's frozen up-front SCC schemes can't reproduce that: an unannotated accumulator the body ties to a rigid signature var leaks that rigid into a sibling (`type mismatch: a vs a`), failing the whole module. Every frozen-scheme variant tried (quantify placeholders / share return / zonk-at-instantiate) trades this for over-generalization elsewhere; a faithful fix needs the compiler's live-link inference model — an architectural change, deferred. |
+| shine_tree | 🔧 fixed | a finger tree: `fold_l`/`fold_l_root` are mutually recursive, `fold_l_root` calling `fold_l` at `ShineTree(Node(u))` with an unannotated accumulator. NOT polymorphic recursion (the compiler rejects that too); the compiler types it by letting a reference see the type a sibling's already-inferred body has settled (shared mutable cells). girard froze SCC schemes up front, so the absorbed accumulator leaked a rigid into a sibling → `type mismatch: a vs a`, failing the module. Fixed: mark component members `live` and resolve a reference to one through the current substitution before instantiating, typing members with an unannotated part first (`60e3223`). The 5 residual diffs are the prng/omnimessage oracle-numbering artifact — girard is the more-resolved, correct view. |
 | shiny | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | shopify_draft_proxy | ✅ clean |  |
 | shore | 🔧 fixed | `let focused = FocusedInput(..)` then `focused.offset` — variant narrowing from a constructor in a let binding (`1796ffb`). |
