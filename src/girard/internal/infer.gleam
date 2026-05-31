@@ -1174,18 +1174,26 @@ fn infer_fn(
   return_annotation: Option(glance.Type),
   body: List(glance.Statement),
 ) -> Result(#(Type, State), Error) {
+  // Map each type-variable name written in the lambda's annotations to ONE
+  // fresh variable, shared across every parameter and the return. A name like
+  // `a` in `fn(msg: Message(a, b)) -> Next(_, Message(a, b))` denotes a single
+  // type within the signature; without this, each annotation hydrates its own
+  // `a` and the two stay distinct whenever the body does not tie them (an actor
+  // handler whose returned message type is otherwise free). The lambda itself
+  // stays monomorphic — only the names are shared, not generalized.
+  let #(names, st) =
+    list.fold(
+      list.unique(fn_annotation_var_names(params, return_annotation)),
+      #(dict.new(), st),
+      fn(acc, nm) {
+        let #(names, st) = acc
+        let #(id, st) = fresh_id(st)
+        #(dict.insert(names, nm, Var(id)), st)
+      },
+    )
   // No expected type: each parameter starts as a fresh variable.
   let #(seeds, st) = fresh_n(st, list.length(params))
-  infer_lambda(
-    env,
-    st,
-    params,
-    return_annotation,
-    body,
-    seeds,
-    None,
-    dict.new(),
-  )
+  infer_lambda(env, st, params, return_annotation, body, seeds, None, names)
 }
 
 /// Infer a lambda whose parameters are seeded with `seed_params` (the expected

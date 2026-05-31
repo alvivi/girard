@@ -760,6 +760,23 @@ pub fn field_call_beats_module_test() {
   |> should.equal("fn(Comps(a)) -> a")
 }
 
+pub fn lambda_annotation_shares_type_var_names_test() {
+  // An annotated lambda whose `a` appears in both a parameter and the return is
+  // ONE variable across the whole signature, even when the body leaves the
+  // returned value's parameter otherwise free (gs's par_map_actor handler,
+  // `fn(state, msg: Message(a, b)) -> Next(_, Message(a, b))`). Without sharing,
+  // the param's `a` and the return's `a` drift to distinct variables.
+  let source =
+    "pub type Box(a) {\n"
+    <> "  Box(a)\n"
+    <> "}\n"
+    <> "pub fn make() {\n"
+    <> "  fn(x: Box(a)) -> Box(a) { Box(todo) }\n"
+    <> "}"
+  signature(source, "make")
+  |> should.equal("fn() -> fn(Box(a)) -> Box(a)")
+}
+
 pub fn let_pattern_variant_narrowing_test() {
   // `let assert Delim(..) = x` narrows `x` to the `Delim` variant, so `x.len`
   // (a field absent from `Text`) is reachable (maud's `let assert Inline(..)`).
