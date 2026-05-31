@@ -1232,7 +1232,7 @@ fix is required, add a regression test and link the commit.
 | shellout | ✅ clean |  |
 | shimmer | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | shimmy | ✅ clean |  |
-| shine_tree | 📝 note | polymorphic recursion: a finger tree whose `fold_l`/`append_rec`/`reverse_rec` recurse at `ShineTree(Node(u))` from `ShineTree(u)`. girard infers an SCC with rigid signature vars and cannot instantiate the self/sibling call at the deeper type (`type mismatch: a vs a`); the known, deferred rigid-type-var gap — the textbook hard case HM needs annotations for. |
+| shine_tree | 📝 note | a finger tree: `fold_l`/`fold_l_root` are mutually recursive, with `fold_l_root` calling `fold_l` at `ShineTree(Node(u))`. NOT polymorphic recursion (the compiler rejects that too, verified); the compiler types it via per-reference instantiation of the sibling's *generic* annotation vars while sharing its unannotated parts as live mutable cells. girard's frozen up-front SCC schemes can't reproduce that: an unannotated accumulator the body ties to a rigid signature var leaks that rigid into a sibling (`type mismatch: a vs a`), failing the whole module. Every frozen-scheme variant tried (quantify placeholders / share return / zonk-at-instantiate) trades this for over-generalization elsewhere; a faithful fix needs the compiler's live-link inference model — an architectural change, deferred. |
 | shiny | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | shopify_draft_proxy | ✅ clean |  |
 | shore | 🔧 fixed | `let focused = FocusedInput(..)` then `focused.offset` — variant narrowing from a constructor in a let binding (`1796ffb`). |
