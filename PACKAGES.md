@@ -1220,7 +1220,7 @@ fix is required, add a regression test and link the commit.
 | sceall | ✅ clean |  |
 | scrapbook | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | scriptorium | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
-| search_algorithms_gleam | 📝 note | one expression in `internal/generalized_search`: a `let`-bound lambda whose annotation reuses the enclosing function's type vars reads a record field typed with an imported alias applied to the record's param (`paths: Dict(_, List(EstimateStatePair(state)))`). girard leaves the returned `state` a fresh var (`List(#(Int, $2))` vs the compiler's `$1`); a narrow rigid-var/alias-through-accessor generalization edge, not reproducible in isolation. |
+| search_algorithms_gleam | 🔧 fixed | `get_steps` in `internal/generalized_search` returned `List(#(Int, $2))` vs the compiler's `$1`. Root cause (not the alias — verified by inlining): variant narrowing is keyed by variable name, and the outer `let search_state = SearchState(..)` recorded a narrowing for `search_state` that the inner lambda's parameter (also named `search_state`) inherited, so `search_state.paths` read the outer value's field, untied from the parameter. Fixed: `bind_value` clears stale variant narrowing for a shadowed name (`ee9fcb0`). |
 | secp256k1_gleam | ✅ clean |  |
 | sendgriddle | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | sextant | ✅ clean |  |
