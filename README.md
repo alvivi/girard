@@ -8,7 +8,7 @@ signature.
 It deliberately replicates the inference performed by the real Gleam compiler
 (the Rust `compiler-core/src/type_/` crate) rather than inventing its own type
 system. It is **not** a full type checker: it does not aim for rich diagnostics.
-Inference is total — `annotate` returns `Result(Annotated, Error)`, where
+Inference is total — `annotate` returns `Result(AnnotatedModule, Error)`, where
 `Error` explains why a module could not be typed (type mismatch, unbound
 variable, unknown field, …) rather than crashing.
 
@@ -38,7 +38,7 @@ double: fn(Int) -> Int
 ```
 
 `girard.annotate(source, girard.default_options())` returns a structured
-`Annotated` value. Top-level
+`AnnotatedModule` value. Top-level
 definitions carry a `Scheme` (`functions`/`constants: List(#(name, Scheme))` —
 its `.type_` plus `.vars`, the ids of the quantified/generic `Var`s); each
 expression carries a monomorphic `Type` (`expressions: List(Annotation)`). All

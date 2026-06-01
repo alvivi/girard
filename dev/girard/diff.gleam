@@ -133,7 +133,7 @@ fn diff(package: String, json_path: String, pkg_root: String) -> Nil {
 /// Report mismatches for one module; returns how many were found.
 fn compare(
   module_name: String,
-  annotated: girard.Annotated,
+  annotated: girard.AnnotatedModule,
   oracle_exprs: List(#(Int, Int, Type)),
 ) -> Int {
   let ours =

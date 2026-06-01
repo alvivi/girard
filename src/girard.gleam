@@ -1,12 +1,13 @@
-//// girard: a type annotator for Gleam, written in Gleam.
+//// A type annotator for Gleam, written in Gleam.
 ////
-//// Parses a Gleam module with `glance`, runs Hindley-Milner type inference
-//// (see `girard/internal/infer`), and reports the inferred type of every expression (by
-//// source span) along with each top-level definition's signature.
+//// Reports the inferred type of every expression — keyed by its source span —
+//// and the signature of every top-level function and constant, for a single
+//// module ([`annotate`](#annotate)) or a whole package
+//// ([`annotate_package`](#annotate_package)). Give it source text or a
+//// `glance` AST you parsed yourself.
 ////
-//// Imported modules are resolved through a `Resolver` and inferred to obtain
-//// their public interfaces. Inference is total: `annotate` returns a `Result`
-//// describing why a module could not be typed rather than crashing.
+//// Imported modules are resolved through a [`Resolver`](#Resolver) to obtain
+//// their public interfaces.
 
 import argv
 import girard/internal/infer.{type ModuleInterface}
@@ -33,18 +34,23 @@ pub type Error =
   TypeError
 
 /// The inferred type of a single expression, identified by its source span.
-/// `type_` is a structured `girard/types.Type` you can pattern-match on; render
-/// it with `type_to_string`.
+/// `type_` is a structured `Type` you can pattern-match on; render it with
+/// [`type_to_string`](#type_to_string).
 pub type Annotation {
   Annotation(span: glance.Span, type_: Type)
 }
 
-/// The full result of annotating a module. Top-level definitions carry a
-/// `Scheme` (their generalized signature: a `type_` plus the ids of its
-/// quantified `Var`s); expressions carry a monomorphic `Type`. Render either's
-/// type with `type_to_string`.
-pub type Annotated {
-  Annotated(
+/// Everything girard inferred for one module: each top-level definition's
+/// signature, plus the type of every expression in their bodies.
+///
+/// `functions` and `constants` have one entry per top-level definition — its
+/// generalized `Scheme` (a `type_` plus the ids of its quantified `Var`s).
+/// `expressions` is finer-grained: the `Type` of *every* expression — literals,
+/// calls, operators, sub-expressions — keyed by its `glance` source span, so
+/// you can join inferred types onto your own AST. Render any type with
+/// [`type_to_string`](#type_to_string).
+pub type AnnotatedModule {
+  AnnotatedModule(
     /// Top-level function name to inferred signature scheme, in source order.
     functions: List(#(String, Scheme)),
     /// Top-level constant name to inferred scheme, in source order.
@@ -126,9 +132,12 @@ pub fn with_target(options: Options, target: Target) -> Options {
 }
 
 /// Annotate a Gleam source string: parse it with `glance`, then annotate as
-/// `annotate_module`. Returns the inferred error if the module does not type.
-/// The quick path is `annotate(source, default_options())`.
-pub fn annotate(source: String, options: Options) -> Result(Annotated, Error) {
+/// [`annotate_module`](#annotate_module). Returns the inferred error if the
+/// module does not type. The quick path is `annotate(source, default_options())`.
+pub fn annotate(
+  source: String,
+  options: Options,
+) -> Result(AnnotatedModule, Error) {
   use module <- result.try(parse(source))
   annotate_module(module, options)
 }
@@ -138,11 +147,11 @@ pub fn annotate(source: String, options: Options) -> Result(Annotated, Error) {
 /// up with your AST's node spans and you avoid parsing the same source twice.
 /// (Imported modules are still parsed internally, via the resolver.) Returns the
 /// inferred error if the module does not type; for partial results on an
-/// ill-typed module, use `annotate_package`.
+/// ill-typed module, use [`annotate_package`](#annotate_package).
 pub fn annotate_module(
   module: glance.Module,
   options: Options,
-) -> Result(Annotated, Error) {
+) -> Result(AnnotatedModule, Error) {
   use #(#(env, st), _interface, _cache, _skipped) <- result.try(infer_module(
     options,
     set.new(),
@@ -154,12 +163,13 @@ pub fn annotate_module(
   Ok(render(module, env, st))
 }
 
-/// The result of annotating one module of a package: its `Annotated` types plus
-/// the definitions that could not be typed. `skipped` names each top-level
-/// function or constant girard declined, with the error that declined it; a
-/// definition in `skipped` is absent from `annotated`.
+/// The result of annotating one module of a package: its
+/// [`AnnotatedModule`](#AnnotatedModule) plus the definitions that could not be
+/// typed. `skipped` names each top-level function or constant girard declined,
+/// with the error that declined it; a definition in `skipped` is absent from
+/// `annotated`.
 pub type ModuleResult {
-  ModuleResult(annotated: Annotated, skipped: List(#(String, Error)))
+  ModuleResult(annotated: AnnotatedModule, skipped: List(#(String, Error)))
 }
 
 /// Annotate every module in a package in one pass, sharing inference of common
@@ -771,7 +781,11 @@ fn first_readable(paths: List(String)) -> Result(String, Nil) {
 
 // --- Rendering -------------------------------------------------------------
 
-fn render(module: glance.Module, env: infer.Env, st: infer.State) -> Annotated {
+fn render(
+  module: glance.Module,
+  env: infer.Env,
+  st: infer.State,
+) -> AnnotatedModule {
   let functions =
     list.map(module.functions, fn(d) { FunctionDef(d.definition) })
   let constants =
@@ -787,7 +801,7 @@ fn render(module: glance.Module, env: infer.Env, st: infer.State) -> Annotated {
       Annotation(span, infer.zonk(st, type_))
     })
 
-  Annotated(
+  AnnotatedModule(
     functions: collect_schemes(functions, env),
     constants: collect_schemes(constants, env),
     expressions: sort_by_span(expressions),

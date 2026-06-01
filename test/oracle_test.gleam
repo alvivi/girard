@@ -63,7 +63,7 @@ fn check_sample(name: String) -> Nil {
 /// Compare girard's per-expression types against the compiler's, on the spans
 /// both sides report (the compiler desugars pipes/`use`, so it emits some spans
 /// girard does not; we only require agreement where the spans coincide).
-fn check_expressions(name: String, annotated: girard.Annotated) -> Nil {
+fn check_expressions(name: String, annotated: girard.AnnotatedModule) -> Nil {
   let assert Ok(expr_json) = simplifile.read("oracle/" <> name <> ".expr.json")
   let assert Ok(oracle_exprs) =
     json.parse(
