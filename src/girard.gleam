@@ -181,10 +181,11 @@ pub type ModuleResult {
 /// Annotate every module in a package in one pass, sharing inference of common
 /// imports across modules. `modules` maps each module's path (e.g.
 /// `"my_app/router"`) to its parsed `glance.Module`; the result maps the same
-/// paths to a `ModuleResult`.
+/// paths to a [`ModuleResult`](#ModuleResult).
 ///
-/// This is the batch counterpart to `annotate_module`: a dependency imported by
-/// several modules is inferred once for the whole run rather than once per
+/// This is the batch counterpart to [`annotate_module`](#annotate_module): a
+/// dependency imported by several modules is inferred once for the whole run
+/// rather than once per
 /// importing module. Cross-module references *within* the package are resolved
 /// through the options' resolver, so it must also resolve the package's own
 /// modules (a resolver wrapping the build's module sources does); a module
@@ -827,8 +828,8 @@ fn collect_schemes(defs: List(Def), env: infer.Env) -> List(#(String, Scheme)) {
 }
 
 /// Render an inferred `Type` to Gleam syntax (e.g. `fn(Int) -> a`), naming type
-/// variables `a, b, c, …`. Each call names variables independently; for a report
-/// with names shared across several types, thread `girard/internal/printer`.
+/// variables `a, b, c, …`. Each call names variables independently: an `a` in
+/// one rendered type is unrelated to an `a` in another.
 pub fn type_to_string(type_: Type) -> String {
   printer.to_string(type_)
 }
@@ -836,6 +837,19 @@ pub fn type_to_string(type_: Type) -> String {
 /// Annotate a source string and render the result as a human-readable text
 /// report (signatures and per-expression types). On failure the report is a
 /// single `// error:` line.
+///
+/// ## Example
+///
+/// ```gleam
+/// report("pub fn double(x) { x + x }")
+/// ```
+///
+/// ```text
+/// double: fn(Int) -> Int
+/// 19-20: Int
+/// 19-24: Int
+/// 23-24: Int
+/// ```
 pub fn report(source: String) -> String {
   case annotate(source, default_options()) {
     Error(error) -> "// error: " <> describe_error(error)
