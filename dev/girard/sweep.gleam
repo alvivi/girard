@@ -46,7 +46,7 @@ fn classify(path: String) -> #(String, String) {
   case simplifile.read(path) {
     Error(_) -> #(path, "could not read file")
     Ok(source) ->
-      case girard.annotate(source) {
+      case girard.annotate(source, girard.default_options()) {
         Ok(_) -> #(path, "ok")
         Error(error) -> #(path, girard.describe_error(error))
       }

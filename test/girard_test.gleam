@@ -16,7 +16,7 @@ pub fn main() {
 
 /// The inferred signature of the named top-level function.
 fn signature(source: String, name: String) -> String {
-  let assert Ok(annotated) = girard.annotate(source)
+  let assert Ok(annotated) = girard.annotate(source, girard.default_options())
   case list.key_find(annotated.functions, name) {
     Ok(sig) -> girard.type_to_string(sig.type_)
     Error(_) -> panic as { "no function named " <> name }
@@ -32,7 +32,8 @@ fn signature_with(
 ) -> String {
   let table = dict.from_list(modules)
   let resolver = fn(path) { dict.get(table, path) }
-  let assert Ok(annotated) = girard.annotate_with(source, resolver)
+  let options = girard.default_options() |> girard.with_resolver(resolver)
+  let assert Ok(annotated) = girard.annotate(source, options)
   case list.key_find(annotated.functions, name) {
     Ok(sig) -> girard.type_to_string(sig.type_)
     Error(_) -> panic as { "no function named " <> name }
@@ -41,7 +42,7 @@ fn signature_with(
 
 /// The inferred type of the named top-level constant.
 fn constant_type(source: String, name: String) -> String {
-  let assert Ok(annotated) = girard.annotate(source)
+  let assert Ok(annotated) = girard.annotate(source, girard.default_options())
   case list.key_find(annotated.constants, name) {
     Ok(type_) -> girard.type_to_string(type_.type_)
     Error(_) -> panic as { "no constant named " <> name }
@@ -53,7 +54,7 @@ fn constant_type(source: String, name: String) -> String {
 fn type_of(source: String, snippet: String) -> String {
   let assert Ok(start) = first_index(source, snippet)
   let end = start + string.byte_size(snippet)
-  let assert Ok(annotated) = girard.annotate(source)
+  let assert Ok(annotated) = girard.annotate(source, girard.default_options())
   let matches =
     list.filter_map(annotated.expressions, fn(a) {
       case a.span.start == start && a.span.end == end {
@@ -78,25 +79,26 @@ fn first_index(haystack: String, needle: String) -> Result(Int, Nil) {
 
 pub fn unbound_variable_is_error_test() {
   let assert Error(types.UnboundVariable("x")) =
-    girard.annotate("pub fn f() { x }")
+    girard.annotate("pub fn f() { x }", girard.default_options())
 }
 
 pub fn type_mismatch_is_error_test() {
   // `+.` is float addition, so an Int operand does not unify.
   let assert Error(types.TypeMismatch(_, _)) =
-    girard.annotate("pub fn f() { 1 +. 2.0 }")
+    girard.annotate("pub fn f() { 1 +. 2.0 }", girard.default_options())
 }
 
 pub fn unknown_field_is_error_test() {
   let source =
     "pub type User { User(name: String) }\npub fn f(u: User) { u.age }"
-  let assert Error(types.NoSuchField("User", "age")) = girard.annotate(source)
+  let assert Error(types.NoSuchField("User", "age")) =
+    girard.annotate(source, girard.default_options())
 }
 
 pub fn occurs_check_is_error_test() {
   // `fn(f) { f(f) }` has no finite type.
   let assert Error(types.RecursiveType(_, _)) =
-    girard.annotate("pub fn f(g) { g(g) }")
+    girard.annotate("pub fn f(g) { g(g) }", girard.default_options())
 }
 
 // --- printer ----------------------------------------------------------------
@@ -565,7 +567,7 @@ pub fn unshared_variant_field_is_error_test() {
     <> "Square(side: Float, name: String) }\n"
     <> "pub fn get(s: Shape) { s.radius }"
   let assert Error(types.NoSuchField("Shape", "radius")) =
-    girard.annotate(source)
+    girard.annotate(source, girard.default_options())
 }
 
 pub fn inconsistent_variant_field_is_error_test() {
@@ -573,7 +575,8 @@ pub fn inconsistent_variant_field_is_error_test() {
   let source =
     "pub type Mix { A(value: Int)\nB(value: String) }\n"
     <> "pub fn get(m: Mix) { m.value }"
-  let assert Error(types.NoSuchField("Mix", "value")) = girard.annotate(source)
+  let assert Error(types.NoSuchField("Mix", "value")) =
+    girard.annotate(source, girard.default_options())
 }
 
 pub fn deferred_tuple_index_test() {
@@ -1044,7 +1047,7 @@ pub fn no_polymorphic_recursion_test() {
     <> "type Internal(ty) {\n  Lit(Int)\n  Pair(Expr(Dyn), Expr(Dyn))\n}\n"
     <> "pub fn render(e: Expr(ty)) -> Int {\n"
     <> "  case e.internal {\n    Lit(v) -> v\n    Pair(a, b) -> render(a) + render(b)\n  }\n}"
-  case girard.annotate(source) {
+  case girard.annotate(source, girard.default_options()) {
     Error(_) -> Nil
     Ok(_) -> panic as "expected a type error (no polymorphic recursion)"
   }
@@ -1120,8 +1123,9 @@ pub fn annotate_pre_parsed_module_test() {
   let assert Ok(module) = glance.module(source)
 
   // Resolve no imports (this module has none).
-  let assert Ok(annotated) =
-    girard.annotate_module(module, fn(_) { Error(Nil) })
+  let options =
+    girard.default_options() |> girard.with_resolver(fn(_) { Error(Nil) })
+  let assert Ok(annotated) = girard.annotate_module(module, options)
 
   // The signature is a structured `Scheme` (here no quantified vars and a
   // `Fn([Int], Int)` type), not a string.
@@ -1145,13 +1149,15 @@ pub fn annotate_pre_parsed_module_test() {
 
 pub fn signature_scheme_exposes_quantified_vars_test() {
   // A generic function's scheme lists its quantified type variables...
-  let assert Ok(annotated) = girard.annotate("pub fn id(x) { x }")
+  let assert Ok(annotated) =
+    girard.annotate("pub fn id(x) { x }", girard.default_options())
   let assert Ok(scheme) = list.key_find(annotated.functions, "id")
   list.length(scheme.vars) |> should.equal(1)
   girard.type_to_string(scheme.type_) |> should.equal("fn(a) -> a")
 
   // ...while a monomorphic one has none.
-  let assert Ok(annotated2) = girard.annotate("pub fn inc(x) { x + 1 }")
+  let assert Ok(annotated2) =
+    girard.annotate("pub fn inc(x) { x + 1 }", girard.default_options())
   let assert Ok(mono) = list.key_find(annotated2.functions, "inc")
   mono.vars |> should.equal([])
 }
@@ -1170,34 +1176,44 @@ fn parse_package(
   })
 }
 
-fn package_signature(
-  annotated: dict.Dict(String, girard.Annotated),
+/// Annotate `sources` as a package with no import resolution, returning the
+/// `ModuleResult` for `path`.
+fn package_result(
+  sources: List(#(String, String)),
   path: String,
-  name: String,
-) -> String {
-  let assert Ok(module) = dict.get(annotated, path)
-  let assert Ok(sig) = list.key_find(module.functions, name)
+) -> girard.ModuleResult {
+  let options =
+    girard.default_options() |> girard.with_resolver(fn(_) { Error(Nil) })
+  let assert Ok(result) =
+    dict.get(girard.annotate_package(parse_package(sources), options), path)
+  result
+}
+
+fn package_signature(result: girard.ModuleResult, name: String) -> String {
+  let assert Ok(sig) = list.key_find(result.annotated.functions, name)
   girard.type_to_string(sig.type_)
 }
 
 pub fn annotate_package_annotates_every_module_test() {
-  // Each module in the package is annotated and keyed by its path.
+  // Each module in the package is annotated and keyed by its path; nothing is
+  // skipped, so each result's `skipped` list is empty.
   let sources = [
     #("app/a", "pub fn a() -> Int { 1 }"),
     #("app/b", "pub fn b() -> String { \"x\" }"),
   ]
-  let annotated =
-    girard.annotate_package(
-      parse_package(sources),
-      fn(_) { Error(Nil) },
-      girard.Erlang,
-    )
+  let options =
+    girard.default_options() |> girard.with_resolver(fn(_) { Error(Nil) })
+  let annotated = girard.annotate_package(parse_package(sources), options)
 
   dict.keys(annotated)
   |> list.sort(string.compare)
   |> should.equal(["app/a", "app/b"])
-  package_signature(annotated, "app/a", "a") |> should.equal("fn() -> Int")
-  package_signature(annotated, "app/b", "b") |> should.equal("fn() -> String")
+  let a = package_result(sources, "app/a")
+  let b = package_result(sources, "app/b")
+  a.skipped |> should.equal([])
+  b.skipped |> should.equal([])
+  package_signature(a, "a") |> should.equal("fn() -> Int")
+  package_signature(b, "b") |> should.equal("fn() -> String")
 }
 
 pub fn annotate_package_resolves_cross_module_imports_test() {
@@ -1210,27 +1226,39 @@ pub fn annotate_package_resolves_cross_module_imports_test() {
   ]
   let table = dict.from_list(sources)
   let resolver = fn(path) { dict.get(table, path) }
+  let options = girard.default_options() |> girard.with_resolver(resolver)
 
-  let annotated =
-    girard.annotate_package(parse_package(sources), resolver, girard.Erlang)
-  package_signature(annotated, "app/b", "b") |> should.equal("fn() -> Int")
+  let assert Ok(b) =
+    dict.get(girard.annotate_package(parse_package(sources), options), "app/b")
+  package_signature(b, "b") |> should.equal("fn() -> Int")
 }
 
-pub fn annotate_package_is_best_effort_per_module_test() {
-  // An ill-typed module is omitted from the result rather than failing the
-  // whole package; the well-typed module is still annotated.
+pub fn annotate_package_skips_ill_typed_definition_test() {
+  // Best-effort is per definition: an ill-typed function is reported in
+  // `skipped` (with its error) and absent from the annotations, while a
+  // well-typed sibling in the same module is still annotated.
   let sources = [
-    #("app/good", "pub fn good() -> Int { 1 }"),
-    #("app/bad", "pub fn bad() { 1 + \"oops\" }"),
+    #("app/m", "pub fn good() -> Int { 1 }\npub fn bad() { 1 + \"oops\" }"),
   ]
-  let annotated =
-    girard.annotate_package(
-      parse_package(sources),
-      fn(_) { Error(Nil) },
-      girard.Erlang,
-    )
+  let m = package_result(sources, "app/m")
 
-  dict.keys(annotated) |> should.equal(["app/good"])
-  package_signature(annotated, "app/good", "good")
-  |> should.equal("fn() -> Int")
+  package_signature(m, "good") |> should.equal("fn() -> Int")
+  list.key_find(m.annotated.functions, "bad") |> should.equal(Error(Nil))
+  let assert Ok(error) = list.key_find(m.skipped, "bad")
+  let assert types.TypeMismatch(_, _) = error
+}
+
+pub fn annotate_package_cascades_to_dependents_test() {
+  // A definition that depends on a skipped one cannot be typed either: `bad`
+  // fails to type, so `uses_it` sees it as unbound and is skipped in turn. Both
+  // are reported; neither is annotated.
+  let sources = [
+    #("app/m", "pub fn bad() { 1 + \"oops\" }\npub fn uses_it() { bad() }"),
+  ]
+  let m = package_result(sources, "app/m")
+
+  m.annotated.functions |> should.equal([])
+  list.key_find(m.skipped, "bad") |> should.be_ok
+  let assert Ok(types.UnboundVariable("bad")) =
+    list.key_find(m.skipped, "uses_it")
 }

@@ -37,7 +37,8 @@ double: fn(Int) -> Int
 23-24: Int
 ```
 
-`girard.annotate(source)` returns a structured `Annotated` value. Top-level
+`girard.annotate(source, girard.default_options())` returns a structured
+`Annotated` value. Top-level
 definitions carry a `Scheme` (`functions`/`constants: List(#(name, Scheme))` —
 its `.type_` plus `.vars`, the ids of the quantified/generic `Var`s); each
 expression carries a monomorphic `Type` (`expressions: List(Annotation)`). All
@@ -66,7 +67,7 @@ import gleam/list
 pub fn types_by_span(source: String) -> Dict(#(Int, Int), Type) {
   let assert Ok(module) = glance.module(source)
   let assert Ok(annotated) =
-    girard.annotate_module(module, girard.disk_resolver()) // or fn(_) { Error(Nil) }
+    girard.annotate_module(module, girard.default_options())
   list.fold(annotated.expressions, dict.new(), fn(acc, a) {
     dict.insert(acc, #(a.span.start, a.span.end), a.type_)
   })
@@ -77,7 +78,7 @@ pub fn types_by_span(source: String) -> Dict(#(Int, Int), Type) {
 pub fn return_kind(source: String, name: String) -> String {
   let assert Ok(module) = glance.module(source)
   let assert Ok(annotated) =
-    girard.annotate_module(module, girard.disk_resolver())
+    girard.annotate_module(module, girard.default_options())
   case list.key_find(annotated.functions, name) {
     Ok(scheme) ->
       case scheme.type_ {
@@ -93,6 +94,34 @@ pub fn return_kind(source: String, name: String) -> String {
 
 (Imported modules are still parsed internally, via the resolver — only the
 module you pass is taken pre-parsed.)
+
+### Options: resolver and target
+
+`annotate`, `annotate_module`, and `annotate_package` all take an `Options`
+value. Build it from `girard.default_options()` (disk resolver, `Erlang`
+target) with the `with_*` setters:
+
+```gleam
+girard.default_options()
+|> girard.with_target(girard.JavaScript)        // type for the JS target
+|> girard.with_resolver(fn(_) { Error(Nil) })   // resolve no imports
+```
+
+The resolver is `fn(module_path) -> Result(source, Nil)`; inject your own to
+resolve imports from anywhere (an in-memory map, a build tree, …).
+
+### Annotating a whole package (best-effort)
+
+`girard.annotate_package(modules, options)` annotates many modules in one pass,
+inferring a shared import only once across the whole run. `modules` is a list of
+`#(module_path, glance.Module)`; the result maps each path to a `ModuleResult`
+(`.annotated` plus `.skipped`).
+
+Unlike `annotate`/`annotate_module`, it is **best-effort per definition**: a
+top-level function or constant that does not type — along with anything that
+depends on it — is listed in that module's `.skipped` (with the error that
+declined it) rather than failing the module, and every other definition is
+still annotated. A strict check is just `result.skipped == []`.
 
 ## Command line
 

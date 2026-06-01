@@ -43,7 +43,7 @@ fn check_sample(name: String) -> Nil {
   let assert Ok(#(oracle_functions, oracle_constants)) =
     json.parse(json_string, decode.at(["modules", name], module_decoder()))
 
-  let assert Ok(annotated) = girard.annotate(source)
+  let assert Ok(annotated) = girard.annotate(source, girard.default_options())
 
   list.each(dict.to_list(oracle_functions), fn(entry) {
     let #(fn_name, oracle_type) = entry

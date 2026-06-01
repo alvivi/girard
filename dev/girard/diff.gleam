@@ -98,8 +98,12 @@ fn diff(package: String, json_path: String, pkg_root: String) -> Nil {
         pkg_root <> "/" <> package <> "/src/" <> module_name <> ".gleam"
       case simplifile.read(path) {
         Error(_) -> #(checked, mismatches, errored)
-        Ok(source) ->
-          case girard.annotate_with_target(source, resolver, target) {
+        Ok(source) -> {
+          let options =
+            girard.default_options()
+            |> girard.with_resolver(resolver)
+            |> girard.with_target(target)
+          case girard.annotate(source, options) {
             Error(e) -> {
               io.println(module_name <> ": ERROR " <> girard.describe_error(e))
               #(checked, mismatches, errored + 1)
@@ -109,6 +113,7 @@ fn diff(package: String, json_path: String, pkg_root: String) -> Nil {
               #(checked + 1, mismatches + found, errored)
             }
           }
+        }
       }
     })
 

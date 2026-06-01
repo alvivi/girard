@@ -61,9 +61,8 @@ pub type Resolver =
 /// The build target a module is compiled for. The target is a whole-build
 /// setting in Gleam, so it applies to every module in one annotation run.
 /// Definitions and imports annotated `@target(...)` are kept only when they
-/// match the active target; girard's plain `annotate`/`annotate_with` default
-/// to `Erlang` (matching `gleam build`'s default), and the `*_with_target`
-/// variants select it explicitly.
+/// match the active target. `default_options()` selects `Erlang` (matching
+/// `gleam build`'s default); use `with_target` for JavaScript.
 pub type Target {
   Erlang
   JavaScript
@@ -101,102 +100,108 @@ fn infer_def(
   }
 }
 
-/// Annotate a Gleam source string, resolving imports from disk.
-pub fn annotate(source: String) -> Result(Annotated, Error) {
-  annotate_with(source, disk_resolver())
+/// How a module is annotated: which `Resolver` finds imported modules, and
+/// which build `Target` to type for. Build one from `default_options()` with
+/// the `with_*` setters, e.g. `default_options() |> with_target(JavaScript)`.
+pub opaque type Options {
+  Options(resolver: Resolver, target: Target)
 }
 
-/// Annotate a Gleam source string, resolving imports with a custom resolver.
-/// Types for the `Erlang` target; use `annotate_with_target` for JavaScript.
-pub fn annotate_with(
-  source: String,
-  resolver: Resolver,
-) -> Result(Annotated, Error) {
-  annotate_with_target(source, resolver, Erlang)
+/// Default options: resolve imports from disk (`disk_resolver()`) and type for
+/// the `Erlang` target (matching `gleam build`'s default).
+pub fn default_options() -> Options {
+  Options(resolver: disk_resolver(), target: Erlang)
 }
 
-/// Annotate a Gleam source string for a specific build target, resolving
-/// imports with a custom resolver. `@target(...)` definitions that do not match
-/// `target` are dropped, exactly as the compiler omits them from the build.
-pub fn annotate_with_target(
-  source: String,
-  resolver: Resolver,
-  target: Target,
-) -> Result(Annotated, Error) {
+/// Resolve imported modules with `resolver` — e.g. `fn(_) { Error(Nil) }` to
+/// resolve none, or a custom in-memory resolver.
+pub fn with_resolver(options: Options, resolver: Resolver) -> Options {
+  Options(..options, resolver:)
+}
+
+/// Type for `target`. `@target(...)` definitions that do not match are dropped,
+/// exactly as the compiler omits them from the build.
+pub fn with_target(options: Options, target: Target) -> Options {
+  Options(..options, target:)
+}
+
+/// Annotate a Gleam source string: parse it with `glance`, then annotate as
+/// `annotate_module`. Returns the inferred error if the module does not type.
+/// The quick path is `annotate(source, default_options())`.
+pub fn annotate(source: String, options: Options) -> Result(Annotated, Error) {
   use module <- result.try(parse(source))
-  annotate_module_with_target(module, resolver, target)
+  annotate_module(module, options)
 }
 
-/// Annotate an already-parsed `glance.Module`, resolving imports with the given
-/// resolver. Use this when you have parsed the source with `glance` yourself —
-/// the returned spans are glance's, so they line up with your AST's node spans
-/// and you avoid parsing the same source twice. (Imported modules are still
-/// parsed internally, via the resolver, since only this module is pre-parsed.)
-/// `girard.disk_resolver()` is the default resolver; pass `fn(_) { Error(Nil) }`
-/// to resolve no imports.
+/// Annotate an already-parsed `glance.Module`. Use this when you have parsed the
+/// source with `glance` yourself — the returned spans are glance's, so they line
+/// up with your AST's node spans and you avoid parsing the same source twice.
+/// (Imported modules are still parsed internally, via the resolver.) Returns the
+/// inferred error if the module does not type; for partial results on an
+/// ill-typed module, use `annotate_package`.
 pub fn annotate_module(
   module: glance.Module,
-  resolver: Resolver,
+  options: Options,
 ) -> Result(Annotated, Error) {
-  annotate_module_with_target(module, resolver, Erlang)
-}
-
-/// As `annotate_module`, but for a specific build target. `@target(...)`
-/// definitions that do not match `target` are dropped.
-pub fn annotate_module_with_target(
-  module: glance.Module,
-  resolver: Resolver,
-  target: Target,
-) -> Result(Annotated, Error) {
-  use #(#(env, st), _interface, _cache) <- result.try(infer_module(
-    resolver,
+  use #(#(env, st), _interface, _cache, _skipped) <- result.try(infer_module(
+    options,
     set.new(),
     dict.new(),
     "",
     module,
-    target,
+    False,
   ))
   Ok(render(module, env, st))
+}
+
+/// The result of annotating one module of a package: its `Annotated` types plus
+/// the definitions that could not be typed. `skipped` names each top-level
+/// function or constant girard declined, with the error that declined it; a
+/// definition in `skipped` is absent from `annotated`.
+pub type ModuleResult {
+  ModuleResult(annotated: Annotated, skipped: List(#(String, Error)))
 }
 
 /// Annotate every module in a package in one pass, sharing inference of common
 /// imports across modules. `modules` maps each module's path (e.g.
 /// `"my_app/router"`) to its parsed `glance.Module`; the result maps the same
-/// paths to their `Annotated`. `target` selects the build target, exactly as in
-/// `annotate_module_with_target`: `@target(...)` definitions that do not match
-/// it are dropped (pass `Erlang` to match `gleam build`'s default).
+/// paths to a `ModuleResult`.
 ///
 /// This is the batch counterpart to `annotate_module`: a dependency imported by
 /// several modules is inferred once for the whole run rather than once per
 /// importing module. Cross-module references *within* the package are resolved
-/// through `resolver`, so it must also resolve the package's own modules (a
-/// resolver wrapping the build's module sources does); a module reached only
-/// that way is inferred for its interface and again here for its annotations.
+/// through the options' resolver, so it must also resolve the package's own
+/// modules (a resolver wrapping the build's module sources does); a module
+/// reached only that way is inferred for its interface and again here for its
+/// annotations.
 ///
-/// Best-effort per module: a module that fails to type is omitted from the
-/// result rather than failing the whole package, so one ill-typed module does
-/// not blind the consumer to the rest.
+/// Best-effort per definition: a top-level function or constant that does not
+/// type — along with any that depend on it — is reported in that module's
+/// `skipped` list rather than failing the module, while every other definition
+/// is still annotated. A module thus always appears in the result; a fully
+/// strict check is `result.skipped == []`.
 pub fn annotate_package(
   modules: List(#(String, glance.Module)),
-  resolver: Resolver,
-  target: Target,
-) -> dict.Dict(String, Annotated) {
-  let #(annotated, _cache) =
+  options: Options,
+) -> dict.Dict(String, ModuleResult) {
+  let #(results, _cache) =
     list.fold(modules, #(dict.new(), dict.new()), fn(acc, entry) {
       let #(results, cache) = acc
       let #(path, module) = entry
-      case infer_module(resolver, set.new(), cache, path, module, target) {
-        // A module that fails to type is skipped; the cache is left untouched.
+      case infer_module(options, set.new(), cache, path, module, True) {
+        // Best-effort inference does not fail; on the impossible error, omit the
+        // module rather than crash.
         Error(_) -> #(results, cache)
-        Ok(#(#(env, st), interface, cache)) -> {
+        Ok(#(#(env, st), interface, cache, skipped)) -> {
           // Seed this module's own interface so a later module that imports it
-          // hits the cache instead of re-resolving it through `resolver`.
+          // hits the cache instead of re-resolving it through the resolver.
           let cache = dict.insert(cache, path, interface)
-          #(dict.insert(results, path, render(module, env, st)), cache)
+          let result = ModuleResult(render(module, env, st), skipped)
+          #(dict.insert(results, path, result), cache)
         }
       }
     })
-  annotated
+  results
 }
 
 /// Interfaces resolved so far in this run, keyed by module path. Resolving a
@@ -212,29 +217,32 @@ type Cache =
 /// definition in dependency order. Returns the final environment and state
 /// plus the module's public interface.
 fn infer_module(
-  resolver: Resolver,
+  options: Options,
   loading: Set(String),
   cache: Cache,
   module_name: String,
   module: glance.Module,
-  target: Target,
-) -> Result(#(#(infer.Env, infer.State), ModuleInterface, Cache), Error) {
+  best_effort: Bool,
+) -> Result(
+  #(#(infer.Env, infer.State), ModuleInterface, Cache, List(#(String, Error))),
+  Error,
+) {
   // Drop definitions and imports compiled only for another target — a
   // `@target(javascript)` sibling (e.g. simplifile's JS `do_file_info`
   // returning a different error type) must not shadow the matching one when
   // typing for Erlang, and vice versa.
-  let module = for_target(module, target)
+  let module = for_target(module, options.target)
   let #(prelude_env, st) = infer.prelude()
   let env = infer.set_module(prelude_env, module_name)
 
   // 1. Imports.
   use #(env, cache) <- result.try(process_imports(
-    resolver,
+    options,
     loading,
     cache,
     env,
     module.imports,
-    target,
+    best_effort,
   ))
 
   // 2. Pre-declare local type names so forward references resolve, then
@@ -276,7 +284,13 @@ fn infer_module(
     set.from_list(
       list.filter_map(module.imports, fn(d) { qualified_alias(d.definition) }),
     )
-  use #(final_env, st) <- result.try(infer_defs(env, st, module_aliases, defs))
+  use #(#(final_env, st), skipped) <- result.try(infer_defs(
+    env,
+    st,
+    module_aliases,
+    defs,
+    best_effort,
+  ))
 
   let interface =
     infer.build_interface(
@@ -287,7 +301,7 @@ fn infer_module(
       public_type_names(module),
       public_accessor_type_names(module),
     )
-  Ok(#(#(final_env, st), interface, cache))
+  Ok(#(#(final_env, st), interface, cache, skipped))
 }
 
 fn infer_defs(
@@ -295,7 +309,8 @@ fn infer_defs(
   st: infer.State,
   module_aliases: Set(String),
   defs: List(Def),
-) -> Result(#(infer.Env, infer.State), Error) {
+  best_effort: Bool,
+) -> Result(#(#(infer.Env, infer.State), List(#(String, Error))), Error) {
   let by_name = dict.from_list(list.map(defs, fn(d) { #(def_name(d), d) }))
   let names = list.map(defs, def_name)
   let name_set = set.from_list(names)
@@ -324,89 +339,129 @@ fn infer_defs(
       list.filter_map(group, dict.get(by_name, _))
     })
 
-  // Members of a component are inferred together; afterwards each is generalized
-  // against the surrounding environment and added back for later components.
-  //
-  // A function with signature variables is pre-registered at a scheme over those
-  // variables so recursion and siblings see it polymorphically; its body is
-  // checked against the signature with those variables rigid, and within its own
-  // body it sees itself at the rigid monotype (no polymorphic recursion). Every
-  // other definition is inferred monomorphically against a fresh placeholder.
-  // The members are marked *live* (see `infer.mark_live`): a reference to a
-  // sibling resolves its scheme through the current substitution, so once a
-  // member's body has settled an unannotated part (absorbing it into a signature
-  // variable) a later sibling sees the resolved type — the compiler's shared
-  // mutable cells, reproduced through girard's threaded substitution. Because of
-  // that, bodies are inferred *provider-first*: a member whose signature has an
-  // unannotated part is typed before the fully-annotated members that consume it
-  // (a dependency-respecting order within the component, as Tarjan provides).
-  list.try_fold(groups, #(env, st), fn(acc, group) {
-    let #(env, st) = acc
-    let #(group_env, rev_items, st) =
-      list.fold(group, #(env, [], st), fn(acc, def) {
-        let #(env, items, st) = acc
-        prereg_def(env, items, st, def)
-      })
-    let group_env = infer.mark_live(group_env, list.map(group, def_name))
-    let items = list.reverse(rev_items)
-    // Type members with an unannotated parameter or return first: their bodies
-    // settle those placeholders, which a later sibling reference then resolves.
-    let #(providers, consumers) =
-      list.partition(items, fn(item) {
-        case item {
-          AnnotatedDef(_, f, _, _) ->
-            f.return == option.None
-            || list.any(f.parameters, fn(p) { p.type_ == option.None })
-          PlaceholderDef(..) -> False
-        }
-      })
-    use st <- result.try(
-      list.try_fold(list.append(providers, consumers), st, fn(st, item) {
-        case item {
-          AnnotatedDef(def, f, params, return_type) -> {
-            // Inside its own body the function sees itself at the rigid
-            // (un-generalized) signature, so a self-recursive call must be at
-            // the same type — no polymorphic recursion. Bind the self-name
-            // first, then the parameters on top, so a parameter that shares the
-            // function's name shadows it (as in the source).
-            let body_env =
-              infer.bind_params(
-                infer.define(
-                  group_env,
-                  def_name(def),
-                  infer.rigid_self_scheme(params, return_type),
-                ),
-                f,
-                params,
-              )
-            infer.check_body(body_env, st, f, return_type)
-          }
-          PlaceholderDef(def, var) -> {
-            use #(inferred, st) <- result.try(infer_def(group_env, st, def))
-            infer.unify(st, var, inferred)
-          }
-        }
-      }),
-    )
-    // The component's bodies are fully inferred, so any field accesses deferred
-    // because their record type was unknown can now be resolved — before we
-    // generalize, so the field types are reflected in the schemes.
-    use st <- result.try(infer.resolve_pending(group_env, st))
-    let env =
-      list.fold(items, env, fn(env, item) {
-        case item {
-          AnnotatedDef(def, _, params, return_type) ->
-            infer.define(
-              env,
-              def_name(def),
-              infer.function_scheme(env, st, params, return_type),
+  // Strict mode stops at the first component that fails to type, returning its
+  // error. Best-effort mode keeps the pre-component environment on a failure —
+  // discarding that component's partial annotations and substitution — records
+  // every definition in it as skipped (with the error), and carries on; a later
+  // component referring to a skipped one fails in turn (an unbound variable) and
+  // cascades naturally.
+  case best_effort {
+    False -> {
+      use #(env, st) <- result.map(
+        list.try_fold(groups, #(env, st), fn(acc, group) {
+          let #(env, st) = acc
+          infer_group(env, st, group)
+        }),
+      )
+      #(#(env, st), [])
+    }
+    True -> Ok(list.fold(groups, #(#(env, st), []), best_effort_group))
+  }
+}
+
+/// One best-effort step over a strongly-connected component: on success adopt
+/// the new environment; on failure keep the prior one (discarding the
+/// component's partial work) and record every definition in it as skipped.
+fn best_effort_group(
+  acc: #(#(infer.Env, infer.State), List(#(String, Error))),
+  group: List(Def),
+) -> #(#(infer.Env, infer.State), List(#(String, Error))) {
+  let #(#(env, st), skipped) = acc
+  case infer_group(env, st, group) {
+    Ok(env_st) -> #(env_st, skipped)
+    Error(error) -> {
+      let entries = list.map(group, fn(d) { #(def_name(d), error) })
+      #(#(env, st), list.append(skipped, entries))
+    }
+  }
+}
+
+/// Infer one strongly-connected component of mutually recursive definitions,
+/// then generalize each against the surrounding environment and add it back for
+/// later components.
+///
+/// A function with signature variables is pre-registered at a scheme over those
+/// variables so recursion and siblings see it polymorphically; its body is
+/// checked against the signature with those variables rigid, and within its own
+/// body it sees itself at the rigid monotype (no polymorphic recursion). Every
+/// other definition is inferred monomorphically against a fresh placeholder.
+/// The members are marked *live* (see `infer.mark_live`): a reference to a
+/// sibling resolves its scheme through the current substitution, so once a
+/// member's body has settled an unannotated part (absorbing it into a signature
+/// variable) a later sibling sees the resolved type — the compiler's shared
+/// mutable cells, reproduced through girard's threaded substitution. Because of
+/// that, bodies are inferred *provider-first*: a member whose signature has an
+/// unannotated part is typed before the fully-annotated members that consume it
+/// (a dependency-respecting order within the component, as Tarjan provides).
+fn infer_group(
+  env: infer.Env,
+  st: infer.State,
+  group: List(Def),
+) -> Result(#(infer.Env, infer.State), Error) {
+  let #(group_env, rev_items, st) =
+    list.fold(group, #(env, [], st), fn(acc, def) {
+      let #(env, items, st) = acc
+      prereg_def(env, items, st, def)
+    })
+  let group_env = infer.mark_live(group_env, list.map(group, def_name))
+  let items = list.reverse(rev_items)
+  // Type members with an unannotated parameter or return first: their bodies
+  // settle those placeholders, which a later sibling reference then resolves.
+  let #(providers, consumers) =
+    list.partition(items, fn(item) {
+      case item {
+        AnnotatedDef(_, f, _, _) ->
+          f.return == option.None
+          || list.any(f.parameters, fn(p) { p.type_ == option.None })
+        PlaceholderDef(..) -> False
+      }
+    })
+  use st <- result.try(
+    list.try_fold(list.append(providers, consumers), st, fn(st, item) {
+      case item {
+        AnnotatedDef(def, f, params, return_type) -> {
+          // Inside its own body the function sees itself at the rigid
+          // (un-generalized) signature, so a self-recursive call must be at
+          // the same type — no polymorphic recursion. Bind the self-name
+          // first, then the parameters on top, so a parameter that shares the
+          // function's name shadows it (as in the source).
+          let body_env =
+            infer.bind_params(
+              infer.define(
+                group_env,
+                def_name(def),
+                infer.rigid_self_scheme(params, return_type),
+              ),
+              f,
+              params,
             )
-          PlaceholderDef(def, var) ->
-            infer.define(env, def_name(def), infer.generalize(st, env, var))
+          infer.check_body(body_env, st, f, return_type)
         }
-      })
-    Ok(#(env, st))
-  })
+        PlaceholderDef(def, var) -> {
+          use #(inferred, st) <- result.try(infer_def(group_env, st, def))
+          infer.unify(st, var, inferred)
+        }
+      }
+    }),
+  )
+  // The component's bodies are fully inferred, so any field accesses deferred
+  // because their record type was unknown can now be resolved — before we
+  // generalize, so the field types are reflected in the schemes.
+  use st <- result.try(infer.resolve_pending(group_env, st))
+  let env =
+    list.fold(items, env, fn(env, item) {
+      case item {
+        AnnotatedDef(def, _, params, return_type) ->
+          infer.define(
+            env,
+            def_name(def),
+            infer.function_scheme(env, st, params, return_type),
+          )
+        PlaceholderDef(def, var) ->
+          infer.define(env, def_name(def), infer.generalize(st, env, var))
+      }
+    })
+  Ok(#(env, st))
 }
 
 /// A member of a strongly-connected component during inference.
@@ -476,12 +531,12 @@ fn prereg_def(
 // --- Imports ---------------------------------------------------------------
 
 fn process_imports(
-  resolver: Resolver,
+  options: Options,
   loading: Set(String),
   cache: Cache,
   env: infer.Env,
   imports: List(glance.Definition(glance.Import)),
-  target: Target,
+  best_effort: Bool,
 ) -> Result(#(infer.Env, Cache), Error) {
   list.try_fold(imports, #(env, cache), fn(acc, definition) {
     let #(env, cache) = acc
@@ -493,11 +548,11 @@ fn process_imports(
       return: Ok(#(env, cache)),
     )
     use #(maybe_interface, cache) <- result.try(resolve_interface(
-      resolver,
+      options,
       loading,
       cache,
       path,
-      target,
+      best_effort,
     ))
     case maybe_interface {
       // Unresolvable or unparsable: best effort, skip (uses of it surface later
@@ -532,11 +587,11 @@ fn import_items(
 }
 
 fn resolve_interface(
-  resolver: Resolver,
+  options: Options,
   loading: Set(String),
   cache: Cache,
   path: String,
-  target: Target,
+  best_effort: Bool,
 ) -> Result(#(Option(ModuleInterface), Cache), Error) {
   // `import gleam` refers to the built-in prelude module, which has no source
   // file; resolve it to a synthetic interface of the prelude's types/values.
@@ -546,30 +601,32 @@ fn resolve_interface(
   case dict.get(cache, path) {
     // Already inferred in this run: reuse it rather than inferring again.
     Ok(interface) -> Ok(#(Some(interface), cache))
-    Error(_) -> resolve_uncached(resolver, loading, cache, path, target)
+    Error(_) -> resolve_uncached(options, loading, cache, path, best_effort)
   }
 }
 
 fn resolve_uncached(
-  resolver: Resolver,
+  options: Options,
   loading: Set(String),
   cache: Cache,
   path: String,
-  target: Target,
+  best_effort: Bool,
 ) -> Result(#(Option(ModuleInterface), Cache), Error) {
-  case resolver(path) {
+  case options.resolver(path) {
     Error(_) -> Ok(#(None, cache))
     Ok(source) ->
       case glance.module(source) {
         Error(_) -> Ok(#(None, cache))
         Ok(module) -> {
-          use #(_, interface, cache) <- result.try(infer_module(
-            resolver,
+          // An import's own skipped definitions (best-effort) are irrelevant to
+          // the importer; only its public interface, partial or not, matters.
+          use #(_, interface, cache, _skipped) <- result.try(infer_module(
+            options,
             set.insert(loading, path),
             cache,
             path,
             module,
-            target,
+            best_effort,
           ))
           Ok(#(Some(interface), dict.insert(cache, path, interface)))
         }
@@ -759,7 +816,7 @@ pub fn type_to_string(type_: Type) -> String {
 /// Render an annotated module as text (the human-facing report). On failure the
 /// report is a single `// error:` line.
 pub fn format(source: String) -> String {
-  case annotate(source) {
+  case annotate(source, default_options()) {
     Error(error) -> "// error: " <> describe_error(error)
     Ok(annotated) -> {
       // Share one printer context so type-variable names are consistent across
