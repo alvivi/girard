@@ -60,7 +60,7 @@ pub type AnnotatedModule {
   )
 }
 
-/// Resolves an imported module path (e.g. "gleam/list") to its source.
+/// Resolves an imported module path (e.g. `"gleam/list"`) to its source.
 pub type Resolver =
   fn(String) -> Result(String, Nil)
 
@@ -106,9 +106,15 @@ fn infer_def(
   }
 }
 
-/// How a module is annotated: which `Resolver` finds imported modules, and
-/// which build `Target` to type for. Build one from `default_options()` with
-/// the `with_*` setters, e.g. `default_options() |> with_target(JavaScript)`.
+/// How a module is annotated: which [`Resolver`](#Resolver) finds imported
+/// modules, and which build [`Target`](#Target) to type for. Build one from
+/// [`default_options`](#default_options) and customize it with
+/// [`with_target`](#with_target) and [`with_resolver`](#with_resolver):
+///
+/// ```gleam
+/// default_options()
+/// |> with_target(JavaScript)
+/// ```
 pub opaque type Options {
   Options(resolver: Resolver, target: Target)
 }
@@ -827,9 +833,10 @@ pub fn type_to_string(type_: Type) -> String {
   printer.to_string(type_)
 }
 
-/// Render an annotated module as text (the human-facing report). On failure the
-/// report is a single `// error:` line.
-pub fn format(source: String) -> String {
+/// Annotate a source string and render the result as a human-readable text
+/// report (signatures and per-expression types). On failure the report is a
+/// single `// error:` line.
+pub fn report(source: String) -> String {
   case annotate(source, default_options()) {
     Error(error) -> "// error: " <> describe_error(error)
     Ok(annotated) -> {
@@ -866,7 +873,7 @@ pub fn format(source: String) -> String {
   }
 }
 
-/// A short human description of an inference error.
+/// A short, human-readable description of an inference error.
 pub fn describe_error(error: Error) -> String {
   case error {
     types.TypeMismatch(a, b) ->
@@ -933,7 +940,7 @@ type InputError {
 
 fn emit(source: Result(String, InputError)) -> Nil {
   case source {
-    Ok(text) -> io.println(format(text))
+    Ok(text) -> io.println(report(text))
     Error(error) -> io.println_error("error: " <> input_error_message(error))
   }
 }

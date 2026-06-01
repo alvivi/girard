@@ -26,7 +26,7 @@ parser gaps or oracle-export artifacts, not inference bugs.
 import girard
 
 pub fn main() {
-  girard.format("pub fn double(x) { x + x }")
+  girard.report("pub fn double(x) { x + x }")
 }
 ```
 
@@ -44,7 +44,7 @@ its `.type_` plus `.vars`, the ids of the quantified/generic `Var`s); each
 expression carries a monomorphic `Type` (`expressions: List(Annotation)`). All
 are structured [`girard/types`](src/girard/types.gleam) values — pattern-match on
 `Named`/`Fn`/`Var`/`Tuple` to inspect or transform them — not strings. Render a
-type with `girard.type_to_string(type_)`; `girard.format(source)` renders the
+type with `girard.type_to_string(type_)`; `girard.report(source)` renders the
 whole report above.
 
 ### Annotating a `glance` AST you already parsed

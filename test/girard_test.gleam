@@ -117,15 +117,15 @@ pub fn printer_skips_reserved_words_test() {
   |> list.each(fn(keyword) { should.be_false(list.contains(names, keyword)) })
 }
 
-// --- format (the CLI's rendered report) -------------------------------------
+// --- report (the CLI's rendered report) -------------------------------------
 
-pub fn format_report_test() {
-  girard.format("pub fn double(x) { x + x }")
+pub fn report_test() {
+  girard.report("pub fn double(x) { x + x }")
   |> should.equal("double: fn(Int) -> Int\n19-20: Int\n19-24: Int\n23-24: Int")
 }
 
-pub fn format_error_test() {
-  girard.format("pub fn f() { 1 +. 2 }")
+pub fn report_error_test() {
+  girard.report("pub fn f() { 1 +. 2 }")
   |> should.equal("// error: type mismatch: Int vs Float")
 }
 
