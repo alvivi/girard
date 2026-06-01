@@ -1155,3 +1155,82 @@ pub fn signature_scheme_exposes_quantified_vars_test() {
   let assert Ok(mono) = list.key_find(annotated2.functions, "inc")
   mono.vars |> should.equal([])
 }
+
+// --- annotate_package ------------------------------------------------------
+
+/// Parse each `#(path, source)` and pair the path with its `glance.Module`,
+/// the shape `annotate_package` consumes.
+fn parse_package(
+  sources: List(#(String, String)),
+) -> List(#(String, glance.Module)) {
+  list.map(sources, fn(entry) {
+    let #(path, source) = entry
+    let assert Ok(module) = glance.module(source)
+    #(path, module)
+  })
+}
+
+fn package_signature(
+  annotated: dict.Dict(String, girard.Annotated),
+  path: String,
+  name: String,
+) -> String {
+  let assert Ok(module) = dict.get(annotated, path)
+  let assert Ok(sig) = list.key_find(module.functions, name)
+  girard.type_to_string(sig.type_)
+}
+
+pub fn annotate_package_annotates_every_module_test() {
+  // Each module in the package is annotated and keyed by its path.
+  let sources = [
+    #("app/a", "pub fn a() -> Int { 1 }"),
+    #("app/b", "pub fn b() -> String { \"x\" }"),
+  ]
+  let annotated =
+    girard.annotate_package(
+      parse_package(sources),
+      fn(_) { Error(Nil) },
+      girard.Erlang,
+    )
+
+  dict.keys(annotated)
+  |> list.sort(string.compare)
+  |> should.equal(["app/a", "app/b"])
+  package_signature(annotated, "app/a", "a") |> should.equal("fn() -> Int")
+  package_signature(annotated, "app/b", "b") |> should.equal("fn() -> String")
+}
+
+pub fn annotate_package_resolves_cross_module_imports_test() {
+  // A module that imports a sibling in the same package types correctly: the
+  // sibling is resolved through the resolver (which here serves the same
+  // package sources), so `b` sees `a.a`'s `Int` return.
+  let sources = [
+    #("app/a", "pub fn a() -> Int { 1 }"),
+    #("app/b", "import app/a\n\npub fn b() { a.a() }"),
+  ]
+  let table = dict.from_list(sources)
+  let resolver = fn(path) { dict.get(table, path) }
+
+  let annotated =
+    girard.annotate_package(parse_package(sources), resolver, girard.Erlang)
+  package_signature(annotated, "app/b", "b") |> should.equal("fn() -> Int")
+}
+
+pub fn annotate_package_is_best_effort_per_module_test() {
+  // An ill-typed module is omitted from the result rather than failing the
+  // whole package; the well-typed module is still annotated.
+  let sources = [
+    #("app/good", "pub fn good() -> Int { 1 }"),
+    #("app/bad", "pub fn bad() { 1 + \"oops\" }"),
+  ]
+  let annotated =
+    girard.annotate_package(
+      parse_package(sources),
+      fn(_) { Error(Nil) },
+      girard.Erlang,
+    )
+
+  dict.keys(annotated) |> should.equal(["app/good"])
+  package_signature(annotated, "app/good", "good")
+  |> should.equal("fn() -> Int")
+}

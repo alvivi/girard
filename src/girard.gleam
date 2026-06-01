@@ -159,6 +159,46 @@ pub fn annotate_module_with_target(
   Ok(render(module, env, st))
 }
 
+/// Annotate every module in a package in one pass, sharing inference of common
+/// imports across modules. `modules` maps each module's path (e.g.
+/// `"my_app/router"`) to its parsed `glance.Module`; the result maps the same
+/// paths to their `Annotated`. `target` selects the build target, exactly as in
+/// `annotate_module_with_target`: `@target(...)` definitions that do not match
+/// it are dropped (pass `Erlang` to match `gleam build`'s default).
+///
+/// This is the batch counterpart to `annotate_module`: a dependency imported by
+/// several modules is inferred once for the whole run rather than once per
+/// importing module. Cross-module references *within* the package are resolved
+/// through `resolver`, so it must also resolve the package's own modules (a
+/// resolver wrapping the build's module sources does); a module reached only
+/// that way is inferred for its interface and again here for its annotations.
+///
+/// Best-effort per module: a module that fails to type is omitted from the
+/// result rather than failing the whole package, so one ill-typed module does
+/// not blind the consumer to the rest.
+pub fn annotate_package(
+  modules: List(#(String, glance.Module)),
+  resolver: Resolver,
+  target: Target,
+) -> dict.Dict(String, Annotated) {
+  let #(annotated, _cache) =
+    list.fold(modules, #(dict.new(), dict.new()), fn(acc, entry) {
+      let #(results, cache) = acc
+      let #(path, module) = entry
+      case infer_module(resolver, set.new(), cache, path, module, target) {
+        // A module that fails to type is skipped; the cache is left untouched.
+        Error(_) -> #(results, cache)
+        Ok(#(#(env, st), interface, cache)) -> {
+          // Seed this module's own interface so a later module that imports it
+          // hits the cache instead of re-resolving it through `resolver`.
+          let cache = dict.insert(cache, path, interface)
+          #(dict.insert(results, path, render(module, env, st)), cache)
+        }
+      }
+    })
+  annotated
+}
+
 /// Interfaces resolved so far in this run, keyed by module path. Resolving a
 /// module is expensive (it infers the whole module), and a deep import graph
 /// imports the same dependency many times; memoizing keeps each module inferred
