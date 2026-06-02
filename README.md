@@ -4,17 +4,15 @@
 [![Hex Docs](https://img.shields.io/badge/hex-docs-ffaff3)](https://hexdocs.pm/girard/)
 [![CI](https://github.com/alvivi/girard/actions/workflows/test.yml/badge.svg)](https://github.com/alvivi/girard/actions/workflows/test.yml)
 
-"A Gleam source type annotator, in Gleam!"
+A Gleam source type annotator, in Gleam!
 
-girard runs Hindley-Milner type inference over Gleam source — replicating the
-real Gleam compiler rather than inventing its own type system — and reports the
-inferred type of every expression (by source span) together with each top-level
-definition's signature. It is **not** a full type checker: it aims to reproduce
-the compiler's types, not to produce rich diagnostics. Parsing is delegated to
-[`glance`](https://hexdocs.pm/glance/), so girard is only the inference layer.
+Runs type inference over Gleam source — replicating the real Gleam compiler — and
+reports the inferred type of every expression (by source span) together with each
+top-level definition's signature. Parsing is delegated to
+[`glance`](https://hexdocs.pm/glance/).
 
-girard's per-expression types are validated differentially against the real
-compiler across the hex ecosystem (see [`PACKAGES.md`](PACKAGES.md)).
+The project is stable: its inferred types are validated differentially against
+the real compiler across the hex ecosystem (see [`PACKAGES.md`](PACKAGES.md)).
 
 ## Usage
 
@@ -142,6 +140,26 @@ top-level function or constant that does not type — along with anything that
 depends on it — is listed in that module's `.skipped` (with the error that
 declined it) rather than failing the module, and every other definition is still
 annotated. A strict check is just `result.skipped == []`.
+
+## Limitations
+
+- **Parsing is bounded by `glance`.** girard does not parse Gleam itself, so
+  source that [`glance`](https://hexdocs.pm/glance/) cannot parse, girard cannot
+  annotate. Since imports are resolved by parsing, an unparseable module also
+  makes its dependents fail with `unbound variable`. The gaps the sweep surfaces
+  are all in bit-array syntax — chiefly arithmetic in a bit-array *pattern*
+  segment size, e.g. `<<value:size(len - 1)>>` (the construction side parses, the
+  pattern side does not). These are `glance` limitations, not girard inference
+  errors.
+
+- **Inferred types, not diagnostics.** girard reproduces the types the compiler
+  infers, but it is not a full type checker: when a module cannot be typed it
+  returns a single `Error` for the first problem found, not the compiler's full
+  set of diagnostics.
+
+- **Scoped to compilable code.** Inference is validated against programs the real
+  compiler accepts; packages that do not compile with current tooling are out of
+  scope, since the compiler cannot type them either.
 
 ## Contributing
 
