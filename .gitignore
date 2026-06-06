@@ -5,3 +5,6 @@ erl_crash.dump
 
 # Local agent/session data
 .claude/
+
+# Differential-sweep offline cache artifact (see scripts/cache.sh)
+/girard-sweep-cache.tar.gz
