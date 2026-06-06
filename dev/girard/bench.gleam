@@ -111,7 +111,11 @@ fn parse_spec(raw: String) -> List(PkgSpec) {
   })
 }
 
-/// Annotate every module of one package, timing only the annotate calls.
+/// Annotate every module of one package, timing only the annotate calls. One
+/// interface cache is threaded across the package's modules, so a shared import
+/// is inferred once for the whole package rather than once per importing module
+/// — the way a package-walking tool (or an editor across sibling files) uses
+/// girard.
 fn bench_package(spec: PkgSpec) -> Tally {
   let resolver = dir_resolver(spec.root)
   let target = target_of(spec.root <> "/" <> spec.package <> "/gleam.toml")
@@ -121,24 +125,35 @@ fn bench_package(spec: PkgSpec) -> Tally {
     |> girard.with_target(target)
 
   let src = spec.root <> "/" <> spec.package <> "/src"
-  list.fold(gleam_sources(src), empty(), fn(acc, path) {
-    case simplifile.read(path) {
-      Error(_) -> acc
-      Ok(source) -> add(acc, time_annotate(source, options))
-    }
-  })
+  let #(tally, _cache) =
+    list.fold(gleam_sources(src), #(empty(), girard.new_cache()), fn(acc, path) {
+      let #(tally, cache) = acc
+      case simplifile.read(path) {
+        Error(_) -> #(tally, cache)
+        Ok(source) -> {
+          let #(t, cache) = time_annotate(source, options, cache)
+          #(add(tally, t), cache)
+        }
+      }
+    })
+  tally
 }
 
-/// Time a single `girard.annotate` call and bucket the result.
-fn time_annotate(source: String, options: girard.Options) -> Tally {
+/// Time a single annotate call (cache threaded in and out) and bucket the result.
+fn time_annotate(
+  source: String,
+  options: girard.Options,
+  cache: girard.Cache,
+) -> #(Tally, girard.Cache) {
   let t0 = perf_counter(1_000_000)
-  let outcome = girard.annotate(source, options)
+  let #(outcome, cache) = girard.annotate_with_cache(source, options, cache)
   let t1 = perf_counter(1_000_000)
   let micros = t1 - t0
-  case outcome {
+  let tally = case outcome {
     Ok(annotated) -> Tally(1, list.length(annotated.expressions), 0, micros)
     Error(_) -> Tally(0, 0, 1, micros)
   }
+  #(tally, cache)
 }
 
 fn report(total: Tally, rounds: Int) -> Nil {

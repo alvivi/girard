@@ -169,6 +169,70 @@ pub fn annotate_module(
   Ok(render(module, env, st))
 }
 
+/// A reusable cache of inferred module interfaces, threaded across
+/// [`annotate_with_cache`](#annotate_with_cache) calls. Annotating a module
+/// infers every module it imports — transitively — to obtain their interfaces;
+/// without a shared cache each call repeats that work, so a tool re-checking a
+/// module or walking a package re-infers the same dependencies again and again.
+/// Carrying a `Cache` between calls infers each imported module once and reuses
+/// it thereafter.
+///
+/// A cache keys interfaces by module path and assumes a fixed
+/// [`Resolver`](#Resolver) and [`Target`](#Target): do not reuse one across
+/// different resolvers or targets, or it would hand back interfaces built from
+/// the wrong sources. Create one with [`new_cache`](#new_cache); when a module's
+/// source changes, drop it with [`invalidate`](#invalidate).
+pub opaque type Cache {
+  Cache(interfaces: InterfaceCache)
+}
+
+/// An empty [`Cache`](#Cache) to seed a run of
+/// [`annotate_with_cache`](#annotate_with_cache) calls.
+pub fn new_cache() -> Cache {
+  Cache(dict.new())
+}
+
+/// Annotate a source string like [`annotate`](#annotate), but reuse and extend
+/// `cache`: imported modules already inferred in it are taken from the cache
+/// rather than resolved and inferred again, and any newly inferred ones are
+/// added. Returns the result and the updated cache to thread into the next call.
+///
+/// `annotate_with_cache(source, options, new_cache())` matches
+/// [`annotate`](#annotate)`(source, options)` exactly; the cache only pays off
+/// when shared across calls that import overlapping modules — an editor
+/// re-checking a file as it changes, or a walk over a package's modules.
+pub fn annotate_with_cache(
+  source: String,
+  options: Options,
+  cache: Cache,
+) -> #(Result(AnnotatedModule, Error), Cache) {
+  case parse(source) {
+    Error(error) -> #(Error(error), cache)
+    Ok(module) ->
+      case
+        infer_module(options, set.new(), cache.interfaces, "", module, False)
+      {
+        Error(error) -> #(Error(error), cache)
+        Ok(#(#(env, st), _interface, interfaces, _skipped)) -> #(
+          Ok(render(module, env, st)),
+          Cache(interfaces),
+        )
+      }
+  }
+}
+
+/// Drop the cached interface for `path` (the module path, e.g.
+/// `"my_app/router"`), so the next [`annotate_with_cache`](#annotate_with_cache)
+/// that needs it re-infers it from source. Use this when a module changes.
+///
+/// Only the named module is dropped. A cached module that *imports* the changed
+/// one keeps its own (now possibly stale) interface, so after a change that
+/// alters a module's public surface, also invalidate its importers — or start
+/// from a [`new_cache`](#new_cache).
+pub fn invalidate(cache: Cache, path: String) -> Cache {
+  Cache(dict.delete(cache.interfaces, path))
+}
+
 /// The result of annotating one module of a package: its
 /// [`AnnotatedModule`](#AnnotatedModule) plus the definitions that could not be
 /// typed. `skipped` names each top-level function or constant girard declined,
@@ -225,7 +289,7 @@ pub fn annotate_package(
 /// module is expensive (it infers the whole module), and a deep import graph
 /// imports the same dependency many times; memoizing keeps each module inferred
 /// once rather than re-inferring it exponentially.
-type Cache =
+type InterfaceCache =
   dict.Dict(String, ModuleInterface)
 
 // --- Module inference ------------------------------------------------------
@@ -236,12 +300,17 @@ type Cache =
 fn infer_module(
   options: Options,
   loading: Set(String),
-  cache: Cache,
+  cache: InterfaceCache,
   module_name: String,
   module: glance.Module,
   best_effort: Bool,
 ) -> Result(
-  #(#(infer.Env, infer.State), ModuleInterface, Cache, List(#(String, Error))),
+  #(
+    #(infer.Env, infer.State),
+    ModuleInterface,
+    InterfaceCache,
+    List(#(String, Error)),
+  ),
   Error,
 ) {
   // Drop definitions and imports compiled only for another target — a
@@ -550,11 +619,11 @@ fn prereg_def(
 fn process_imports(
   options: Options,
   loading: Set(String),
-  cache: Cache,
+  cache: InterfaceCache,
   env: infer.Env,
   imports: List(glance.Definition(glance.Import)),
   best_effort: Bool,
-) -> Result(#(infer.Env, Cache), Error) {
+) -> Result(#(infer.Env, InterfaceCache), Error) {
   list.try_fold(imports, #(env, cache), fn(acc, definition) {
     let #(env, cache) = acc
     let import_ = definition.definition
@@ -606,10 +675,10 @@ fn import_items(
 fn resolve_interface(
   options: Options,
   loading: Set(String),
-  cache: Cache,
+  cache: InterfaceCache,
   path: String,
   best_effort: Bool,
-) -> Result(#(Option(ModuleInterface), Cache), Error) {
+) -> Result(#(Option(ModuleInterface), InterfaceCache), Error) {
   // `import gleam` refers to the built-in prelude module, which has no source
   // file; resolve it to a synthetic interface of the prelude's types/values.
   use <- bool.lazy_guard(when: path == prelude.prelude_module, return: fn() {
@@ -625,10 +694,10 @@ fn resolve_interface(
 fn resolve_uncached(
   options: Options,
   loading: Set(String),
-  cache: Cache,
+  cache: InterfaceCache,
   path: String,
   best_effort: Bool,
-) -> Result(#(Option(ModuleInterface), Cache), Error) {
+) -> Result(#(Option(ModuleInterface), InterfaceCache), Error) {
   case options.resolver(path) {
     Error(_) -> Ok(#(None, cache))
     Ok(source) ->
