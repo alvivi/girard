@@ -65,6 +65,15 @@ pub type Env {
     /// Value bindings in scope: locals, parameters, top-level functions and
     /// custom-type constructors.
     values: Dict(String, Scheme),
+    /// The subset of `values` that can contribute free type variables to the
+    /// environment — bindings whose scheme has a type variable not bound by its
+    /// own quantifier (live monomorphic bindings: locals, parameters, SCC
+    /// members mid-inference). Fully-generalized and imported schemes quantify
+    /// every variable in their type, so they contribute nothing regardless of
+    /// the substitution and are omitted. `env_free_vars` scans only these, which
+    /// are few, instead of every binding in scope (mostly closed imports).
+    /// Maintained alongside `values` in `bind_value`, its sole writer.
+    open_values: Dict(String, Scheme),
     /// Locally-defined type aliases: name -> (parameter names, aliased type
     /// AST), expanded during hydration in this module's environment.
     aliases: Dict(String, #(List(String), glance.Type)),
@@ -154,6 +163,7 @@ fn is_rigid(st: State, id: Int) -> Bool {
 fn new_env() -> Env {
   Env(
     values: dict.new(),
+    open_values: dict.new(),
     aliases: dict.new(),
     imported_aliases: dict.new(),
     accessors: dict.new(),
@@ -327,8 +337,35 @@ fn bind_value(env: Env, name: String, scheme: Scheme) -> Env {
   Env(
     ..env,
     values: dict.insert(env.values, name, scheme),
+    // Track whether this binding can contribute environment free variables, so
+    // `env_free_vars` need not re-walk every closed scheme. A closed scheme
+    // shadowing an open one must evict the stale open entry, hence the delete.
+    open_values: case scheme_is_closed(scheme) {
+      True -> dict.delete(env.open_values, name)
+      False -> dict.insert(env.open_values, name, scheme)
+    },
     variants: dict.delete(env.variants, name),
   )
+}
+
+/// Whether a scheme can never contribute a free variable to the environment:
+/// every type variable in its type is bound by its own quantifier. This is
+/// purely syntactic and so substitution-independent — `scheme_free_vars`
+/// resolves and collects only variables *not* in `bound`, so a scheme with none
+/// such yields nothing for any substitution, now or later.
+fn scheme_is_closed(scheme: Scheme) -> Bool {
+  let bound = set.from_list(scheme.vars)
+  all_vars_bound(scheme.type_, bound)
+}
+
+fn all_vars_bound(type_: Type, bound: Set(Int)) -> Bool {
+  case type_ {
+    Var(id) -> set.contains(bound, id)
+    Named(_, _, args) -> list.all(args, all_vars_bound(_, bound))
+    Fn(args, ret) ->
+      list.all(args, all_vars_bound(_, bound)) && all_vars_bound(ret, bound)
+    Tuple(elements) -> list.all(elements, all_vars_bound(_, bound))
+  }
 }
 
 /// Look up a value's scheme in the environment.
@@ -536,7 +573,10 @@ fn free_vars_loop(type_: Type, acc: List(Int)) -> List(Int) {
 }
 
 fn env_free_vars(st: State, env: Env) -> List(Int) {
-  dict.fold(env.values, [], fn(acc, _name, scheme) {
+  // Only open bindings can contribute; closed schemes (the bulk — every import
+  // and generalized definition) are omitted from `open_values`, so this scans a
+  // handful of live monomorphic bindings rather than the whole environment.
+  dict.fold(env.open_values, [], fn(acc, _name, scheme) {
     // A scheme's quantified variables are bound *within the scheme*; they must
     // not be resolved against the ambient substitution. This matters because
     // imported schemes carry variable ids minted in their own module, which can
