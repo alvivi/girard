@@ -97,6 +97,14 @@ pub type Env {
     /// Imported modules available for qualified access, keyed by the alias used
     /// in source (e.g. `list` for `import gleam/list`).
     modules: Dict(String, ModuleInterface),
+    /// Every interface reachable from `modules` (directly imported modules and,
+    /// transitively, the modules they expose), keyed by its real module name
+    /// (`interface.name`, the full path — unique per run, unlike an alias). A
+    /// flat index of the same graph `modules` spans, maintained alongside it in
+    /// `import_qualified`, so resolving a type's accessors by origin module
+    /// (`accessors_of_module`) is one `dict.get` rather than a transitive walk
+    /// of the whole interface graph on every field access.
+    module_index: Dict(String, ModuleInterface),
     /// Names of the strongly-connected-component members currently being
     /// inferred. A reference to one of these resolves its bound scheme through
     /// the current substitution before instantiating, so a type the provider's
@@ -154,6 +162,7 @@ fn new_env() -> Env {
     variants: dict.new(),
     current_module: "",
     modules: dict.new(),
+    module_index: dict.new(),
     live: set.new(),
   )
 }
@@ -407,7 +416,31 @@ pub fn import_qualified(
     dict.fold(env.modules, interface.modules, fn(acc, alias, interface) {
       dict.insert(acc, alias, interface)
     })
-  Env(..env, modules: dict.insert(modules, alias, interface))
+  Env(
+    ..env,
+    modules: dict.insert(modules, alias, interface),
+    // Index the newly reachable interfaces by real name. The bound interface's
+    // transitive closure covers everything merged in above (each merged module
+    // is itself within that closure), so one walk keeps the index complete.
+    module_index: index_interface(env.module_index, interface),
+  )
+}
+
+/// Add `interface` and every interface it transitively exposes to `index`,
+/// keyed by real module name. First insert wins (a name already present is left
+/// as-is), which both guards the DAG against re-walking shared modules and is
+/// unambiguous: a real module name resolves to one inferred interface per run.
+fn index_interface(
+  index: Dict(String, ModuleInterface),
+  interface: ModuleInterface,
+) -> Dict(String, ModuleInterface) {
+  // Already indexed: stop. Guards the DAG against re-walking shared modules.
+  use <- bool.guard(when: dict.has_key(index, interface.name), return: index)
+  dict.fold(
+    interface.modules,
+    dict.insert(index, interface.name, interface),
+    fn(acc, _alias, nested) { index_interface(acc, nested) },
+  )
 }
 
 /// Bring a single value (function/constant/constructor) into scope unqualified.
@@ -2839,46 +2872,16 @@ fn accessors_of_module(
   env: Env,
   module: String,
 ) -> Dict(String, Dict(String, Scheme)) {
+  // A type can surface from a module the current one never imports directly (a
+  // helper returning another module's record), and an alias collision can evict
+  // that module from the alias-keyed `modules` map — so resolve by origin name
+  // through `module_index`, which holds the whole transitively-reachable graph.
   case module == env.current_module {
     True -> env.accessors
     False ->
-      case find_module_interface(dict.values(env.modules), module, []) {
+      case dict.get(env.module_index, module) {
         Ok(interface) -> interface.accessors
         Error(_) -> env.accessors
-      }
-  }
-}
-
-/// Find an interface for `target` by module name, searching the directly
-/// reachable interfaces and, transitively, the modules they expose. A type can
-/// surface from a module the current one never imports directly (a helper that
-/// returns another module's record), and an alias collision can evict that
-/// module from the top-level alias map — so resolving accessors by origin name
-/// must look through the nested `modules` maps too. `seen` guards the DAG.
-fn find_module_interface(
-  interfaces: List(ModuleInterface),
-  target: String,
-  seen: List(String),
-) -> Result(ModuleInterface, Nil) {
-  case interfaces {
-    [] -> Error(Nil)
-    [interface, ..rest] ->
-      case interface.name == target {
-        True -> Ok(interface)
-        False ->
-          case list.contains(seen, interface.name) {
-            True -> find_module_interface(rest, target, seen)
-            False ->
-              case
-                find_module_interface(dict.values(interface.modules), target, [
-                  interface.name,
-                  ..seen
-                ])
-              {
-                Ok(found) -> Ok(found)
-                Error(_) -> find_module_interface(rest, target, seen)
-              }
-          }
       }
   }
 }
