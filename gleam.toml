@@ -3,6 +3,7 @@ version = "1.0.0"
 description = "A type annotator for Gleam, written in Gleam: it runs Hindley-Milner inference mirroring the real compiler and reports the inferred type of every expression."
 licences = ["Apache-2.0"]
 repository = { type = "github", user = "alvivi", repo = "girard" }
+gleam = ">= 1.15.0"
 
 [dependencies]
 gleam_stdlib = ">= 0.44.0 and < 2.0.0"
