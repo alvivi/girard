@@ -164,7 +164,7 @@ pub fn annotate_module(
     dict.new(),
     "",
     module,
-    False,
+    best_effort: False,
   ))
   Ok(render(module, env, st))
 }
@@ -210,7 +210,14 @@ pub fn annotate_with_cache(
     Error(error) -> #(Error(error), cache)
     Ok(module) ->
       case
-        infer_module(options, set.new(), cache.interfaces, "", module, False)
+        infer_module(
+          options,
+          set.new(),
+          cache.interfaces,
+          "",
+          module,
+          best_effort: False,
+        )
       {
         Error(error) -> #(Error(error), cache)
         Ok(#(#(env, st), _interface, interfaces, _skipped)) -> #(
@@ -269,7 +276,9 @@ pub fn annotate_package(
     list.fold(modules, #(dict.new(), dict.new()), fn(acc, entry) {
       let #(results, cache) = acc
       let #(path, module) = entry
-      case infer_module(options, set.new(), cache, path, module, True) {
+      case
+        infer_module(options, set.new(), cache, path, module, best_effort: True)
+      {
         // Best-effort inference does not fail; on the impossible error, omit the
         // module rather than crash.
         Error(_) -> #(results, cache)
@@ -303,7 +312,7 @@ fn infer_module(
   cache: InterfaceCache,
   module_name: String,
   module: glance.Module,
-  best_effort: Bool,
+  best_effort best_effort: Bool,
 ) -> Result(
   #(
     #(infer.Env, infer.State),
@@ -328,7 +337,7 @@ fn infer_module(
     cache,
     env,
     module.imports,
-    best_effort,
+    best_effort:,
   ))
 
   // 2. Pre-declare local type names so forward references resolve, then
@@ -375,7 +384,7 @@ fn infer_module(
     st,
     module_aliases,
     defs,
-    best_effort,
+    best_effort:,
   ))
 
   let interface =
@@ -395,7 +404,7 @@ fn infer_defs(
   st: infer.State,
   module_aliases: Set(String),
   defs: List(Def),
-  best_effort: Bool,
+  best_effort best_effort: Bool,
 ) -> Result(#(#(infer.Env, infer.State), List(#(String, Error))), Error) {
   let by_name = dict.from_list(list.map(defs, fn(d) { #(def_name(d), d) }))
   let names = list.map(defs, def_name)
@@ -622,7 +631,7 @@ fn process_imports(
   cache: InterfaceCache,
   env: infer.Env,
   imports: List(glance.Definition(glance.Import)),
-  best_effort: Bool,
+  best_effort best_effort: Bool,
 ) -> Result(#(infer.Env, InterfaceCache), Error) {
   list.try_fold(imports, #(env, cache), fn(acc, definition) {
     let #(env, cache) = acc
@@ -638,7 +647,7 @@ fn process_imports(
       loading,
       cache,
       path,
-      best_effort,
+      best_effort:,
     ))
     case maybe_interface {
       // Unresolvable or unparsable: best effort, skip (uses of it surface later
@@ -677,7 +686,7 @@ fn resolve_interface(
   loading: Set(String),
   cache: InterfaceCache,
   path: String,
-  best_effort: Bool,
+  best_effort best_effort: Bool,
 ) -> Result(#(Option(ModuleInterface), InterfaceCache), Error) {
   // `import gleam` refers to the built-in prelude module, which has no source
   // file; resolve it to a synthetic interface of the prelude's types/values.
@@ -687,7 +696,7 @@ fn resolve_interface(
   case dict.get(cache, path) {
     // Already inferred in this run: reuse it rather than inferring again.
     Ok(interface) -> Ok(#(Some(interface), cache))
-    Error(_) -> resolve_uncached(options, loading, cache, path, best_effort)
+    Error(_) -> resolve_uncached(options, loading, cache, path, best_effort:)
   }
 }
 
@@ -696,7 +705,7 @@ fn resolve_uncached(
   loading: Set(String),
   cache: InterfaceCache,
   path: String,
-  best_effort: Bool,
+  best_effort best_effort: Bool,
 ) -> Result(#(Option(ModuleInterface), InterfaceCache), Error) {
   case options.resolver(path) {
     Error(_) -> Ok(#(None, cache))
@@ -712,7 +721,7 @@ fn resolve_uncached(
             cache,
             path,
             module,
-            best_effort,
+            best_effort:,
           ))
           Ok(#(Some(interface), dict.insert(cache, path, interface)))
         }

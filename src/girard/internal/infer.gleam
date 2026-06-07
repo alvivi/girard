@@ -227,10 +227,13 @@ fn fresh(st: State) -> #(Type, State) {
   #(Var(id), st)
 }
 
-fn var_id(type_: Type) -> Int {
+/// The id of a type variable. Callers pass freshly-minted `Var`s (custom-type
+/// parameters, instantiated constructor heads), so a non-`Var` is `Error` rather
+/// than a fabricated id.
+fn var_id(type_: Type) -> Result(Int, Nil) {
   case type_ {
-    Var(id) -> id
-    _ -> 0
+    Var(id) -> Ok(id)
+    _ -> Error(Nil)
   }
 }
 
@@ -413,7 +416,7 @@ fn resolve_aliases(
       Error(_) -> #(resolved, st)
       Ok(#(params, body)) -> {
         let #(param_vars, st) = fresh_n(st, list.length(params))
-        let param_ids = list.map(param_vars, var_id)
+        let param_ids = list.filter_map(param_vars, var_id)
         let names = dict.from_list(list.zip(params, param_vars))
         let #(type_, st) = hydrate_in(env, names, st, body)
         #(dict.insert(resolved, name, #(param_ids, type_)), st)
@@ -1186,7 +1189,7 @@ fn infer_record_update(
       // fields not shared by every variant of a multi-variant type.
       let to_record_params =
         dict.from_list(list.zip(
-          list.map(type_parameters, var_id),
+          list.filter_map(type_parameters, var_id),
           record_parameters,
         ))
       use st <- result.try(
@@ -2887,7 +2890,6 @@ fn shared_accessors(
   }
 }
 
-/// Look up the accessor scheme for `type_name`.`label`.
 /// Look up the accessor scheme for `label` on a (resolved) record type. The
 /// accessors live with whichever module defined the type — the current module,
 /// or an imported one identified by the type's origin module.
