@@ -1,0 +1,59 @@
+# girard benchmark corpus — a deterministic, size-stratified sample of
+# real hex packages from the sweep cache (every 17th of the 884 built
+# packages <=15MB, sorted by source size). 52 packages / ~769 modules.
+# Regenerate-independent: edit by hand if a package leaves the cache.
+# One package name per line; blank lines and # comments are ignored.
+#
+# Used by scripts/bench.sh. Keep stable so wall-time deltas stay comparable.
+packkit
+monks_of_style
+lustre
+gleamgen
+spacetraders_models
+butterbee
+gs
+builder
+gliff
+glqr
+hanguleam
+chilp
+off_topic
+flwr_oauth2
+discord_gleam_stratus
+httpp
+gleam_http
+glink
+gramps
+asset
+llmgleam
+kielet_gen
+eyg_interpreter
+fluo
+glenvy
+non_empty_list
+easings_gleam
+cors_builder
+dot_env
+mineflayer
+kafein
+etch_erlang
+dysmal
+cake_pog
+fabulous
+p5js_gleam
+gulid
+drift_js
+iterators
+diced
+decepticon
+outcome
+gpop
+counter
+roar
+logging
+fiction_toml
+rank
+immutable_lru
+glevenshtein
+dotenv_gleam
+ogre

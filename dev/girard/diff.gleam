@@ -90,32 +90,45 @@ fn diff(package: String, json_path: String, pkg_root: String) -> Nil {
       ),
     )
 
-  let #(checked, mismatches, errored) =
-    list.fold(dict.to_list(modules), #(0, 0, 0), fn(acc, entry) {
-      let #(checked, mismatches, errored) = acc
-      let #(module_name, oracle_exprs) = entry
-      let path =
-        pkg_root <> "/" <> package <> "/src/" <> module_name <> ".gleam"
-      case simplifile.read(path) {
-        Error(_) -> #(checked, mismatches, errored)
-        Ok(source) -> {
-          let options =
-            girard.default_options()
-            |> girard.with_resolver(resolver)
-            |> girard.with_target(target)
-          case girard.annotate(source, options) {
-            Error(e) -> {
-              io.println(module_name <> ": ERROR " <> girard.describe_error(e))
-              #(checked, mismatches, errored + 1)
-            }
-            Ok(annotated) -> {
-              let found = compare(module_name, annotated, oracle_exprs)
-              #(checked + 1, mismatches + found, errored)
+  let options =
+    girard.default_options()
+    |> girard.with_resolver(resolver)
+    |> girard.with_target(target)
+
+  // Thread one interface cache across the package's modules so each shared
+  // import is inferred once for the whole package, not once per importing
+  // module. Strict per-module semantics are unchanged (annotate_with_cache
+  // fails a module exactly as annotate does); only the redundant work is shared.
+  let #(checked, mismatches, errored, _cache) =
+    list.fold(
+      dict.to_list(modules),
+      #(0, 0, 0, girard.new_cache()),
+      fn(acc, entry) {
+        let #(checked, mismatches, errored, cache) = acc
+        let #(module_name, oracle_exprs) = entry
+        let path =
+          pkg_root <> "/" <> package <> "/src/" <> module_name <> ".gleam"
+        case simplifile.read(path) {
+          Error(_) -> #(checked, mismatches, errored, cache)
+          Ok(source) -> {
+            let #(result, cache) =
+              girard.annotate_with_cache(source, options, cache)
+            case result {
+              Error(e) -> {
+                io.println(
+                  module_name <> ": ERROR " <> girard.describe_error(e),
+                )
+                #(checked, mismatches, errored + 1, cache)
+              }
+              Ok(annotated) -> {
+                let found = compare(module_name, annotated, oracle_exprs)
+                #(checked + 1, mismatches + found, errored, cache)
+              }
             }
           }
         }
-      }
-    })
+      },
+    )
 
   io.println(
     "diff "

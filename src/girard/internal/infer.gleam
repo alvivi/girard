@@ -65,6 +65,15 @@ pub type Env {
     /// Value bindings in scope: locals, parameters, top-level functions and
     /// custom-type constructors.
     values: Dict(String, Scheme),
+    /// The subset of `values` that can contribute free type variables to the
+    /// environment — bindings whose scheme has a type variable not bound by its
+    /// own quantifier (live monomorphic bindings: locals, parameters, SCC
+    /// members mid-inference). Fully-generalized and imported schemes quantify
+    /// every variable in their type, so they contribute nothing regardless of
+    /// the substitution and are omitted. `env_free_vars` scans only these, which
+    /// are few, instead of every binding in scope (mostly closed imports).
+    /// Maintained alongside `values` in `bind_value`, its sole writer.
+    open_values: Dict(String, Scheme),
     /// Locally-defined type aliases: name -> (parameter names, aliased type
     /// AST), expanded during hydration in this module's environment.
     aliases: Dict(String, #(List(String), glance.Type)),
@@ -97,6 +106,14 @@ pub type Env {
     /// Imported modules available for qualified access, keyed by the alias used
     /// in source (e.g. `list` for `import gleam/list`).
     modules: Dict(String, ModuleInterface),
+    /// Every interface reachable from `modules` (directly imported modules and,
+    /// transitively, the modules they expose), keyed by its real module name
+    /// (`interface.name`, the full path — unique per run, unlike an alias). A
+    /// flat index of the same graph `modules` spans, maintained alongside it in
+    /// `import_qualified`, so resolving a type's accessors by origin module
+    /// (`accessors_of_module`) is one `dict.get` rather than a transitive walk
+    /// of the whole interface graph on every field access.
+    module_index: Dict(String, ModuleInterface),
     /// Names of the strongly-connected-component members currently being
     /// inferred. A reference to one of these resolves its bound scheme through
     /// the current substitution before instantiating, so a type the provider's
@@ -146,6 +163,7 @@ fn is_rigid(st: State, id: Int) -> Bool {
 fn new_env() -> Env {
   Env(
     values: dict.new(),
+    open_values: dict.new(),
     aliases: dict.new(),
     imported_aliases: dict.new(),
     accessors: dict.new(),
@@ -154,6 +172,7 @@ fn new_env() -> Env {
     variants: dict.new(),
     current_module: "",
     modules: dict.new(),
+    module_index: dict.new(),
     live: set.new(),
   )
 }
@@ -318,8 +337,35 @@ fn bind_value(env: Env, name: String, scheme: Scheme) -> Env {
   Env(
     ..env,
     values: dict.insert(env.values, name, scheme),
+    // Track whether this binding can contribute environment free variables, so
+    // `env_free_vars` need not re-walk every closed scheme. A closed scheme
+    // shadowing an open one must evict the stale open entry, hence the delete.
+    open_values: case scheme_is_closed(scheme) {
+      True -> dict.delete(env.open_values, name)
+      False -> dict.insert(env.open_values, name, scheme)
+    },
     variants: dict.delete(env.variants, name),
   )
+}
+
+/// Whether a scheme can never contribute a free variable to the environment:
+/// every type variable in its type is bound by its own quantifier. This is
+/// purely syntactic and so substitution-independent — `scheme_free_vars`
+/// resolves and collects only variables *not* in `bound`, so a scheme with none
+/// such yields nothing for any substitution, now or later.
+fn scheme_is_closed(scheme: Scheme) -> Bool {
+  let bound = set.from_list(scheme.vars)
+  all_vars_bound(scheme.type_, bound)
+}
+
+fn all_vars_bound(type_: Type, bound: Set(Int)) -> Bool {
+  case type_ {
+    Var(id) -> set.contains(bound, id)
+    Named(_, _, args) -> list.all(args, all_vars_bound(_, bound))
+    Fn(args, ret) ->
+      list.all(args, all_vars_bound(_, bound)) && all_vars_bound(ret, bound)
+    Tuple(elements) -> list.all(elements, all_vars_bound(_, bound))
+  }
 }
 
 /// Look up a value's scheme in the environment.
@@ -407,7 +453,31 @@ pub fn import_qualified(
     dict.fold(env.modules, interface.modules, fn(acc, alias, interface) {
       dict.insert(acc, alias, interface)
     })
-  Env(..env, modules: dict.insert(modules, alias, interface))
+  Env(
+    ..env,
+    modules: dict.insert(modules, alias, interface),
+    // Index the newly reachable interfaces by real name. The bound interface's
+    // transitive closure covers everything merged in above (each merged module
+    // is itself within that closure), so one walk keeps the index complete.
+    module_index: index_interface(env.module_index, interface),
+  )
+}
+
+/// Add `interface` and every interface it transitively exposes to `index`,
+/// keyed by real module name. First insert wins (a name already present is left
+/// as-is), which both guards the DAG against re-walking shared modules and is
+/// unambiguous: a real module name resolves to one inferred interface per run.
+fn index_interface(
+  index: Dict(String, ModuleInterface),
+  interface: ModuleInterface,
+) -> Dict(String, ModuleInterface) {
+  // Already indexed: stop. Guards the DAG against re-walking shared modules.
+  use <- bool.guard(when: dict.has_key(index, interface.name), return: index)
+  dict.fold(
+    interface.modules,
+    dict.insert(index, interface.name, interface),
+    fn(acc, _alias, nested) { index_interface(acc, nested) },
+  )
 }
 
 /// Bring a single value (function/constant/constructor) into scope unqualified.
@@ -503,7 +573,10 @@ fn free_vars_loop(type_: Type, acc: List(Int)) -> List(Int) {
 }
 
 fn env_free_vars(st: State, env: Env) -> List(Int) {
-  dict.fold(env.values, [], fn(acc, _name, scheme) {
+  // Only open bindings can contribute; closed schemes (the bulk — every import
+  // and generalized definition) are omitted from `open_values`, so this scans a
+  // handful of live monomorphic bindings rather than the whole environment.
+  dict.fold(env.open_values, [], fn(acc, _name, scheme) {
     // A scheme's quantified variables are bound *within the scheme*; they must
     // not be resolved against the ambient substitution. This matters because
     // imported schemes carry variable ids minted in their own module, which can
@@ -2839,46 +2912,16 @@ fn accessors_of_module(
   env: Env,
   module: String,
 ) -> Dict(String, Dict(String, Scheme)) {
+  // A type can surface from a module the current one never imports directly (a
+  // helper returning another module's record), and an alias collision can evict
+  // that module from the alias-keyed `modules` map — so resolve by origin name
+  // through `module_index`, which holds the whole transitively-reachable graph.
   case module == env.current_module {
     True -> env.accessors
     False ->
-      case find_module_interface(dict.values(env.modules), module, []) {
+      case dict.get(env.module_index, module) {
         Ok(interface) -> interface.accessors
         Error(_) -> env.accessors
-      }
-  }
-}
-
-/// Find an interface for `target` by module name, searching the directly
-/// reachable interfaces and, transitively, the modules they expose. A type can
-/// surface from a module the current one never imports directly (a helper that
-/// returns another module's record), and an alias collision can evict that
-/// module from the top-level alias map — so resolving accessors by origin name
-/// must look through the nested `modules` maps too. `seen` guards the DAG.
-fn find_module_interface(
-  interfaces: List(ModuleInterface),
-  target: String,
-  seen: List(String),
-) -> Result(ModuleInterface, Nil) {
-  case interfaces {
-    [] -> Error(Nil)
-    [interface, ..rest] ->
-      case interface.name == target {
-        True -> Ok(interface)
-        False ->
-          case list.contains(seen, interface.name) {
-            True -> find_module_interface(rest, target, seen)
-            False ->
-              case
-                find_module_interface(dict.values(interface.modules), target, [
-                  interface.name,
-                  ..seen
-                ])
-              {
-                Ok(found) -> Ok(found)
-                Error(_) -> find_module_interface(rest, target, seen)
-              }
-          }
       }
   }
 }
