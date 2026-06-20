@@ -875,7 +875,7 @@ fix is required, add a regression test and link the commit.
 | kv_sessions_postgres_adapter | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | kvite | ✅ clean |  |
 | lamb | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
-| lancaster_stemmer | 📝 note | glance kind B: a string-prefix concatenation pattern with a *discarded* rest, `"a" as letter <> _` (a named rest like `<> rest` parses; `<> _` does not). |
+| lancaster_stemmer | ✅ clean | was glance kind B (string-prefix concat with discarded rest, `"a" as letter <> _`); parses since glance 6.1.0. |
 | lang | ✅ clean |  |
 | langfuse_client | ✅ clean |  |
 | lanyard | ✅ clean |  |
