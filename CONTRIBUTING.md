@@ -100,9 +100,9 @@ record of that coverage.
   or this guide from source comments, changelog entries, or public docs.
 - **Doc-comment slashes.** `////` documents a module and `///` documents its
   public members. Use `//` for implementation notes and private entities.
-- **Public surface.** Treat `src/girard.gleam` and `src/girard/types.gleam` as
-  the stable API. Everything under `src/girard/internal/` is implementation
-  detail even where Gleam visibility is needed between modules.
+- **Public surface.** Treat `src/girard.gleam` as the stable API. Everything
+  under `src/girard/internal/` is implementation detail even where Gleam
+  visibility is needed between modules.
 - **No circular dependencies** between modules under `src/girard/internal/`.
 
 ## Changelog & commits

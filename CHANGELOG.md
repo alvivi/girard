@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Consolidated the public API into a single `girard` module. The `Type`,
+  `Scheme`, and `Error` types and their constructors, previously exposed from
+  `girard/types`, now live in `girard`, and the `girard/types` module has been
+  removed. This is a breaking change to the import path; update imports:
+
+  ```gleam
+  // Before
+  import girard
+  import girard/types.{type Type, Fn, Named}
+
+  // After
+  import girard.{type Type, Fn, Named}
+  ```
+
 ## [1.1.1] - 2026-06-20
 
 ### Changed

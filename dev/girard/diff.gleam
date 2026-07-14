@@ -10,9 +10,7 @@
 //// skipped, as are spans girard does not annotate.
 
 import argv
-import girard
-import girard/internal/printer
-import girard/types.{type Type, Fn, Named, Tuple, Var}
+import girard.{type Type, Fn, Named, Tuple, Var}
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode.{type Decoder}
 import gleam/int
@@ -154,7 +152,7 @@ fn compare(
       dict.insert(
         acc,
         #(a.span.start, a.span.end),
-        canonicalize(printer.to_string(a.type_)),
+        canonicalize(girard.type_to_string(a.type_)),
       )
     })
   let theirs =
@@ -163,8 +161,9 @@ fn compare(
       dict.upsert(acc, #(start, end), fn(existing) {
         case existing {
           option.Some(s) ->
-            set.insert(s, canonicalize(printer.to_string(type_)))
-          option.None -> set.from_list([canonicalize(printer.to_string(type_))])
+            set.insert(s, canonicalize(girard.type_to_string(type_)))
+          option.None ->
+            set.from_list([canonicalize(girard.type_to_string(type_))])
         }
       })
     })
