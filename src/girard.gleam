@@ -108,7 +108,7 @@ pub type Target {
   JavaScript
 }
 
-/// A top-level definition that participates in the dependency graph.
+// A top-level definition that participates in the dependency graph.
 type Def {
   FunctionDef(glance.Function)
   ConstantDef(glance.Constant)
@@ -121,7 +121,7 @@ fn def_name(def: Def) -> String {
   }
 }
 
-/// `#(value references, field-access qualifier names)` of a definition.
+// `#(value references, field-access qualifier names)` of a definition.
 fn def_refs(def: Def) -> #(List(String), List(String)) {
   case def {
     FunctionDef(f) -> reference.in_function(f)
@@ -324,18 +324,18 @@ pub fn annotate_package(
   results
 }
 
-/// Interfaces resolved so far in this run, keyed by module path. Resolving a
-/// module is expensive (it infers the whole module), and a deep import graph
-/// imports the same dependency many times; memoizing keeps each module inferred
-/// once rather than re-inferring it exponentially.
+// Interfaces resolved so far in this run, keyed by module path. Resolving a
+// module is expensive (it infers the whole module), and a deep import graph
+// imports the same dependency many times; memoizing keeps each module inferred
+// once rather than re-inferring it exponentially.
 type InterfaceCache =
   dict.Dict(String, ModuleInterface)
 
 // --- Module inference ------------------------------------------------------
 
-/// Fully infer a module: resolve imports, register types, and infer every
-/// definition in dependency order. Returns the final environment and state
-/// plus the module's public interface.
+// Fully infer a module: resolve imports, register types, and infer every
+// definition in dependency order. Returns the final environment and state
+// plus the module's public interface.
 fn infer_module(
   options: Options,
   loading: Set(String),
@@ -479,9 +479,9 @@ fn infer_defs(
   }
 }
 
-/// One best-effort step over a strongly-connected component: on success adopt
-/// the new environment; on failure keep the prior one (discarding the
-/// component's partial work) and record every definition in it as skipped.
+// One best-effort step over a strongly-connected component: on success adopt
+// the new environment; on failure keep the prior one (discarding the
+// component's partial work) and record every definition in it as skipped.
 fn best_effort_group(
   acc: #(#(Env, State), List(#(String, Error))),
   group: List(Def),
@@ -496,23 +496,23 @@ fn best_effort_group(
   }
 }
 
-/// Infer one strongly-connected component of mutually recursive definitions,
-/// then generalize each against the surrounding environment and add it back for
-/// later components.
-///
-/// A function with signature variables is pre-registered at a scheme over those
-/// variables so recursion and siblings see it polymorphically; its body is
-/// checked against the signature with those variables rigid, and within its own
-/// body it sees itself at the rigid monotype (no polymorphic recursion). Every
-/// other definition is inferred monomorphically against a fresh placeholder.
-/// The members are marked *live* (see `mark_live`): a reference to a
-/// sibling resolves its scheme through the current substitution, so once a
-/// member's body has settled an unannotated part (absorbing it into a signature
-/// variable) a later sibling sees the resolved type — the compiler's shared
-/// mutable cells, reproduced through girard's threaded substitution. Because of
-/// that, bodies are inferred *provider-first*: a member whose signature has an
-/// unannotated part is typed before the fully-annotated members that consume it
-/// (a dependency-respecting order within the component, as Tarjan provides).
+// Infer one strongly-connected component of mutually recursive definitions,
+// then generalize each against the surrounding environment and add it back for
+// later components.
+//
+// A function with signature variables is pre-registered at a scheme over those
+// variables so recursion and siblings see it polymorphically; its body is
+// checked against the signature with those variables rigid, and within its own
+// body it sees itself at the rigid monotype (no polymorphic recursion). Every
+// other definition is inferred monomorphically against a fresh placeholder.
+// The members are marked *live* (see `mark_live`): a reference to a
+// sibling resolves its scheme through the current substitution, so once a
+// member's body has settled an unannotated part (absorbing it into a signature
+// variable) a later sibling sees the resolved type — the compiler's shared
+// mutable cells, reproduced through girard's threaded substitution. Because of
+// that, bodies are inferred *provider-first*: a member whose signature has an
+// unannotated part is typed before the fully-annotated members that consume it
+// (a dependency-respecting order within the component, as Tarjan provides).
 fn infer_group(
   env: Env,
   st: State,
@@ -584,18 +584,18 @@ fn infer_group(
   Ok(#(env, st))
 }
 
-/// A member of a strongly-connected component during inference.
+// A member of a strongly-connected component during inference.
 type GroupItem {
-  /// A fully-annotated function: bound at its declared scheme up front; its body
-  /// is checked against the signature (rigid variables).
+  // A fully-annotated function: bound at its declared scheme up front; its body
+  // is checked against the signature (rigid variables).
   AnnotatedDef(
     def: Def,
     function: glance.Function,
     params: List(Type),
     return_type: Type,
   )
-  /// Any other definition: inferred monomorphically against `var`, then
-  /// generalized.
+  // Any other definition: inferred monomorphically against `var`, then
+  // generalized.
   PlaceholderDef(def: Def, var: Type)
 }
 
@@ -613,9 +613,9 @@ fn placeholder(
   )
 }
 
-/// Pre-register one SCC member: a function with signature variables is bound at
-/// its declared scheme (`AnnotatedDef`); any other definition gets a fresh
-/// monomorphic placeholder.
+// Pre-register one SCC member: a function with signature variables is bound at
+// its declared scheme (`AnnotatedDef`); any other definition gets a fresh
+// monomorphic placeholder.
 fn prereg_def(
   env: Env,
   items: List(GroupItem),
@@ -678,7 +678,7 @@ fn process_imports(
   })
 }
 
-/// Bring an import's qualified alias and unqualified values/types into scope.
+// Bring an import's qualified alias and unqualified values/types into scope.
 fn import_items(
   env: Env,
   import_: glance.Import,
@@ -749,9 +749,9 @@ fn resolve_uncached(
   }
 }
 
-/// The name under which an import is accessible for qualified access, or
-/// `Error` when the module is imported with a discarded alias (`as _x`) and so
-/// has no qualified name at all.
+// The name under which an import is accessible for qualified access, or
+// `Error` when the module is imported with a discarded alias (`as _x`) and so
+// has no qualified name at all.
 fn qualified_alias(import_: glance.Import) -> Result(String, Nil) {
   case import_.alias {
     Some(glance.Named(alias)) -> Ok(alias)
@@ -767,9 +767,9 @@ fn last_segment(path: String) -> String {
   }
 }
 
-/// Keep only the definitions and imports compiled for `target`: those with no
-/// `@target` attribute, or one naming the active target. A definition annotated
-/// for the other target is dropped, exactly as the compiler omits it.
+// Keep only the definitions and imports compiled for `target`: those with no
+// `@target` attribute, or one naming the active target. A definition annotated
+// for the other target is dropped, exactly as the compiler omits it.
 fn for_target(module: glance.Module, target: Target) -> glance.Module {
   glance.Module(
     imports: list.filter(module.imports, on_target(_, target)),
@@ -838,12 +838,12 @@ fn public_type_names(module: glance.Module) -> List(String) {
   list.append(types, aliases)
 }
 
-/// Public types whose field accessors are reachable from other modules: public,
-/// non-opaque custom types. An `opaque` type's fields are private to its
-/// defining module, so its accessors are not exported — a same-named module
-/// function then wins over the (inaccessible) field at an external call site, as
-/// the compiler does (kata's opaque `Schema` with a `decode` field and a
-/// `decode` function).
+// Public types whose field accessors are reachable from other modules: public,
+// non-opaque custom types. An `opaque` type's fields are private to its
+// defining module, so its accessors are not exported — a same-named module
+// function then wins over the (inaccessible) field at an external call site, as
+// the compiler does (kata's opaque `Schema` with a `decode` field and a
+// `decode` function).
 fn public_accessor_type_names(module: glance.Module) -> List(String) {
   list.filter_map(module.custom_types, fn(d) {
     case d.definition.publicity, d.definition.opaque_ {
@@ -909,8 +909,8 @@ fn render(module: glance.Module, env: Env, st: State) -> AnnotatedModule {
   )
 }
 
-/// The inferred (generalized) scheme of each definition, in source order.
-/// Definitions the environment somehow lacks are skipped.
+// The inferred (generalized) scheme of each definition, in source order.
+// Definitions the environment somehow lacks are skipped.
 fn collect_schemes(defs: List(Def), env: Env) -> List(#(String, Scheme)) {
   list.filter_map(defs, fn(def) {
     let name = def_name(def)
@@ -1036,7 +1036,7 @@ pub fn main() -> Nil {
   }
 }
 
-/// Why the CLI could not read its input.
+// Why the CLI could not read its input.
 type InputError {
   FileUnreadable(path: String)
   StdinUnreadable
@@ -1087,110 +1087,110 @@ Output: each top-level definition's inferred signature, then one
 type State {
   State(
     next_id: Int,
-    /// Bound type variables. Absence means unbound.
+    // Bound type variables. Absence means unbound.
     subst: Dict(Int, Type),
-    /// Inferred type recorded for each annotated source span, in reverse order
-    /// of discovery. Types are stored "live" and zonked at the end.
+    // Inferred type recorded for each annotated source span, in reverse order
+    // of discovery. Types are stored "live" and zonked at the end.
     annotations: List(#(glance.Span, Type)),
-    /// Field accesses and tuple indexes whose container type was not yet known
-    /// when encountered; resolved by `resolve_pending` once inference has fixed
-    /// the container type (deferred resolution, like the real compiler).
+    // Field accesses and tuple indexes whose container type was not yet known
+    // when encountered; resolved by `resolve_pending` once inference has fixed
+    // the container type (deferred resolution, like the real compiler).
     pending: List(Pending),
-    /// Variable ids that are *rigid*: a type variable written in a function's
-    /// signature annotation, skolemized for that function's body. A rigid var
-    /// unifies only with itself or a flexible var (which binds to it), never
-    /// with a concrete type or a different rigid — matching the compiler, which
-    /// keeps annotated type variables generic and rejects pinning them.
+    // Variable ids that are *rigid*: a type variable written in a function's
+    // signature annotation, skolemized for that function's body. A rigid var
+    // unifies only with itself or a flexible var (which binds to it), never
+    // with a concrete type or a different rigid — matching the compiler, which
+    // keeps annotated type variables generic and rejects pinning them.
     rigid: Set(Int),
   )
 }
 
-/// A deferred access awaiting its container's type.
+// A deferred access awaiting its container's type.
 type Pending {
-  /// `record.label` — the field type goes in `result`.
+  // `record.label` — the field type goes in `result`.
   PendingField(container: Type, label: String, result: Type)
-  /// `tuple.index` — the element type goes in `result`.
+  // `tuple.index` — the element type goes in `result`.
   PendingIndex(container: Type, index: Int, result: Type)
 }
 
 type Env {
   Env(
-    /// Value bindings in scope: locals, parameters, top-level functions and
-    /// custom-type constructors.
+    // Value bindings in scope: locals, parameters, top-level functions and
+    // custom-type constructors.
     values: Dict(String, Scheme),
-    /// The subset of `values` that can contribute free type variables to the
-    /// environment — bindings whose scheme has a type variable not bound by its
-    /// own quantifier (live monomorphic bindings: locals, parameters, SCC
-    /// members mid-inference). Fully-generalized and imported schemes quantify
-    /// every variable in their type, so they contribute nothing regardless of
-    /// the substitution and are omitted. `env_free_vars` scans only these, which
-    /// are few, instead of every binding in scope (mostly closed imports).
-    /// Maintained alongside `values` in `bind_value`, its sole writer.
+    // The subset of `values` that can contribute free type variables to the
+    // environment — bindings whose scheme has a type variable not bound by its
+    // own quantifier (live monomorphic bindings: locals, parameters, SCC
+    // members mid-inference). Fully-generalized and imported schemes quantify
+    // every variable in their type, so they contribute nothing regardless of
+    // the substitution and are omitted. `env_free_vars` scans only these, which
+    // are few, instead of every binding in scope (mostly closed imports).
+    // Maintained alongside `values` in `bind_value`, its sole writer.
     open_values: Dict(String, Scheme),
-    /// Locally-defined type aliases: name -> (parameter names, aliased type
-    /// AST), expanded during hydration in this module's environment.
+    // Locally-defined type aliases: name -> (parameter names, aliased type
+    // AST), expanded during hydration in this module's environment.
     aliases: Dict(String, #(List(String), glance.Type)),
-    /// Type aliases brought in by unqualified imports, already resolved to a
-    /// type with the alias's parameters as variables (param ids + body), so
-    /// they need no re-hydration in this module's environment.
+    // Type aliases brought in by unqualified imports, already resolved to a
+    // type with the alias's parameters as variables (param ids + body), so
+    // they need no re-hydration in this module's environment.
     imported_aliases: Dict(String, #(List(Int), Type)),
-    /// Record field accessors: type name -> label -> a scheme for
-    /// `fn(record) -> field`, generalized over the type's parameters.
+    // Record field accessors: type name -> label -> a scheme for
+    // `fn(record) -> field`, generalized over the type's parameters.
     accessors: Dict(String, Dict(String, Scheme)),
-    /// In-scope type names -> (origin module, origin name, arity). Covers types
-    /// defined in the current module and types brought in by unqualified
-    /// imports. Used during hydration to resolve a bare type name to its module
-    /// and to the name it has *there* — an `import x.{type T as U}` is in scope
-    /// as `U` but must hydrate to `x`'s `T`, not a phantom `x.U`.
+    // In-scope type names -> (origin module, origin name, arity). Covers types
+    // defined in the current module and types brought in by unqualified
+    // imports. Used during hydration to resolve a bare type name to its module
+    // and to the name it has *there* — an `import x.{type T as U}` is in scope
+    // as `U` but must hydrate to `x`'s `T`, not a phantom `x.U`.
     local_types: Dict(String, #(String, String, Int)),
-    /// Field maps for callables (functions and constructors): name -> the
-    /// label of each positional parameter (`None` where unlabelled). Used to
-    /// reorder labelled and shorthand arguments at call/pattern sites.
+    // Field maps for callables (functions and constructors): name -> the
+    // label of each positional parameter (`None` where unlabelled). Used to
+    // reorder labelled and shorthand arguments at call/pattern sites.
     field_maps: Dict(String, List(Option(String))),
-    /// Variables that a pattern has narrowed to a specific constructor variant
-    /// (e.g. `Element(..) as e`), mapping the variable to that variant's
-    /// `label -> field type` for the bound value. This lets `e.field` reach a
-    /// field present in only some variants, mirroring the compiler's inferred
-    /// variant narrowing. Field types are tied to the variable's own type.
+    // Variables that a pattern has narrowed to a specific constructor variant
+    // (e.g. `Element(..) as e`), mapping the variable to that variant's
+    // `label -> field type` for the bound value. This lets `e.field` reach a
+    // field present in only some variants, mirroring the compiler's inferred
+    // variant narrowing. Field types are tied to the variable's own type.
     variants: Dict(String, Dict(String, Type)),
-    /// The name of the module currently being inferred. Local types are minted
-    /// with this module so they stay distinct from imported types.
+    // The name of the module currently being inferred. Local types are minted
+    // with this module so they stay distinct from imported types.
     current_module: String,
-    /// Imported modules available for qualified access, keyed by the alias used
-    /// in source (e.g. `list` for `import gleam/list`).
+    // Imported modules available for qualified access, keyed by the alias used
+    // in source (e.g. `list` for `import gleam/list`).
     modules: Dict(String, ModuleInterface),
-    /// Every interface reachable from `modules` (directly imported modules and,
-    /// transitively, the modules they expose), keyed by its real module name
-    /// (`interface.name`, the full path — unique per run, unlike an alias). A
-    /// flat index of the same graph `modules` spans, maintained alongside it in
-    /// `import_qualified`, so resolving a type's accessors by origin module
-    /// (`accessors_of_module`) is one `dict.get` rather than a transitive walk
-    /// of the whole interface graph on every field access.
+    // Every interface reachable from `modules` (directly imported modules and,
+    // transitively, the modules they expose), keyed by its real module name
+    // (`interface.name`, the full path — unique per run, unlike an alias). A
+    // flat index of the same graph `modules` spans, maintained alongside it in
+    // `import_qualified`, so resolving a type's accessors by origin module
+    // (`accessors_of_module`) is one `dict.get` rather than a transitive walk
+    // of the whole interface graph on every field access.
     module_index: Dict(String, ModuleInterface),
-    /// Names of the strongly-connected-component members currently being
-    /// inferred. A reference to one of these resolves its bound scheme through
-    /// the current substitution before instantiating, so a type the provider's
-    /// already-inferred body has settled (an unannotated parameter absorbed into
-    /// a signature variable, say) is seen by a later sibling — the compiler's
-    /// shared mutable type cells, in girard's threaded substitution. Empty
-    /// outside an SCC, so finished schemes instantiate verbatim.
+    // Names of the strongly-connected-component members currently being
+    // inferred. A reference to one of these resolves its bound scheme through
+    // the current substitution before instantiating, so a type the provider's
+    // already-inferred body has settled (an unannotated parameter absorbed into
+    // a signature variable, say) is seen by a later sibling — the compiler's
+    // shared mutable type cells, in girard's threaded substitution. Empty
+    // outside an SCC, so finished schemes instantiate verbatim.
     live: Set(String),
   )
 }
 
-/// The public surface of a module, used when importing it elsewhere.
+// The public surface of a module, used when importing it elsewhere.
 type ModuleInterface {
   ModuleInterface(
     name: String,
     values: Dict(String, Scheme),
     types: Dict(String, #(String, String, Int)),
-    /// Public type aliases, resolved to a type with the alias's parameters as
-    /// variables (param ids + body).
+    // Public type aliases, resolved to a type with the alias's parameters as
+    // variables (param ids + body).
     aliases: Dict(String, #(List(Int), Type)),
     accessors: Dict(String, Dict(String, Scheme)),
     field_maps: Dict(String, List(Option(String))),
-    /// The modules this one imports, so a type it exposes from another module
-    /// (e.g. a `glance.Span` field) keeps its accessors reachable transitively.
+    // The modules this one imports, so a type it exposes from another module
+    // (e.g. a `glance.Span` field) keeps its accessors reachable transitively.
     modules: Dict(String, ModuleInterface),
   )
 }
@@ -1230,12 +1230,12 @@ fn new_env() -> Env {
   )
 }
 
-/// Set the name of the module currently being inferred.
+// Set the name of the module currently being inferred.
 fn set_module(env: Env, name: String) -> Env {
   Env(..env, current_module: name)
 }
 
-/// Register the field map (per-position labels) of a callable.
+// Register the field map (per-position labels) of a callable.
 fn register_field_map(
   env: Env,
   name: String,
@@ -1246,9 +1246,9 @@ fn register_field_map(
   Env(..env, field_maps: dict.insert(env.field_maps, name, labels))
 }
 
-/// Declare a local type name (and arity) so references to it during hydration
-/// resolve to the current module. Call this for every custom type before
-/// registering any of them, so forward references resolve correctly.
+// Declare a local type name (and arity) so references to it during hydration
+// resolve to the current module. Call this for every custom type before
+// registering any of them, so forward references resolve correctly.
 fn declare_type(env: Env, name: String, arity: Int) -> Env {
   Env(
     ..env,
@@ -1260,7 +1260,7 @@ fn declare_type(env: Env, name: String, arity: Int) -> Env {
   )
 }
 
-/// Register a type alias so references to it expand during hydration.
+// Register a type alias so references to it expand during hydration.
 fn register_type_alias(env: Env, alias: glance.TypeAlias) -> Env {
   Env(
     ..env,
@@ -1280,9 +1280,9 @@ fn fresh(st: State) -> #(Type, State) {
   #(Var(id), st)
 }
 
-/// The id of a type variable. Callers pass freshly-minted `Var`s (custom-type
-/// parameters, instantiated constructor heads), so a non-`Var` is `Error` rather
-/// than a fabricated id.
+// The id of a type variable. Callers pass freshly-minted `Var`s (custom-type
+// parameters, instantiated constructor heads), so a non-`Var` is `Error` rather
+// than a fabricated id.
 fn var_id(type_: Type) -> Result(Int, Nil) {
   case type_ {
     Var(id) -> Ok(id)
@@ -1290,26 +1290,26 @@ fn var_id(type_: Type) -> Result(Int, Nil) {
   }
 }
 
-/// Mint a fresh type variable (a thin wrapper over `fresh`).
+// Mint a fresh type variable (a thin wrapper over `fresh`).
 fn fresh_var(st: State) -> #(Type, State) {
   fresh(st)
 }
 
-/// Bind a value scheme into the environment (used to register top-level
-/// functions and constructors).
+// Bind a value scheme into the environment (used to register top-level
+// functions and constructors).
 fn define(env: Env, name: String, scheme: Scheme) -> Env {
   bind_value(env, name, scheme)
 }
 
-/// Mark `names` as the live members of the strongly-connected component being
-/// inferred, so a reference to one resolves its scheme through the current
-/// substitution before instantiating (see `Env.live`).
+// Mark `names` as the live members of the strongly-connected component being
+// inferred, so a reference to one resolves its scheme through the current
+// substitution before instantiating (see `Env.live`).
 fn mark_live(env: Env, names: List(String)) -> Env {
   Env(..env, live: set.from_list(names))
 }
 
-/// The initial environment and state, seeded with the prelude value
-/// constructors (`True`, `False`, `Nil`, `Ok`, `Error`).
+// The initial environment and state, seeded with the prelude value
+// constructors (`True`, `False`, `Nil`, `Ok`, `Error`).
 fn prelude() -> #(Env, State) {
   let st = new_state()
   let env =
@@ -1347,10 +1347,10 @@ fn prelude() -> #(Env, State) {
   #(env, st)
 }
 
-/// The implicit `gleam` prelude module's public interface, used to resolve
-/// `import gleam` / `import gleam.{Error as Err}`. The prelude has no source
-/// file; the compiler treats `gleam` as a built-in module exposing the prelude
-/// types and value constructors.
+// The implicit `gleam` prelude module's public interface, used to resolve
+// `import gleam` / `import gleam.{Error as Err}`. The prelude has no source
+// file; the compiler treats `gleam` as a built-in module exposing the prelude
+// types and value constructors.
 fn prelude_interface() -> ModuleInterface {
   let module = prelude_module
   let values =
@@ -1404,11 +1404,11 @@ fn bind_value(env: Env, name: String, scheme: Scheme) -> Env {
   )
 }
 
-/// Whether a scheme can never contribute a free variable to the environment:
-/// every type variable in its type is bound by its own quantifier. This is
-/// purely syntactic and so substitution-independent — `scheme_free_vars`
-/// resolves and collects only variables *not* in `bound`, so a scheme with none
-/// such yields nothing for any substitution, now or later.
+// Whether a scheme can never contribute a free variable to the environment:
+// every type variable in its type is bound by its own quantifier. This is
+// purely syntactic and so substitution-independent — `scheme_free_vars`
+// resolves and collects only variables *not* in `bound`, so a scheme with none
+// such yields nothing for any substitution, now or later.
 fn scheme_is_closed(scheme: Scheme) -> Bool {
   let bound = set.from_list(scheme.vars)
   all_vars_bound(scheme.type_, bound)
@@ -1424,15 +1424,15 @@ fn all_vars_bound(type_: Type, bound: Set(Int)) -> Bool {
   }
 }
 
-/// Look up a value's scheme in the environment.
+// Look up a value's scheme in the environment.
 fn lookup(env: Env, name: String) -> Result(Scheme, Nil) {
   dict.get(env.values, name)
 }
 
 // --- Module interfaces & imports -------------------------------------------
 
-/// Build the public interface of an inferred module by keeping only the named
-/// public values and types.
+// Build the public interface of an inferred module by keeping only the named
+// public values and types.
 fn build_interface(
   env: Env,
   st: State,
@@ -1454,10 +1454,10 @@ fn build_interface(
   )
 }
 
-/// Resolve each named public alias to a concrete type, in this module's full
-/// environment, with the alias's parameters as variables. Resolving here (not
-/// when the alias is used elsewhere) keeps the bodies' type references — which
-/// may be imported into this module — correctly attributed.
+// Resolve each named public alias to a concrete type, in this module's full
+// environment, with the alias's parameters as variables. Resolving here (not
+// when the alias is used elsewhere) keeps the bodies' type references — which
+// may be imported into this module — correctly attributed.
 fn resolve_aliases(
   env: Env,
   st: State,
@@ -1478,7 +1478,7 @@ fn resolve_aliases(
   }).0
 }
 
-/// Instantiate a resolved alias `#(param ids, body)` with concrete arguments.
+// Instantiate a resolved alias `#(param ids, body)` with concrete arguments.
 fn instantiate_alias(
   params: List(Int),
   body: Type,
@@ -1496,7 +1496,7 @@ fn take(d: Dict(String, v), keys: List(String)) -> Dict(String, v) {
   })
 }
 
-/// Make a module available for qualified access (`alias.value`/`alias.Type`).
+// Make a module available for qualified access (`alias.value`/`alias.Type`).
 fn import_qualified(
   env: Env,
   alias: String,
@@ -1519,10 +1519,10 @@ fn import_qualified(
   )
 }
 
-/// Add `interface` and every interface it transitively exposes to `index`,
-/// keyed by real module name. First insert wins (a name already present is left
-/// as-is), which both guards the DAG against re-walking shared modules and is
-/// unambiguous: a real module name resolves to one inferred interface per run.
+// Add `interface` and every interface it transitively exposes to `index`,
+// keyed by real module name. First insert wins (a name already present is left
+// as-is), which both guards the DAG against re-walking shared modules and is
+// unambiguous: a real module name resolves to one inferred interface per run.
 fn index_interface(
   index: Dict(String, ModuleInterface),
   interface: ModuleInterface,
@@ -1536,7 +1536,7 @@ fn index_interface(
   )
 }
 
-/// Bring a single value (function/constant/constructor) into scope unqualified.
+// Bring a single value (function/constant/constructor) into scope unqualified.
 fn import_value(
   env: Env,
   local: String,
@@ -1554,7 +1554,7 @@ fn import_value(
   }
 }
 
-/// Bring a single type into scope unqualified.
+// Bring a single type into scope unqualified.
 fn import_type(
   env: Env,
   local: String,
@@ -1583,7 +1583,7 @@ fn import_type(
 
 // --- Substitution: resolve / zonk / free variables -------------------------
 
-/// Follow bound variables one level to expose the head constructor.
+// Follow bound variables one level to expose the head constructor.
 fn resolve(st: State, type_: Type) -> Type {
   case type_ {
     Var(id) ->
@@ -1595,7 +1595,7 @@ fn resolve(st: State, type_: Type) -> Type {
   }
 }
 
-/// Fully apply the substitution, leaving only unbound variables as `Var`.
+// Fully apply the substitution, leaving only unbound variables as `Var`.
 fn zonk(st: State, type_: Type) -> Type {
   case resolve(st, type_) {
     Named(module, name, args) ->
@@ -1644,9 +1644,9 @@ fn env_free_vars(st: State, env: Env) -> List(Int) {
   })
 }
 
-/// Free variables of `type_`, treating `bound` ids as opaque: a bound id
-/// contributes nothing and is never resolved through the substitution, while a
-/// free id is resolved and its remaining variables collected.
+// Free variables of `type_`, treating `bound` ids as opaque: a bound id
+// contributes nothing and is never resolved through the substitution, while a
+// free id is resolved and its remaining variables collected.
 fn scheme_free_vars(
   st: State,
   type_: Type,
@@ -1750,8 +1750,8 @@ fn occurs(st: State, id: Int, type_: Type) -> Bool {
 
 // --- Generalization & instantiation ----------------------------------------
 
-/// Generalize a type into a scheme, quantifying variables that are free in the
-/// type but not in the surrounding environment.
+// Generalize a type into a scheme, quantifying variables that are free in the
+// type but not in the surrounding environment.
 fn generalize(st: State, env: Env, type_: Type) -> Scheme {
   let zonked = zonk(st, type_)
   let env_vars = env_free_vars(st, env)
@@ -1760,9 +1760,9 @@ fn generalize(st: State, env: Env, type_: Type) -> Scheme {
   Scheme(quantified, zonked)
 }
 
-/// Generalize a type over a specific set of candidate variable ids only (the
-/// rest stay monomorphic). Used for a `let`-bound function, which Gleam makes
-/// polymorphic over exactly the type variables written in its annotations.
+// Generalize a type over a specific set of candidate variable ids only (the
+// rest stay monomorphic). Used for a `let`-bound function, which Gleam makes
+// polymorphic over exactly the type variables written in its annotations.
 fn generalize_over(
   st: State,
   env: Env,
@@ -1790,7 +1790,7 @@ fn generalize_over(
   Scheme(quantified, zonked)
 }
 
-/// The type-variable names written in a `fn`'s parameter and return annotations.
+// The type-variable names written in a `fn`'s parameter and return annotations.
 fn fn_annotation_var_names(
   params: List(glance.FnParameter),
   return_annotation: Option(glance.Type),
@@ -1823,7 +1823,7 @@ fn type_var_names(ast: glance.Type) -> List(String) {
   }
 }
 
-/// Instantiate a scheme by replacing each quantified variable with a fresh one.
+// Instantiate a scheme by replacing each quantified variable with a fresh one.
 fn instantiate(st: State, scheme: Scheme) -> #(Type, State) {
   let #(mapping, st) =
     list.fold(scheme.vars, #(dict.new(), st), fn(acc, old) {
@@ -1834,12 +1834,12 @@ fn instantiate(st: State, scheme: Scheme) -> #(Type, State) {
   #(substitute(mapping, scheme.type_), st)
 }
 
-/// Instantiate `name`'s scheme. For a live SCC member, resolve its type through
-/// the current substitution first, so a variable the provider's body has since
-/// settled (e.g. an unannotated parameter absorbed into a quantified signature
-/// variable) is reflected — and then freshened along with the quantified set,
-/// exactly as the compiler's shared mutable cells propagate to a sibling. For
-/// any other binding the scheme is already final, so this is plain instantiate.
+// Instantiate `name`'s scheme. For a live SCC member, resolve its type through
+// the current substitution first, so a variable the provider's body has since
+// settled (e.g. an unannotated parameter absorbed into a quantified signature
+// variable) is reflected — and then freshened along with the quantified set,
+// exactly as the compiler's shared mutable cells propagate to a sibling. For
+// any other binding the scheme is already final, so this is plain instantiate.
 fn instantiate_in(
   env: Env,
   st: State,
@@ -1989,8 +1989,8 @@ fn infer_expr_inner(
   }
 }
 
-/// Check one record-update field: its new value (or shorthand variable) must
-/// match the field's declared type.
+// Check one record-update field: its new value (or shorthand variable) must
+// match the field's declared type.
 fn update_field(
   env: Env,
   st: State,
@@ -2013,8 +2013,8 @@ fn update_field(
   }
 }
 
-/// Check one bit-array segment's value and its size option against their
-/// expected types.
+// Check one bit-array segment's value and its size option against their
+// expected types.
 fn infer_bit_segment(
   env: Env,
   st: State,
@@ -2092,8 +2092,8 @@ fn infer_field_access(
   }
 }
 
-/// Field access where the container names a bound value: prefer a record field
-/// when the value's type has it, else a same-named module export.
+// Field access where the container names a bound value: prefer a record field
+// when the value's type has it, else a same-named module export.
 fn value_field(
   env: Env,
   st: State,
@@ -2136,8 +2136,8 @@ fn value_field(
   }
 }
 
-/// Field access where the container is not a bound value: a qualified module
-/// export takes precedence, else it is a record field on the container's value.
+// Field access where the container is not a bound value: a qualified module
+// export takes precedence, else it is a record field on the container's value.
 fn module_or_record(
   env: Env,
   st: State,
@@ -2169,7 +2169,7 @@ fn module_or_record(
   }
 }
 
-/// Resolve `record.label` for a known record type, returning the field type.
+// Resolve `record.label` for a known record type, returning the field type.
 fn field_type(
   env: Env,
   st: State,
@@ -2261,8 +2261,8 @@ fn infer_record_update(
   }
 }
 
-/// The per-position labels of a constructor, looked up locally or in the module
-/// that defines it.
+// The per-position labels of a constructor, looked up locally or in the module
+// that defines it.
 fn constructor_field_map(
   env: Env,
   module: Option(String),
@@ -2282,9 +2282,9 @@ fn constructor_field_map(
   }
 }
 
-/// If `expr` is a direct constructor call (`Ctor(..)` or `module.Ctor(..)`),
-/// its `#(module, constructor)`. Constructors are recognised by their leading
-/// upper-case letter, the Gleam naming convention.
+// If `expr` is a direct constructor call (`Ctor(..)` or `module.Ctor(..)`),
+// its `#(module, constructor)`. Constructors are recognised by their leading
+// upper-case letter, the Gleam naming convention.
 fn constructor_call(
   expr: glance.Expression,
 ) -> Result(#(Option(String), String), Nil) {
@@ -2314,10 +2314,10 @@ fn is_upper(name: String) -> Bool {
   }
 }
 
-/// Record, for a variable bound by `Ctor(..) as name`, that variant's labelled
-/// fields with types tied to `value_type` (the variable's own type). Later
-/// `name.field` reads from this even when the field is absent from other
-/// variants. Best-effort: on any failure the environment is left unchanged.
+// Record, for a variable bound by `Ctor(..) as name`, that variant's labelled
+// fields with types tied to `value_type` (the variable's own type). Later
+// `name.field` reads from this even when the field is absent from other
+// variants. Best-effort: on any failure the environment is left unchanged.
 fn record_variant(
   env: Env,
   st: State,
@@ -2399,9 +2399,9 @@ fn infer_fn(
   infer_lambda(env, st, params, return_annotation, body, seeds, None, names)
 }
 
-/// Infer a lambda whose parameters are seeded with `seed_params` (the expected
-/// argument types when known, otherwise fresh variables) and whose body is
-/// optionally checked against `expected_return`.
+// Infer a lambda whose parameters are seeded with `seed_params` (the expected
+// argument types when known, otherwise fresh variables) and whose body is
+// optionally checked against `expected_return`.
 fn infer_lambda(
   env: Env,
   st: State,
@@ -2450,11 +2450,11 @@ fn infer_lambda(
   Ok(#(Fn(param_types, body_type), st))
 }
 
-/// Infer the callee of a call. In call position a same-named module export
-/// wins over a record field of a shadowing value: `cache.events(cache)` calls
-/// the module's `events` function even though the `cache` value has an `events`
-/// field (the field is not callable). Outside call position the field wins
-/// (`compression.deflate` reads the field), handled by `infer_field_access`.
+// Infer the callee of a call. In call position a same-named module export
+// wins over a record field of a shadowing value: `cache.events(cache)` calls
+// the module's `events` function even though the `cache` value has an `events`
+// field (the field is not callable). Outside call position the field wins
+// (`compression.deflate` reads the field), handled by `infer_field_access`.
 fn infer_callee(
   env: Env,
   st: State,
@@ -2484,10 +2484,10 @@ fn infer_callee(
   }
 }
 
-/// Whether `name` is a local value whose `label` field is a function type — the
-/// signal that `name.label(..)` calls that field rather than a same-named
-/// module export. Inspects only the field's shape; any state changes from
-/// instantiation are discarded.
+// Whether `name` is a local value whose `label` field is a function type — the
+// signal that `name.label(..)` calls that field rather than a same-named
+// module export. Inspects only the field's shape; any state changes from
+// instantiation are discarded.
 fn field_is_callable(env: Env, st: State, name: String, label: String) -> Bool {
   case dict.get(env.values, name) {
     Error(_) -> False
@@ -2501,7 +2501,7 @@ fn field_is_callable(env: Env, st: State, name: String, label: String) -> Bool {
   }
 }
 
-/// Whether `record`'s `label` field resolves to a function type.
+// Whether `record`'s `label` field resolves to a function type.
 fn field_label_is_fn(env: Env, st: State, record: Type, label: String) -> Bool {
   case field_type(env, st, record, label) {
     Error(_) -> False
@@ -2558,9 +2558,9 @@ fn field_item(field: glance.Field(glance.Expression)) -> glance.Expression {
   }
 }
 
-/// Reorder labelled/shorthand call or pattern arguments into positional order
-/// using the callee's field map. If every argument is positional we don't need
-/// the field map (this also covers calls to anonymous functions).
+// Reorder labelled/shorthand call or pattern arguments into positional order
+// using the callee's field map. If every argument is positional we don't need
+// the field map (this also covers calls to anonymous functions).
 fn order_fields(
   env: Env,
   callee: glance.Expression,
@@ -2584,7 +2584,7 @@ fn order_fields(
   }
 }
 
-/// The field map (per-position labels) of a call's callee, if known.
+// The field map (per-position labels) of a call's callee, if known.
 fn callee_labels(
   env: Env,
   callee: glance.Expression,
@@ -2673,8 +2673,8 @@ fn label_index(
   }
 }
 
-/// Infer one call argument, accumulating labelled arguments by their position
-/// index and positional ones (reversed) for the free slots.
+// Infer one call argument, accumulating labelled arguments by their position
+// index and positional ones (reversed) for the free slots.
 fn classify_call_arg(
   env: Env,
   index_of: Dict(String, Int),
@@ -2737,9 +2737,9 @@ fn infer_capture(
   Ok(#(captured, record(st, span, captured)))
 }
 
-/// Infer each call field's value, keeping its label so the arguments can be
-/// reordered into positional order. Shorthand fields (`label:`) are resolved to
-/// the in-scope `label` and recorded as labelled.
+// Infer each call field's value, keeping its label so the arguments can be
+// reordered into positional order. Shorthand fields (`label:`) are resolved to
+// the in-scope `label` and recorded as labelled.
 fn infer_fields_typed(
   env: Env,
   st: State,
@@ -2881,9 +2881,9 @@ fn infer_pipe(
   }
 }
 
-/// Infer an expression and unify it against an expected type. A lambda is
-/// checked against the expected type so its parameters are seeded from the
-/// expected argument types before its body is inferred.
+// Infer an expression and unify it against an expected type. A lambda is
+// checked against the expected type so its parameters are seeded from the
+// expected argument types before its body is inferred.
 fn check(
   env: Env,
   st: State,
@@ -2947,8 +2947,8 @@ fn infer_statements(
   }
 }
 
-/// Desugar `use a, b <- rhs` followed by `rest` into `rhs(.., fn(a, b) { rest })`
-/// and infer the resulting call.
+// Desugar `use a, b <- rhs` followed by `rest` into `rhs(.., fn(a, b) { rest })`
+// and infer the resulting call.
 fn infer_use(
   env: Env,
   st: State,
@@ -2991,10 +2991,10 @@ fn infer_use(
   Ok(#(result, st))
 }
 
-/// Infer `use ... <- callee(args)`: the callback is the final positional
-/// argument. When the explicit arguments are all positional we simply append
-/// the callback; when some are labelled we place them by their field map and
-/// the callback fills the remaining slot (e.g. the `otherwise` of `bool.guard`).
+// Infer `use ... <- callee(args)`: the callback is the final positional
+// argument. When the explicit arguments are all positional we simply append
+// the callback; when some are labelled we place them by their field map and
+// the callback fills the remaining slot (e.g. the `otherwise` of `bool.guard`).
 fn infer_use_call(
   env: Env,
   st: State,
@@ -3049,8 +3049,8 @@ fn infer_use_call(
   }
 }
 
-/// Infer one statement, returning its type and the (possibly extended)
-/// environment to thread to following statements.
+// Infer one statement, returning its type and the (possibly extended)
+// environment to thread to following statements.
 fn infer_statement(
   env: Env,
   st: State,
@@ -3113,8 +3113,8 @@ fn infer_statement(
   }
 }
 
-/// The general `let pattern = value` case: infer the value, optionally check it
-/// against the binding's annotation, then bind the pattern monomorphically.
+// The general `let pattern = value` case: infer the value, optionally check it
+// against the binding's annotation, then bind the pattern monomorphically.
 fn infer_expr_assignment(
   env: Env,
   st: State,
@@ -3339,8 +3339,8 @@ fn infer_pattern(
   }
 }
 
-/// Check one bit-array *pattern* segment: bind the segment pattern and check
-/// its size option, threading the environment for any bound variables.
+// Check one bit-array *pattern* segment: bind the segment pattern and check
+// its size option, threading the environment for any bound variables.
 fn infer_bit_pattern_segment(
   env: Env,
   st: State,
@@ -3371,7 +3371,7 @@ fn infer_bit_pattern_segment(
   })
 }
 
-/// Pair a (possibly failed) new state with an unchanged environment.
+// Pair a (possibly failed) new state with an unchanged environment.
 fn with_env(
   env: Env,
   st: Result(State, Error),
@@ -3379,7 +3379,7 @@ fn with_env(
   result.map(st, fn(st) { #(env, st) })
 }
 
-/// Resolve a constructor name (optionally module-qualified) to its scheme.
+// Resolve a constructor name (optionally module-qualified) to its scheme.
 fn constructor_scheme(
   env: Env,
   module: Option(String),
@@ -3403,9 +3403,9 @@ fn constructor_scheme(
   }
 }
 
-/// The value type of a bit-array segment given its options and the default to
-/// use when no type option is present (`Int` for numeric segments, `String`
-/// for string-literal segments, etc.).
+// The value type of a bit-array segment given its options and the default to
+// use when no type option is present (`Int` for numeric segments, `String`
+// for string-literal segments, etc.).
 fn segment_value_type(
   options: List(glance.BitStringSegmentOption(t)),
   default: Type,
@@ -3425,8 +3425,8 @@ fn segment_value_type(
   })
 }
 
-/// Place constructor-pattern arguments into positional order, reordering by the
-/// constructor's field map and filling positions omitted via `..` with discards.
+// Place constructor-pattern arguments into positional order, reordering by the
+// constructor's field map and filling positions omitted via `..` with discards.
 fn order_pattern_args(
   env: Env,
   module: Option(String),
@@ -3493,7 +3493,7 @@ fn order_pattern_args(
   )
 }
 
-/// `[0, 1, ..., n - 1]`.
+// `[0, 1, ..., n - 1]`.
 fn indices(n: Int) -> List(Int) {
   indices_loop(n - 1, [])
 }
@@ -3505,16 +3505,16 @@ fn indices_loop(i: Int, acc: List(Int)) -> List(Int) {
 
 // --- Type annotation hydration ---------------------------------------------
 
-/// Convert a written type annotation into an internal `Type`. Unknown
-/// type-variable names become fresh unbound variables. Hydration never fails:
-/// references it cannot resolve fall back to a plausible interpretation.
+// Convert a written type annotation into an internal `Type`. Unknown
+// type-variable names become fresh unbound variables. Hydration never fails:
+// references it cannot resolve fall back to a plausible interpretation.
 fn hydrate(env: Env, st: State, ast: glance.Type) -> #(Type, State) {
   hydrate_with(env, dict.new(), st, ast).0
 }
 
-/// Resolve a (possibly qualified) type name applied to `arg_types` to a concrete
-/// `Type`, expanding aliases (local, unqualified-imported, or qualified) and
-/// attributing a named type to its origin module.
+// Resolve a (possibly qualified) type name applied to `arg_types` to a concrete
+// `Type`, expanding aliases (local, unqualified-imported, or qualified) and
+// attributing a named type to its origin module.
 fn resolve_named_type(
   env: Env,
   st: State,
@@ -3545,8 +3545,8 @@ fn resolve_unqualified_type(
   }
 }
 
-/// A non-local-alias unqualified name: an unqualified imported alias (already
-/// resolved), else a named type at its origin module, else the prelude.
+// A non-local-alias unqualified name: an unqualified imported alias (already
+// resolved), else a named type at its origin module, else the prelude.
 fn resolve_named_origin(env: Env, name: String, arg_types: List(Type)) -> Type {
   case dict.get(env.imported_aliases, name) {
     Ok(#(params, body)) -> instantiate_alias(params, body, arg_types)
@@ -3559,8 +3559,8 @@ fn resolve_named_origin(env: Env, name: String, arg_types: List(Type)) -> Type {
   }
 }
 
-/// A qualified type name `alias.Name`: resolve via the imported module's alias
-/// or type, falling back to the alias as the module name.
+// A qualified type name `alias.Name`: resolve via the imported module's alias
+// or type, falling back to the alias as the module name.
 fn resolve_qualified_type(
   env: Env,
   st: State,
@@ -3642,11 +3642,11 @@ fn hydrate_with(
 
 // --- Top-level definitions -------------------------------------------------
 
-/// Whether a function's signature names any type variable. The compiler makes
-/// such a variable rigid for the body and keeps the function polymorphic over it
-/// in its own recursion / SCC (rather than inferring it monomorphically against
-/// a placeholder, which would pin a phantom parameter). A function with only
-/// concrete annotations, or none, takes the ordinary placeholder path.
+// Whether a function's signature names any type variable. The compiler makes
+// such a variable rigid for the body and keeps the function polymorphic over it
+// in its own recursion / SCC (rather than inferring it monomorphically against
+// a placeholder, which would pin a phantom parameter). A function with only
+// concrete annotations, or none, takes the ordinary placeholder path.
 fn has_annotation_vars(function: glance.Function) -> Bool {
   function_annotation_var_names(function) != []
 }
@@ -3665,11 +3665,11 @@ fn function_annotation_var_names(function: glance.Function) -> List(String) {
   }
 }
 
-/// Hydrate a function's signature into a *skeleton*: each annotated part uses
-/// its written type with the signature's type variables made rigid (skolemized)
-/// for the body; each unannotated part is a fresh flexible variable (inferred
-/// and shared monomorphically, like a placeholder). Returns the parameter types,
-/// return type, and the ids made rigid; those ids are also recorded in `State`.
+// Hydrate a function's signature into a *skeleton*: each annotated part uses
+// its written type with the signature's type variables made rigid (skolemized)
+// for the body; each unannotated part is a fresh flexible variable (inferred
+// and shared monomorphically, like a placeholder). Returns the parameter types,
+// return type, and the ids made rigid; those ids are also recorded in `State`.
 fn signature_skeleton(
   env: Env,
   st: State,
@@ -3704,7 +3704,7 @@ fn signature_skeleton(
   #(list.reverse(rev_param_types), return_type, rigid_ids, st)
 }
 
-/// Bind a function's parameters to the given types in `env`.
+// Bind a function's parameters to the given types in `env`.
 fn bind_params(
   env: Env,
   function: glance.Function,
@@ -3719,8 +3719,8 @@ fn bind_params(
   })
 }
 
-/// Infer a fully-annotated function's body and check it against the declared
-/// return type. `@external` functions have no body and pass trivially.
+// Infer a fully-annotated function's body and check it against the declared
+// return type. `@external` functions have no body and pass trivially.
 fn check_body(
   env: Env,
   st: State,
@@ -3740,10 +3740,10 @@ fn check_body(
   }
 }
 
-/// The scheme a function with signature variables is bound at within its SCC:
-/// polymorphic over its rigid signature variables, but with any unannotated
-/// (flexible placeholder) parts left free, so they stay shared/monomorphic
-/// across the component until the body fixes them.
+// The scheme a function with signature variables is bound at within its SCC:
+// polymorphic over its rigid signature variables, but with any unannotated
+// (flexible placeholder) parts left free, so they stay shared/monomorphic
+// across the component until the body fixes them.
 fn rigid_scheme(
   rigid_ids: List(Int),
   param_types: List(Type),
@@ -3752,8 +3752,8 @@ fn rigid_scheme(
   Scheme(rigid_ids, Fn(param_types, return_type))
 }
 
-/// Generalize a function's final parameter/return types into a scheme,
-/// quantifying every variable still free after the body is inferred.
+// Generalize a function's final parameter/return types into a scheme,
+// quantifying every variable still free after the body is inferred.
 fn function_scheme(
   env: Env,
   st: State,
@@ -3763,16 +3763,16 @@ fn function_scheme(
   generalize(st, env, Fn(param_types, return_type))
 }
 
-/// The *monomorphic* scheme a fully-annotated function sees for itself inside
-/// its own body. Its signature variables stay rigid (un-quantified), so a
-/// self-recursive call must be at the same type — Gleam has no polymorphic
-/// recursion, and recursing at a concrete type where the signature is generic
-/// is a mismatch, exactly as the compiler reports.
+// The *monomorphic* scheme a fully-annotated function sees for itself inside
+// its own body. Its signature variables stay rigid (un-quantified), so a
+// self-recursive call must be at the same type — Gleam has no polymorphic
+// recursion, and recursing at a concrete type where the signature is generic
+// is a mismatch, exactly as the compiler reports.
 fn rigid_self_scheme(param_types: List(Type), return_type: Type) -> Scheme {
   Scheme([], Fn(param_types, return_type))
 }
 
-/// Infer a top-level function, returning its (still ungeneralized) `Fn` type.
+// Infer a top-level function, returning its (still ungeneralized) `Fn` type.
 fn infer_function(
   env: Env,
   st: State,
@@ -3828,8 +3828,8 @@ fn infer_function(
   }
 }
 
-/// Infer a module constant, returning its type (an annotation, if present, is
-/// applied).
+// Infer a module constant, returning its type (an annotation, if present, is
+// applied).
 fn infer_constant(
   env: Env,
   st: State,
@@ -3846,8 +3846,8 @@ fn infer_constant(
   }
 }
 
-/// Register a custom type's constructors as value schemes in the environment,
-/// generalized over the type's parameters.
+// Register a custom type's constructors as value schemes in the environment,
+// generalized over the type's parameters.
 fn register_custom_type(
   env: Env,
   st: State,
@@ -3915,8 +3915,8 @@ fn register_custom_type(
   #(env, st)
 }
 
-/// Accessor schemes for the labels present in every variant with a consistent
-/// type, given each variant's `label -> field type` map.
+// Accessor schemes for the labels present in every variant with a consistent
+// type, given each variant's `label -> field type` map.
 fn shared_accessors(
   variants: List(Dict(String, Type)),
   param_ids: List(Int),
@@ -3943,9 +3943,9 @@ fn shared_accessors(
   }
 }
 
-/// Look up the accessor scheme for `label` on a (resolved) record type. The
-/// accessors live with whichever module defined the type — the current module,
-/// or an imported one identified by the type's origin module.
+// Look up the accessor scheme for `label` on a (resolved) record type. The
+// accessors live with whichever module defined the type — the current module,
+// or an imported one identified by the type's origin module.
 fn accessor(env: Env, record: Type, label: String) -> Result(Scheme, Error) {
   case record {
     Named(module, name, _) -> {
@@ -3981,10 +3981,10 @@ fn accessors_of_module(
   }
 }
 
-/// Resolve field accesses that were deferred because the record type was
-/// unknown when first seen. By now inference has fixed the record types; any
-/// that are still unknown are genuinely ambiguous (the compiler rejects these
-/// too).
+// Resolve field accesses that were deferred because the record type was
+// unknown when first seen. By now inference has fixed the record types; any
+// that are still unknown are genuinely ambiguous (the compiler rejects these
+// too).
 fn resolve_pending(env: Env, st: State) -> Result(State, Error) {
   // Process in discovery order so inner accesses of a chain (`a.b.c`) resolve
   // before the outer ones, and loop to a fixpoint for any remaining cross
@@ -4026,9 +4026,9 @@ fn resolve_pending_loop(
   }
 }
 
-/// Try to resolve one deferred access. Returns `#(state, resolved?)`: `False`
-/// means the container is still an unbound variable, so keep it for a later
-/// pass. A container fixed to the wrong shape is a hard error.
+// Try to resolve one deferred access. Returns `#(state, resolved?)`: `False`
+// means the container is still an unbound variable, so keep it for a later
+// pass. A container fixed to the wrong shape is a hard error.
 fn resolve_one(
   env: Env,
   st: State,
@@ -4069,7 +4069,7 @@ fn variant_field_type(field: glance.VariantField) -> glance.Type {
   }
 }
 
-/// Hydrate using (and threading) a fixed type-variable name map.
+// Hydrate using (and threading) a fixed type-variable name map.
 fn hydrate_in(
   env: Env,
   names: Dict(String, Type),
@@ -4079,8 +4079,8 @@ fn hydrate_in(
   hydrate_with(env, names, st, ast).0
 }
 
-/// Hydrate while threading the type-variable name map so repeated names within
-/// one signature resolve to the same variable.
+// Hydrate while threading the type-variable name map so repeated names within
+// one signature resolve to the same variable.
 fn hydrate_threaded(
   env: Env,
   names: Dict(String, Type),
@@ -4135,7 +4135,7 @@ fn list_at(items: List(a), index: Int) -> Result(a, Nil) {
 // Prelude type constructors (private)
 // ==========================================================================
 
-/// The prelude module name shared by all built-in types.
+// The prelude module name shared by all built-in types.
 const prelude_module = "gleam"
 
 fn prelude_int() -> Type {
@@ -4186,8 +4186,8 @@ fn new_names() -> Names {
   Names(map: dict.new(), next: 0)
 }
 
-/// Print a type within a naming context, returning the updated context so a
-/// caller can keep variable names stable across several related types.
+// Print a type within a naming context, returning the updated context so a
+// caller can keep variable names stable across several related types.
 fn print(names: Names, type_: Type) -> #(String, Names) {
   case type_ {
     Named(_module, name, []) -> #(name, names)
@@ -4212,7 +4212,7 @@ fn print(names: Names, type_: Type) -> #(String, Names) {
   }
 }
 
-/// Convenience wrapper for a single, standalone type.
+// Convenience wrapper for a single, standalone type.
 fn to_string(type_: Type) -> String {
   print(new_names(), type_).0
 }
@@ -4237,8 +4237,8 @@ fn var_name(names: Names, id: Int) -> #(String, Names) {
   }
 }
 
-/// The next type-variable name, skipping Gleam reserved words (so a variable is
-/// never spelled like a keyword, e.g. `fn`), matching the compiler.
+// The next type-variable name, skipping Gleam reserved words (so a variable is
+// never spelled like a keyword, e.g. `fn`), matching the compiler.
 fn next_name(n: Int) -> #(String, Int) {
   let name = letters(n)
   case is_reserved(name) {
@@ -4268,7 +4268,7 @@ fn is_reserved(name: String) -> Bool {
   }
 }
 
-/// 0 -> "a", 25 -> "z", 26 -> "aa", 27 -> "ab", ...
+// 0 -> "a", 25 -> "z", 26 -> "aa", 27 -> "ab", ...
 fn letters(n: Int) -> String {
   let letter = string.utf_codepoint(97 + n % 26)
   let prefix = case n / 26 {
