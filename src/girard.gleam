@@ -25,6 +25,8 @@ import gleam/set.{type Set}
 import gleam/string
 import simplifile
 
+// Public API
+
 pub type Type {
   /// A named, nominal type such as `Int`, `List(a)`, `Result(a, e)` or a
   /// user-defined custom type. `module` is `"gleam"` for prelude types.
@@ -331,7 +333,7 @@ pub fn annotate_package(
 type InterfaceCache =
   dict.Dict(String, ModuleInterface)
 
-// --- Module inference ------------------------------------------------------
+// Module inference
 
 // Fully infer a module: resolve imports, register types, and infer every
 // definition in dependency order. Returns the final environment and state
@@ -643,7 +645,7 @@ fn prereg_def(
   }
 }
 
-// --- Imports ---------------------------------------------------------------
+// Imports
 
 fn process_imports(
   options: Options,
@@ -853,7 +855,7 @@ fn public_accessor_type_names(module: glance.Module) -> List(String) {
   })
 }
 
-// --- Default disk resolver -------------------------------------------------
+// Default disk resolver
 
 /// The default resolver: looks for an imported module's source under `src/` and
 /// the `build/packages/*/src` dependency sources, relative to the current
@@ -884,7 +886,7 @@ fn first_readable(paths: List(String)) -> Result(String, Nil) {
   }
 }
 
-// --- Rendering -------------------------------------------------------------
+// Rendering
 
 fn render(module: glance.Module, env: Env, st: State) -> AnnotatedModule {
   let functions =
@@ -1020,7 +1022,7 @@ fn sort_by_span(annotations: List(Annotation)) -> List(Annotation) {
   })
 }
 
-// --- CLI -------------------------------------------------------------------
+// CLI
 
 /// `gleam run -- <file.gleam>` annotates a file; `gleam run -- -` (or no
 /// arguments, or piped input) annotates stdin. Imports are resolved from disk.
@@ -1078,11 +1080,9 @@ Output: each top-level definition's inferred signature, then one
 `<start>-<end>: <type>` line per expression (by source byte span)."
 }
 
-// ==========================================================================
 // Inference engine (private)
-// ==========================================================================
 
-// --- State & environment ---------------------------------------------------
+// State & environment
 
 type State {
   State(
@@ -1429,7 +1429,7 @@ fn lookup(env: Env, name: String) -> Result(Scheme, Nil) {
   dict.get(env.values, name)
 }
 
-// --- Module interfaces & imports -------------------------------------------
+// Module interfaces & imports
 
 // Build the public interface of an inferred module by keeping only the named
 // public values and types.
@@ -1581,7 +1581,7 @@ fn import_type(
   }
 }
 
-// --- Substitution: resolve / zonk / free variables -------------------------
+// Substitution: resolve / zonk / free variables
 
 // Follow bound variables one level to expose the head constructor.
 fn resolve(st: State, type_: Type) -> Type {
@@ -1681,7 +1681,7 @@ fn scheme_free_vars(
   }
 }
 
-// --- Unification -----------------------------------------------------------
+// Unification
 
 fn unify(st: State, left: Type, right: Type) -> Result(State, Error) {
   let left = resolve(st, left)
@@ -1748,7 +1748,7 @@ fn occurs(st: State, id: Int, type_: Type) -> Bool {
   list.contains(free_vars(st, type_), id)
 }
 
-// --- Generalization & instantiation ----------------------------------------
+// Generalization & instantiation
 
 // Generalize a type into a scheme, quantifying variables that are free in the
 // type but not in the surrounding environment.
@@ -1867,7 +1867,7 @@ fn substitute(mapping: Dict(Int, Type), type_: Type) -> Type {
   }
 }
 
-// --- Expression inference --------------------------------------------------
+// Expression inference
 
 fn infer_expr(
   env: Env,
@@ -2924,7 +2924,7 @@ fn check(
   }
 }
 
-// --- Statements ------------------------------------------------------------
+// Statements
 
 fn infer_statements(
   env: Env,
@@ -3151,7 +3151,7 @@ fn infer_expr_assignment(
   Ok(#(value_type, env, st))
 }
 
-// --- Case expressions ------------------------------------------------------
+// Case expressions
 
 fn infer_case(
   env: Env,
@@ -3223,7 +3223,7 @@ fn infer_clause(
   })
 }
 
-// --- Patterns --------------------------------------------------------------
+// Patterns
 
 fn infer_pattern(
   env: Env,
@@ -3503,7 +3503,7 @@ fn indices_loop(i: Int, acc: List(Int)) -> List(Int) {
   indices_loop(i - 1, [i, ..acc])
 }
 
-// --- Type annotation hydration ---------------------------------------------
+// Type annotation hydration
 
 // Convert a written type annotation into an internal `Type`. Unknown
 // type-variable names become fresh unbound variables. Hydration never fails:
@@ -3640,7 +3640,7 @@ fn hydrate_with(
   }
 }
 
-// --- Top-level definitions -------------------------------------------------
+// Top-level definitions
 
 // Whether a function's signature names any type variable. The compiler makes
 // such a variable rigid for the body and keeps the function polymorphic over it
@@ -4091,7 +4091,7 @@ fn hydrate_threaded(
   #(t, st, names)
 }
 
-// --- Small helpers ---------------------------------------------------------
+// Small helpers
 
 fn record(st: State, span: glance.Span, type_: Type) -> State {
   State(..st, annotations: [#(span, type_), ..st.annotations])
@@ -4131,9 +4131,7 @@ fn list_at(items: List(a), index: Int) -> Result(a, Nil) {
   }
 }
 
-// ==========================================================================
 // Prelude type constructors (private)
-// ==========================================================================
 
 // The prelude module name shared by all built-in types.
 const prelude_module = "gleam"
@@ -4174,9 +4172,7 @@ fn prelude_utf_codepoint() -> Type {
   Named(prelude_module, "UtfCodepoint", [])
 }
 
-// ==========================================================================
 // Type printer (private)
-// ==========================================================================
 
 type Names {
   Names(map: Dict(Int, String), next: Int)

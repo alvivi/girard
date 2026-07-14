@@ -145,7 +145,7 @@ fn check(name: String, ours: Type, theirs: Type) -> Nil {
   }
 }
 
-// --- Decoding the compiler's package-interface JSON ------------------------
+// Decoding the compiler's package-interface JSON
 
 fn module_decoder() -> Decoder(
   #(dict.Dict(String, Type), dict.Dict(String, Type)),
@@ -206,7 +206,7 @@ fn type_decoder() -> Decoder(Type) {
   }
 }
 
-// --- Canonical type-variable spelling --------------------------------------
+// Canonical type-variable spelling
 
 /// Rename type variables to a canonical first-seen sequence so that, e.g.,
 /// `fn(a) -> a` and `fn(x) -> x` compare equal. Type variables are the only

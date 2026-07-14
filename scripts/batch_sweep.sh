@@ -68,4 +68,4 @@ while IFS= read -r pkg; do
   printf '[%s] %s\n' "$st" "$pkg"
   [ "$delay" != "0" ] && sleep "$delay"
 done <"$list"
-echo "=== batch done ==="
+echo "batch done"

@@ -100,6 +100,10 @@ record of that coverage.
   or this guide from source comments, changelog entries, or public docs.
 - **Doc-comment slashes.** `////` documents a module and `///` documents its
   public members. Use `//` for implementation notes and private entities.
+- **No ASCII-art rules.** Do not decorate code or docs with divider or banner
+  lines built from repeated characters — no `// ====`, `// ----`, `# ----`, or
+  similar rows. A plain comment naming a section is fine; the row of dashes or
+  equals signs is not.
 - **Public surface.** Treat `src/girard.gleam` as the stable API. Everything
   under `src/girard/internal/` is implementation detail even where Gleam
   visibility is needed between modules.

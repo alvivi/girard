@@ -43,7 +43,7 @@ API.
 
 | File | Responsibility |
 |---|---|
-| `src/girard.gleam` | The whole public API and inference engine, in public-then-private (`// ===`) sections: source/AST/package entry points and CLI; the public `Type`, `Scheme`, and inference `Error` vocabulary; Hindley-Milner inference (state, substitutions, environments and schemes, unification, generalization/instantiation, expression/pattern/statement inference, type hydration, module interfaces); the built-in prelude type constructors; and the type printer |
+| `src/girard.gleam` | The whole public API and inference engine, in labelled comment sections, public API first: source/AST/package entry points and CLI; the public `Type`, `Scheme`, and inference `Error` vocabulary; Hindley-Milner inference (state, substitutions, environments and schemes, unification, generalization/instantiation, expression/pattern/statement inference, type hydration, module interfaces); the built-in prelude type constructors; and the type printer |
 | `src/girard/internal/scc.gleam` | Tarjan strongly-connected components for dependency-ordered inference |
 | `src/girard/internal/reference.gleam` | Lexically scoped reference collection for the top-level definition graph |
 

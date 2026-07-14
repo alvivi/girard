@@ -10,7 +10,7 @@ pub fn main() {
   gleeunit.main()
 }
 
-// --- Helpers ---------------------------------------------------------------
+// Helpers
 
 /// The inferred signature of the named top-level function.
 fn signature(source: String, name: String) -> String {
@@ -73,7 +73,7 @@ fn first_index(haystack: String, needle: String) -> Result(Int, Nil) {
   }
 }
 
-// --- Ill-typed input is reported, not crashed -------------------------------
+// Ill-typed input is reported, not crashed
 
 pub fn unbound_variable_is_error_test() {
   let assert Error(girard.UnboundVariable("x")) =
@@ -99,7 +99,7 @@ pub fn occurs_check_is_error_test() {
     girard.annotate("pub fn f(g) { g(g) }", girard.default_options())
 }
 
-// --- printer ----------------------------------------------------------------
+// printer
 
 pub fn printer_skips_reserved_words_test() {
   // Type-variable names must never collide with a Gleam keyword (e.g. the 169th
@@ -115,7 +115,7 @@ pub fn printer_skips_reserved_words_test() {
   |> list.each(fn(keyword) { should.be_false(list.contains(names, keyword)) })
 }
 
-// --- report (the CLI's rendered report) -------------------------------------
+// report (the CLI's rendered report)
 
 pub fn report_test() {
   girard.report("pub fn double(x) { x + x }")
@@ -127,7 +127,7 @@ pub fn report_error_test() {
   |> should.equal("// error: type mismatch: Int vs Float")
 }
 
-// --- Function signature inference ------------------------------------------
+// Function signature inference
 
 pub fn identity_test() {
   signature("pub fn id(x) { x }", "id")
@@ -220,7 +220,7 @@ pub fn labelled_capture_test() {
   |> should.equal("fn() -> fn(Float) -> R")
 }
 
-// --- Custom types ----------------------------------------------------------
+// Custom types
 
 pub fn custom_type_unbox_test() {
   let source =
@@ -241,7 +241,7 @@ pub fn enum_test() {
   |> should.equal("fn() -> Color")
 }
 
-// --- Per-expression annotations --------------------------------------------
+// Per-expression annotations
 
 pub fn expression_annotation_test() {
   let source = "pub fn double(x) { x + x }"
@@ -270,7 +270,7 @@ pub fn pipe_into_saturated_call_test() {
   |> should.equal("fn(String) -> String")
 }
 
-// --- Module-level polymorphism (M2: dependency-ordered inference) -----------
+// Module-level polymorphism (M2: dependency-ordered inference)
 
 pub fn polymorphic_helper_test() {
   // `id` must stay generic so it can be used at two different types.
@@ -332,7 +332,7 @@ pub fn mutual_recursion_test() {
   |> should.equal("fn(Int) -> Bool")
 }
 
-// --- Annotations, constants, type aliases (M3) ------------------------------
+// Annotations, constants, type aliases (M3)
 
 pub fn shared_type_variable_test() {
   // The `a` in the return must be the same variable as the parameter `a`.
@@ -369,7 +369,7 @@ pub fn parametric_alias_test() {
   |> should.equal("fn(a) -> #(a, a)")
 }
 
-// --- Record field access and update (M3) ------------------------------------
+// Record field access and update (M3)
 
 pub fn field_access_test() {
   let source =
@@ -415,7 +415,7 @@ pub fn record_update_test() {
   |> should.equal("fn(User) -> User")
 }
 
-// --- Labelled arguments (M3) ------------------------------------------------
+// Labelled arguments (M3)
 
 pub fn labelled_constructor_test() {
   // Labels supplied out of declaration order must still type-check.
@@ -442,7 +442,7 @@ pub fn spread_pattern_test() {
   |> should.equal("fn(User) -> String")
 }
 
-// --- use expressions (M3) ---------------------------------------------------
+// use expressions (M3)
 
 pub fn use_test() {
   let source =
@@ -460,7 +460,7 @@ pub fn use_chain_test() {
   |> should.equal("fn() -> Res(Int)")
 }
 
-// --- Bit arrays (M3) --------------------------------------------------------
+// Bit arrays (M3)
 
 pub fn bit_array_test() {
   signature("pub fn bytes() { <<1, 2, 3>> }", "bytes")
@@ -491,7 +491,7 @@ pub fn bit_array_pattern_test() {
   |> should.equal("fn(BitArray) -> Int")
 }
 
-// --- Imports (M4) -----------------------------------------------------------
+// Imports (M4)
 
 pub fn qualified_import_test() {
   let other = "pub fn double(x: Int) -> Int { x + x }"
@@ -847,7 +847,7 @@ pub fn mutually_recursive_unannotated_accumulator_test() {
   |> should.equal("fn(Tree(a), b) -> b")
 }
 
-// --- Inferred-variant field access and multi-variant records (M5) -----------
+// Inferred-variant field access and multi-variant records (M5)
 
 pub fn variant_narrowed_field_access_test() {
   // `kids` is present only in the `Branch` variant. Binding it with `as` after
@@ -1163,7 +1163,7 @@ pub fn signature_scheme_exposes_quantified_vars_test() {
   mono.vars |> should.equal([])
 }
 
-// --- annotate_package ------------------------------------------------------
+// annotate_package
 
 /// Parse each `#(path, source)` and pair the path with its `glance.Module`,
 /// the shape `annotate_package` consumes.

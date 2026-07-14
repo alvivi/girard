@@ -185,7 +185,7 @@ fn in_expr(expr: glance.Expression, bound: Set(String), acc: Acc) -> Acc {
   }
 }
 
-// --- Bound-name extraction -------------------------------------------------
+// Bound-name extraction
 
 fn assignment_name(name: glance.AssignmentName) -> List(String) {
   case name {

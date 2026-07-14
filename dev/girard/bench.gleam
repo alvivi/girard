@@ -190,7 +190,7 @@ fn float_to_string(f: Float) -> String {
   int.to_string(float.round(f))
 }
 
-// --- Resolver + target (mirrors dev/girard/diff.gleam) ---------------------
+// Resolver + target (mirrors dev/girard/diff.gleam)
 
 fn dir_resolver(root: String) -> girard.Resolver {
   fn(path: String) -> Result(String, Nil) {
@@ -228,7 +228,7 @@ fn first_readable(paths: List(String)) -> Result(String, Nil) {
   }
 }
 
-// --- Recursive .gleam module walk ------------------------------------------
+// Recursive .gleam module walk
 
 /// Every `.gleam` file under `dir`, recursively, as full paths.
 fn gleam_sources(dir: String) -> List(String) {
