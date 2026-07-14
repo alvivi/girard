@@ -22,6 +22,12 @@ import gleam/set
 import gleam/string
 import simplifile
 
+// Differential check
+//
+// Run girard over every module of an installed package and report each span
+// where girard's inferred type disagrees with the compiler's single reported
+// type.
+
 pub fn main() -> Nil {
   case argv.load().arguments {
     [package, json_path] -> diff(package, json_path, "build/packages")
@@ -191,6 +197,11 @@ fn compare(
   })
 }
 
+// Decoding the compiler's expression JSON
+//
+// Turn the JSON from the patched compiler's `gleam export expression-types`
+// into spans paired with girard's own `Type`.
+
 fn expression_decoder() -> Decoder(#(Int, Int, Type)) {
   use start <- decode.field("start", decode.int)
   use end <- decode.field("end", decode.int)
@@ -223,6 +234,11 @@ fn type_decoder() -> Decoder(Type) {
     other -> decode.failure(Var(0), "Type(kind=" <> other <> ")")
   }
 }
+
+// Canonical type-variable spelling
+//
+// Rename type variables to a canonical sequence before comparison, since girard
+// and the compiler number them differently though equivalently.
 
 /// Rename type variables to a canonical first-seen sequence.
 fn canonicalize(rendered: String) -> String {

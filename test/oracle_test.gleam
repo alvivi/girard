@@ -19,6 +19,12 @@ import gleam/set
 import gleam/string
 import simplifile
 
+// Oracle comparison
+//
+// Read each sample under `oracle/`, annotate it with girard, and check every
+// public signature — and every per-expression span both sides report —
+// against the compiler's exported interface.
+
 pub fn signatures_match_compiler_test() {
   let assert Ok(entries) = simplifile.read_directory("oracle")
   let samples =
@@ -146,6 +152,9 @@ fn check(name: String, ours: Type, theirs: Type) -> Nil {
 }
 
 // Decoding the compiler's package-interface JSON
+//
+// Turn the JSON from `gleam export package-interface` into girard's own `Type`,
+// so the compiler's signatures can be compared in the same representation.
 
 fn module_decoder() -> Decoder(
   #(dict.Dict(String, Type), dict.Dict(String, Type)),
@@ -207,6 +216,9 @@ fn type_decoder() -> Decoder(Type) {
 }
 
 // Canonical type-variable spelling
+//
+// Rename type variables to a canonical sequence before comparison, since girard
+// and the compiler number them differently though equivalently.
 
 /// Rename type variables to a canonical first-seen sequence so that, e.g.,
 /// `fn(a) -> a` and `fn(x) -> x` compare equal. Type variables are the only

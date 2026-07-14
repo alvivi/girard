@@ -24,6 +24,12 @@ import gleam/result
 import gleam/string
 import simplifile
 
+// Benchmark harness
+//
+// Annotate every module of every package in the spec across warmup and measure
+// rounds, timing only the `girard.annotate` calls, and report total wall time
+// and throughput.
+
 /// Microsecond-resolution monotonic counter; CPU work only, no wall-clock skew.
 @external(erlang, "os", "perf_counter")
 fn perf_counter(resolution: Int) -> Int
@@ -190,7 +196,10 @@ fn float_to_string(f: Float) -> String {
   int.to_string(float.round(f))
 }
 
-// Resolver + target (mirrors dev/girard/diff.gleam)
+// Resolver and target
+//
+// Resolve a package's imports from its staged dependency root, mirroring the
+// on-disk resolver a real sweep uses (see `dev/girard/diff.gleam`).
 
 fn dir_resolver(root: String) -> girard.Resolver {
   fn(path: String) -> Result(String, Nil) {
@@ -228,7 +237,10 @@ fn first_readable(paths: List(String)) -> Result(String, Nil) {
   }
 }
 
-// Recursive .gleam module walk
+// Recursive module walk
+//
+// List every `.gleam` source under a directory, so a package's modules can be
+// discovered without a manifest.
 
 /// Every `.gleam` file under `dir`, recursively, as full paths.
 fn gleam_sources(dir: String) -> List(String) {
