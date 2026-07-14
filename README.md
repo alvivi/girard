@@ -48,8 +48,8 @@ double: fn(Int) -> Int
 `girard.annotate(code, girard.default_options())` returns a structured
 `AnnotatedModule`: each top-level definition's `Scheme` (in `functions` /
 `constants`) and every expression's `Type` keyed by its source span (in
-`expressions`). These are structured [`girard/types`](src/girard/types.gleam)
-values — pattern-match on `Named`/`Fn`/`Var`/`Tuple`, or render one with
+`expressions`). These are structured [`girard`](src/girard.gleam) values —
+pattern-match on `Named`/`Fn`/`Var`/`Tuple`, or render one with
 `girard.type_to_string`.
 
 ### Command line
@@ -74,8 +74,7 @@ span glance puts on every AST node — so you join the inferred types onto your 
 tree by span, and inspect them as structured values.
 
 ```gleam
-import girard
-import girard/types.{type Type, Fn, Named}
+import girard.{type Type, Fn, Named}
 import glance
 import gleam/dict.{type Dict}
 import gleam/list

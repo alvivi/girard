@@ -37,18 +37,15 @@ committed JSON interfaces exported by the real Gleam compiler for sources under
 
 ## Architecture
 
-The public API is two modules. Everything under `src/girard/internal/` is an
-implementation detail rather than documented/stable API.
+The public API is a single module, `girard`. Everything under
+`src/girard/internal/` is an implementation detail rather than documented/stable
+API.
 
 | File | Responsibility |
 |---|---|
-| `src/girard.gleam` | Public driver and CLI: parse source, resolve imports, register types, infer definitions in dependency order, and emit annotations |
-| `src/girard/types.gleam` | Public result vocabulary: `Type`, `Scheme`, and inference `Error` |
-| `src/girard/internal/infer.gleam` | Inference state, substitutions, environments and schemes, unification, generalization/instantiation, expression/pattern/statement inference, type hydration, and module interfaces |
-| `src/girard/internal/prelude.gleam` | Constructors for Gleam's built-in prelude types |
+| `src/girard.gleam` | The whole public API and inference engine, in labelled comment sections, public API first: source/AST/package entry points and CLI; the public `Type`, `Scheme`, and inference `Error` vocabulary; Hindley-Milner inference (state, substitutions, environments and schemes, unification, generalization/instantiation, expression/pattern/statement inference, type hydration, module interfaces); the built-in prelude type constructors; and the type printer |
 | `src/girard/internal/scc.gleam` | Tarjan strongly-connected components for dependency-ordered inference |
 | `src/girard/internal/reference.gleam` | Lexically scoped reference collection for the top-level definition graph |
-| `src/girard/internal/printer.gleam` | Render a `Type` as Gleam syntax with stable type-variable names |
 
 Development-only modules under `dev/girard/` provide package sweeps,
 per-expression compiler diffs, and benchmarks. Shell scripts under `scripts/`
@@ -132,9 +129,9 @@ so it is a manual safety net rather than a CI gate.
   fork.
 - **Keep package inference resilient.** One unsupported or ill-typed definition
   must not prevent useful results for independent definitions.
-- **Keep internals separate from the API.** `girard` and `girard/types` are the
-  supported surface; inference machinery may evolve without compatibility
-  guarantees.
+- **Keep internals separate from the API.** `girard` is the single supported
+  module; the private inference machinery it contains, and the helpers under
+  `src/girard/internal/`, may evolve without compatibility guarantees.
 
 ## Limitations
 

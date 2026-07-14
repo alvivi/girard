@@ -8,9 +8,7 @@
 //// (the compiler numbers variables per signature; girard shares a naming
 //// context across a module — both are correct, just different spellings).
 
-import girard
-import girard/internal/printer
-import girard/types.{type Type, Fn, Named, Tuple, Var}
+import girard.{type Type, Fn, Named, Tuple, Var}
 import gleam/dict
 import gleam/dynamic/decode.{type Decoder}
 import gleam/int
@@ -76,7 +74,7 @@ fn check_expressions(name: String, annotated: girard.AnnotatedModule) -> Nil {
       dict.insert(
         acc,
         #(a.span.start, a.span.end),
-        canonicalize(printer.to_string(a.type_)),
+        canonicalize(girard.type_to_string(a.type_)),
       )
     })
 
@@ -87,7 +85,7 @@ fn check_expressions(name: String, annotated: girard.AnnotatedModule) -> Nil {
   let theirs =
     list.fold(oracle_exprs, dict.new(), fn(acc, entry) {
       let #(start, end, oracle_type) = entry
-      let rendered = canonicalize(printer.to_string(oracle_type))
+      let rendered = canonicalize(girard.type_to_string(oracle_type))
       dict.upsert(acc, #(start, end), fn(existing) {
         case existing {
           option.Some(set) -> set.insert(set, rendered)
@@ -131,8 +129,8 @@ fn expression_decoder() -> Decoder(#(Int, Int, Type)) {
 /// Compare girard's rendered signature string against the compiler's type,
 /// both reduced to a canonical type-variable spelling.
 fn check(name: String, ours: Type, theirs: Type) -> Nil {
-  let expected = canonicalize(printer.to_string(theirs))
-  let actual = canonicalize(printer.to_string(ours))
+  let expected = canonicalize(girard.type_to_string(theirs))
+  let actual = canonicalize(girard.type_to_string(ours))
   case actual == expected {
     True -> Nil
     False ->
@@ -147,7 +145,7 @@ fn check(name: String, ours: Type, theirs: Type) -> Nil {
   }
 }
 
-// --- Decoding the compiler's package-interface JSON ------------------------
+// Decoding the compiler's package-interface JSON
 
 fn module_decoder() -> Decoder(
   #(dict.Dict(String, Type), dict.Dict(String, Type)),
@@ -208,7 +206,7 @@ fn type_decoder() -> Decoder(Type) {
   }
 }
 
-// --- Canonical type-variable spelling --------------------------------------
+// Canonical type-variable spelling
 
 /// Rename type variables to a canonical first-seen sequence so that, e.g.,
 /// `fn(a) -> a` and `fn(x) -> x` compare equal. Type variables are the only

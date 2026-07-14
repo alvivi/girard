@@ -54,11 +54,9 @@ toml_version() {
   printf '%s' "${v:-0.0.0}"
 }
 
-# ---------------------------------------------------------------------------
 # build: resolve a package's closure, dedup its members into the pool, write
 # its manifest, and export its oracle. Idempotent and resumable: a package
 # already recorded in index.tsv is skipped.
-# ---------------------------------------------------------------------------
 cmd_build() {
   local pkg="${1:?usage: cache.sh build <package>}"
   mkdir -p "$pool" "$manifest_dir" "$oracle_dir"
@@ -148,9 +146,7 @@ EOF
   echo "cache build $pkg: built ($(wc -l <"$tmp_manifest" | tr -d ' ') members)"
 }
 
-# ---------------------------------------------------------------------------
 # build-batch: populate for every package in a list, resumable and paced.
-# ---------------------------------------------------------------------------
 cmd_build_batch() {
   local list="${1:?usage: cache.sh build-batch <listfile>}"
   local delay="${SWEEP_DELAY:-0}"
@@ -180,14 +176,12 @@ cmd_build_batch() {
     done
     [ "$delay" != "0" ] && sleep "$delay"
   done <"$list"
-  echo "=== build-batch done ==="
+  echo "build-batch done"
   cmd_stats
 }
 
-# ---------------------------------------------------------------------------
 # resweep: reconstruct each cached package's closure (symlinks into the pool)
 # and run girard's diff against the cached oracle. No hex, no oracle compile.
-# ---------------------------------------------------------------------------
 cmd_resweep() {
   local sel="${1:---all}"
   local results="${2:-$cache/resweep.tsv}"
@@ -240,7 +234,7 @@ cmd_resweep() {
     printf '%s\t%s\t%s\n' "$pkg" "$st" "$detail" >>"$results"
     printf '[%s] %s\n' "$st" "$pkg"
   done
-  echo "=== resweep done -> $results (flagged: $flagged) ==="
+  echo "resweep done -> $results (flagged: $flagged)"
 }
 
 record_meta() {

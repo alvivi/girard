@@ -64,5 +64,4 @@ while IFS= read -r pkg; do
 done <"$list"
 
 echo "staged $staged packages ($missing missing) -> running bench"
-echo "---"
 ( cd "$root" && gleam run -m girard/bench "$spec" "$warmup" "$measure" )
