@@ -104,15 +104,25 @@ record of that coverage.
   lines built from repeated characters — no `// ====`, `// ----`, `# ----`, or
   similar rows. A plain comment naming a section is fine; the row of dashes or
   equals signs is not.
-- **Semantic sections.** Group a file into sections by topic. A section header
-  is a `//` line naming the section, a `//` line, then a short prose
-  description of what it covers and why. A file that is a single section needs
-  no header — its `////` module doc is enough. Within a section, lead with the
-  public entities, then opaque, then private; within each of those, put
-  constants before types before functions. Order by cohesion and reading flow
-  — keep a type next to the functions that build and operate on it, and put an
-  entry point ahead of the helpers it calls — and fall back to alphabetical
-  order only to break ties among unrelated peers.
+- **Semantic sections.** Group a file into sections by topic, each introduced
+  by a header — a `//` line naming the section, a blank `//` line, then a short
+  description of what it covers and why:
+
+  ```gleam
+  // Section name
+  //
+  // One or two sentences on what this section covers and why.
+  ```
+
+  A file that is a single section needs no header; its `////` module doc is
+  enough. Order the entities within a section for readability: lead with the
+  public ones, then opaque, then private, and within each put constants before
+  types before functions — but keep a type next to the functions that build and
+  operate on it, put an entry point ahead of the helpers it calls, and fall
+  back to alphabetical order only to break ties among unrelated peers. Test
+  modules follow the same sectioning and module-doc rules, but keep their
+  sections in narrative order (by feature or scenario) rather than reordering by
+  visibility or kind.
 - **Public surface.** Treat `src/girard.gleam` as the stable API. Everything
   under `src/girard/internal/` is implementation detail even where Gleam
   visibility is needed between modules.
