@@ -1898,6 +1898,439 @@ fn substitute(mapping: Dict(Int, Type), type_: Type) -> Type {
   }
 }
 
+// Top-level definitions
+//
+// Infer a top-level function or constant and register a custom type's
+// constructors and accessors, then resolve the field and tuple accesses
+// deferred until inference fixed their container types.
+
+// Whether a function's signature names any type variable. The compiler makes
+// such a variable rigid for the body and keeps the function polymorphic over it
+// in its own recursion / SCC (rather than inferring it monomorphically against
+// a placeholder, which would pin a phantom parameter). A function with only
+// concrete annotations, or none, takes the ordinary placeholder path.
+fn has_annotation_vars(function: glance.Function) -> Bool {
+  function_annotation_var_names(function) != []
+}
+
+fn function_annotation_var_names(function: glance.Function) -> List(String) {
+  let from_params =
+    list.flat_map(function.parameters, fn(p) {
+      case p.type_ {
+        Some(t) -> type_var_names(t)
+        None -> []
+      }
+    })
+  case function.return {
+    Some(t) -> list.append(from_params, type_var_names(t))
+    None -> from_params
+  }
+}
+
+// Hydrate a function's signature into a *skeleton*: each annotated part uses
+// its written type with the signature's type variables made rigid (skolemized)
+// for the body; each unannotated part is a fresh flexible variable (inferred
+// and shared monomorphically, like a placeholder). Returns the parameter types,
+// return type, and the ids made rigid; those ids are also recorded in `State`.
+fn signature_skeleton(
+  env: Env,
+  st: State,
+  function: glance.Function,
+) -> #(List(Type), Type, List(Int), State) {
+  // One rigid id per distinct annotation variable name, shared across the whole
+  // signature (so a parameter `a` and the return `a` are the same variable).
+  let #(names, rigid_ids, st) =
+    list.fold(
+      list.unique(function_annotation_var_names(function)),
+      #(dict.new(), [], st),
+      fn(acc, name) {
+        let #(names, ids, st) = acc
+        let #(id, st) = fresh_id(st)
+        #(dict.insert(names, name, Var(id)), [id, ..ids], st)
+      },
+    )
+  let st = mark_rigid(st, rigid_ids)
+  let #(rev_param_types, st) =
+    list.fold(function.parameters, #([], st), fn(acc, param) {
+      let #(types_, st) = acc
+      let #(t, st) = case param.type_ {
+        Some(ann) -> hydrate_in(env, names, st, ann)
+        None -> fresh(st)
+      }
+      #([t, ..types_], st)
+    })
+  let #(return_type, st) = case function.return {
+    Some(ann) -> hydrate_in(env, names, st, ann)
+    None -> fresh(st)
+  }
+  #(list.reverse(rev_param_types), return_type, rigid_ids, st)
+}
+
+// Bind a function's parameters to the given types in `env`.
+fn bind_params(
+  env: Env,
+  function: glance.Function,
+  param_types: List(Type),
+) -> Env {
+  list.fold(list.zip(function.parameters, param_types), env, fn(env, pair) {
+    let #(param, t) = pair
+    case param.name {
+      glance.Named(name) -> bind_value(env, name, Scheme([], t))
+      glance.Discarded(_) -> env
+    }
+  })
+}
+
+// Infer a fully-annotated function's body and check it against the declared
+// return type. `@external` functions have no body and pass trivially.
+fn check_body(
+  env: Env,
+  st: State,
+  function: glance.Function,
+  return_type: Type,
+) -> Result(State, Error) {
+  case function.body {
+    [] -> Ok(st)
+    _ -> {
+      use #(body_type, st) <- result.try(infer_statements(
+        env,
+        st,
+        function.body,
+      ))
+      unify(st, body_type, return_type)
+    }
+  }
+}
+
+// The scheme a function with signature variables is bound at within its SCC:
+// polymorphic over its rigid signature variables, but with any unannotated
+// (flexible placeholder) parts left free, so they stay shared/monomorphic
+// across the component until the body fixes them.
+fn rigid_scheme(
+  rigid_ids: List(Int),
+  param_types: List(Type),
+  return_type: Type,
+) -> Scheme {
+  Scheme(rigid_ids, Fn(param_types, return_type))
+}
+
+// Generalize a function's final parameter/return types into a scheme,
+// quantifying every variable still free after the body is inferred.
+fn function_scheme(
+  env: Env,
+  st: State,
+  param_types: List(Type),
+  return_type: Type,
+) -> Scheme {
+  generalize(st, env, Fn(param_types, return_type))
+}
+
+// The *monomorphic* scheme a fully-annotated function sees for itself inside
+// its own body. Its signature variables stay rigid (un-quantified), so a
+// self-recursive call must be at the same type — Gleam has no polymorphic
+// recursion, and recursing at a concrete type where the signature is generic
+// is a mismatch, exactly as the compiler reports.
+fn rigid_self_scheme(param_types: List(Type), return_type: Type) -> Scheme {
+  Scheme([], Fn(param_types, return_type))
+}
+
+// Infer a top-level function, returning its (still ungeneralized) `Fn` type.
+fn infer_function(
+  env: Env,
+  st: State,
+  function: glance.Function,
+) -> Result(#(Type, State), Error) {
+  // Type-variable names are shared across the whole signature so that, e.g.,
+  // a parameter `a` and the return `a` refer to the same variable.
+  let #(rev_param_types, body_env, st, names) =
+    list.fold(function.parameters, #([], env, st, dict.new()), fn(acc, param) {
+      let #(types_, env, st, names) = acc
+      let #(t, st, names) = case param.type_ {
+        Some(ann) -> hydrate_threaded(env, names, st, ann)
+        None -> {
+          let #(t, st) = fresh(st)
+          #(t, st, names)
+        }
+      }
+      let env = case param.name {
+        glance.Named(name) -> bind_value(env, name, Scheme([], t))
+        glance.Discarded(_) -> env
+      }
+      #([t, ..types_], env, st, names)
+    })
+  let param_types = list.reverse(rev_param_types)
+  case function.body {
+    // External functions (e.g. `@external`) have no body; their type comes
+    // entirely from the signature annotations.
+    [] -> {
+      let #(return_type, st) = case function.return {
+        Some(ann) -> {
+          let #(t, st, _names) = hydrate_threaded(env, names, st, ann)
+          #(t, st)
+        }
+        None -> fresh(st)
+      }
+      Ok(#(Fn(param_types, return_type), st))
+    }
+    _ -> {
+      use #(body_type, st) <- result.try(infer_statements(
+        body_env,
+        st,
+        function.body,
+      ))
+      use st <- result.try(case function.return {
+        Some(ann) -> {
+          let #(t, st, _names) = hydrate_threaded(env, names, st, ann)
+          unify(st, body_type, t)
+        }
+        None -> Ok(st)
+      })
+      Ok(#(Fn(param_types, body_type), st))
+    }
+  }
+}
+
+// Infer a module constant, returning its type (an annotation, if present, is
+// applied).
+fn infer_constant(
+  env: Env,
+  st: State,
+  constant: glance.Constant,
+) -> Result(#(Type, State), Error) {
+  use #(value_type, st) <- result.try(infer_expr(env, st, constant.value))
+  case constant.annotation {
+    Some(ann) -> {
+      let #(t, st) = hydrate(env, st, ann)
+      use st <- result.try(unify(st, value_type, t))
+      Ok(#(value_type, st))
+    }
+    None -> Ok(#(value_type, st))
+  }
+}
+
+// Register a custom type's constructors as value schemes in the environment,
+// generalized over the type's parameters.
+fn register_custom_type(
+  env: Env,
+  st: State,
+  custom_type: glance.CustomType,
+) -> #(Env, State) {
+  // Record the type as local first so its own fields can refer to it.
+  let env =
+    declare_type(env, custom_type.name, list.length(custom_type.parameters))
+  let #(rev_param_ids, st) =
+    list.fold(custom_type.parameters, #([], st), fn(acc, _name) {
+      let #(ids, st) = acc
+      let #(id, st) = fresh_id(st)
+      #([id, ..ids], st)
+    })
+  let param_ids = list.reverse(rev_param_ids)
+  let param_vars = list.map(param_ids, Var)
+  let names = dict.from_list(list.zip(custom_type.parameters, param_vars))
+  let return_type = Named(env.current_module, custom_type.name, param_vars)
+
+  // Build constructors, collecting each variant's labelled-field types so we
+  // can later expose accessors for labels shared across all variants.
+  let #(env, st, rev_variant_labels) =
+    list.fold(custom_type.variants, #(env, st, []), fn(acc, variant) {
+      let #(env, st, variant_labels) = acc
+      let #(rev_field_types, labelled, st) =
+        list.fold(variant.fields, #([], dict.new(), st), fn(acc, field) {
+          let #(types_, labelled, st) = acc
+          let #(t, st) = hydrate_in(env, names, st, variant_field_type(field))
+          let labelled = case field {
+            glance.LabelledVariantField(_, label) ->
+              dict.insert(labelled, label, t)
+            glance.UnlabelledVariantField(..) -> labelled
+          }
+          #([t, ..types_], labelled, st)
+        })
+      let field_types = list.reverse(rev_field_types)
+      let ctor_type = case field_types {
+        [] -> return_type
+        _ -> Fn(field_types, return_type)
+      }
+      let env =
+        register_field_map(
+          env,
+          variant.name,
+          list.map(variant.fields, fn(f) {
+            case f {
+              glance.LabelledVariantField(_, label) -> Some(label)
+              glance.UnlabelledVariantField(..) -> None
+            }
+          }),
+        )
+      let env = bind_value(env, variant.name, Scheme(param_ids, ctor_type))
+      #(env, st, [labelled, ..variant_labels])
+    })
+
+  // A label is accessible iff it appears in every variant with the same type.
+  // (Single-variant records are the degenerate case where every label qualifies.)
+  let accessors =
+    shared_accessors(list.reverse(rev_variant_labels), param_ids, return_type)
+  let env =
+    Env(
+      ..env,
+      accessors: dict.insert(env.accessors, custom_type.name, accessors),
+    )
+  #(env, st)
+}
+
+// Accessor schemes for the labels present in every variant with a consistent
+// type, given each variant's `label -> field type` map.
+fn shared_accessors(
+  variants: List(Dict(String, Type)),
+  param_ids: List(Int),
+  return_type: Type,
+) -> Dict(String, Scheme) {
+  case variants {
+    [] -> dict.new()
+    [first, ..rest] ->
+      dict.fold(first, dict.new(), fn(accessors, label, field_type) {
+        let shared =
+          list.all(rest, fn(variant) {
+            dict.get(variant, label) == Ok(field_type)
+          })
+        case shared {
+          True ->
+            dict.insert(
+              accessors,
+              label,
+              Scheme(param_ids, Fn([return_type], field_type)),
+            )
+          False -> accessors
+        }
+      })
+  }
+}
+
+// Look up the accessor scheme for `label` on a (resolved) record type. The
+// accessors live with whichever module defined the type — the current module,
+// or an imported one identified by the type's origin module.
+fn accessor(env: Env, record: Type, label: String) -> Result(Scheme, Error) {
+  case record {
+    Named(module, name, _) -> {
+      let accessors = accessors_of_module(env, module)
+      case dict.get(accessors, name) {
+        Ok(labels) ->
+          case dict.get(labels, label) {
+            Ok(scheme) -> Ok(scheme)
+            Error(_) -> Error(NoSuchField(name, label))
+          }
+        Error(_) -> Error(NoSuchField(name, label))
+      }
+    }
+    _ -> Error(NotARecord)
+  }
+}
+
+fn accessors_of_module(
+  env: Env,
+  module: String,
+) -> Dict(String, Dict(String, Scheme)) {
+  // A type can surface from a module the current one never imports directly (a
+  // helper returning another module's record), and an alias collision can evict
+  // that module from the alias-keyed `modules` map — so resolve by origin name
+  // through `module_index`, which holds the whole transitively-reachable graph.
+  case module == env.current_module {
+    True -> env.accessors
+    False ->
+      case dict.get(env.module_index, module) {
+        Ok(interface) -> interface.accessors
+        Error(_) -> env.accessors
+      }
+  }
+}
+
+// Resolve field accesses that were deferred because the record type was
+// unknown when first seen. By now inference has fixed the record types; any
+// that are still unknown are genuinely ambiguous (the compiler rejects these
+// too).
+fn resolve_pending(env: Env, st: State) -> Result(State, Error) {
+  // Process in discovery order so inner accesses of a chain (`a.b.c`) resolve
+  // before the outer ones, and loop to a fixpoint for any remaining cross
+  // dependencies. Anything still unresolved is genuinely ambiguous.
+  let pending = list.reverse(st.pending)
+  resolve_pending_loop(
+    env,
+    State(..st, pending: []),
+    pending,
+    list.length(pending),
+  )
+}
+
+fn resolve_pending_loop(
+  env: Env,
+  st: State,
+  pending: List(Pending),
+  fuel: Int,
+) -> Result(State, Error) {
+  case pending, fuel <= 0 {
+    [], _ -> Ok(st)
+    [_, ..], True -> Error(NotARecord)
+    _, False -> {
+      use #(st, remaining, progressed) <- result.try(
+        list.try_fold(pending, #(st, [], False), fn(acc, item) {
+          let #(st, remaining, progressed) = acc
+          use #(st, resolved) <- result.try(resolve_one(env, st, item))
+          case resolved {
+            True -> Ok(#(st, remaining, True))
+            False -> Ok(#(st, [item, ..remaining], progressed))
+          }
+        }),
+      )
+      case progressed {
+        True -> resolve_pending_loop(env, st, list.reverse(remaining), fuel - 1)
+        False -> Error(NotARecord)
+      }
+    }
+  }
+}
+
+// Try to resolve one deferred access. Returns `#(state, resolved?)`: `False`
+// means the container is still an unbound variable, so keep it for a later
+// pass. A container fixed to the wrong shape is a hard error.
+fn resolve_one(
+  env: Env,
+  st: State,
+  item: Pending,
+) -> Result(#(State, Bool), Error) {
+  case item {
+    PendingField(container, label, field) ->
+      case resolve(st, container) {
+        Named(_, _, _) as record -> {
+          use scheme <- result.try(accessor(env, record, label))
+          let #(accessor_type, st) = instantiate(st, scheme)
+          use st <- result.try(unify(st, accessor_type, Fn([container], field)))
+          Ok(#(st, True))
+        }
+        Var(_) -> Ok(#(st, False))
+        _ -> Error(NotARecord)
+      }
+    PendingIndex(container, index, result) ->
+      case resolve(st, container) {
+        Tuple(elements) ->
+          case list_at(elements, index) {
+            Ok(element) -> {
+              use st <- result.try(unify(st, element, result))
+              Ok(#(st, True))
+            }
+            Error(_) -> Error(TupleIndexOutOfRange(index))
+          }
+        Var(_) -> Ok(#(st, False))
+        _ -> Error(NotATuple)
+      }
+  }
+}
+
+fn variant_field_type(field: glance.VariantField) -> glance.Type {
+  case field {
+    glance.LabelledVariantField(item, _label) -> item
+    glance.UnlabelledVariantField(item) -> item
+  }
+}
+
 // Expression inference
 //
 // Infer the type of every expression: literals, variables, calls and
@@ -3708,439 +4141,6 @@ fn hydrate_threaded(
 ) -> #(Type, State, Dict(String, Type)) {
   let #(#(t, st), names) = hydrate_with(env, names, st, ast)
   #(t, st, names)
-}
-
-// Top-level definitions
-//
-// Infer a top-level function or constant and register a custom type's
-// constructors and accessors, then resolve the field and tuple accesses
-// deferred until inference fixed their container types.
-
-// Whether a function's signature names any type variable. The compiler makes
-// such a variable rigid for the body and keeps the function polymorphic over it
-// in its own recursion / SCC (rather than inferring it monomorphically against
-// a placeholder, which would pin a phantom parameter). A function with only
-// concrete annotations, or none, takes the ordinary placeholder path.
-fn has_annotation_vars(function: glance.Function) -> Bool {
-  function_annotation_var_names(function) != []
-}
-
-fn function_annotation_var_names(function: glance.Function) -> List(String) {
-  let from_params =
-    list.flat_map(function.parameters, fn(p) {
-      case p.type_ {
-        Some(t) -> type_var_names(t)
-        None -> []
-      }
-    })
-  case function.return {
-    Some(t) -> list.append(from_params, type_var_names(t))
-    None -> from_params
-  }
-}
-
-// Hydrate a function's signature into a *skeleton*: each annotated part uses
-// its written type with the signature's type variables made rigid (skolemized)
-// for the body; each unannotated part is a fresh flexible variable (inferred
-// and shared monomorphically, like a placeholder). Returns the parameter types,
-// return type, and the ids made rigid; those ids are also recorded in `State`.
-fn signature_skeleton(
-  env: Env,
-  st: State,
-  function: glance.Function,
-) -> #(List(Type), Type, List(Int), State) {
-  // One rigid id per distinct annotation variable name, shared across the whole
-  // signature (so a parameter `a` and the return `a` are the same variable).
-  let #(names, rigid_ids, st) =
-    list.fold(
-      list.unique(function_annotation_var_names(function)),
-      #(dict.new(), [], st),
-      fn(acc, name) {
-        let #(names, ids, st) = acc
-        let #(id, st) = fresh_id(st)
-        #(dict.insert(names, name, Var(id)), [id, ..ids], st)
-      },
-    )
-  let st = mark_rigid(st, rigid_ids)
-  let #(rev_param_types, st) =
-    list.fold(function.parameters, #([], st), fn(acc, param) {
-      let #(types_, st) = acc
-      let #(t, st) = case param.type_ {
-        Some(ann) -> hydrate_in(env, names, st, ann)
-        None -> fresh(st)
-      }
-      #([t, ..types_], st)
-    })
-  let #(return_type, st) = case function.return {
-    Some(ann) -> hydrate_in(env, names, st, ann)
-    None -> fresh(st)
-  }
-  #(list.reverse(rev_param_types), return_type, rigid_ids, st)
-}
-
-// Bind a function's parameters to the given types in `env`.
-fn bind_params(
-  env: Env,
-  function: glance.Function,
-  param_types: List(Type),
-) -> Env {
-  list.fold(list.zip(function.parameters, param_types), env, fn(env, pair) {
-    let #(param, t) = pair
-    case param.name {
-      glance.Named(name) -> bind_value(env, name, Scheme([], t))
-      glance.Discarded(_) -> env
-    }
-  })
-}
-
-// Infer a fully-annotated function's body and check it against the declared
-// return type. `@external` functions have no body and pass trivially.
-fn check_body(
-  env: Env,
-  st: State,
-  function: glance.Function,
-  return_type: Type,
-) -> Result(State, Error) {
-  case function.body {
-    [] -> Ok(st)
-    _ -> {
-      use #(body_type, st) <- result.try(infer_statements(
-        env,
-        st,
-        function.body,
-      ))
-      unify(st, body_type, return_type)
-    }
-  }
-}
-
-// The scheme a function with signature variables is bound at within its SCC:
-// polymorphic over its rigid signature variables, but with any unannotated
-// (flexible placeholder) parts left free, so they stay shared/monomorphic
-// across the component until the body fixes them.
-fn rigid_scheme(
-  rigid_ids: List(Int),
-  param_types: List(Type),
-  return_type: Type,
-) -> Scheme {
-  Scheme(rigid_ids, Fn(param_types, return_type))
-}
-
-// Generalize a function's final parameter/return types into a scheme,
-// quantifying every variable still free after the body is inferred.
-fn function_scheme(
-  env: Env,
-  st: State,
-  param_types: List(Type),
-  return_type: Type,
-) -> Scheme {
-  generalize(st, env, Fn(param_types, return_type))
-}
-
-// The *monomorphic* scheme a fully-annotated function sees for itself inside
-// its own body. Its signature variables stay rigid (un-quantified), so a
-// self-recursive call must be at the same type — Gleam has no polymorphic
-// recursion, and recursing at a concrete type where the signature is generic
-// is a mismatch, exactly as the compiler reports.
-fn rigid_self_scheme(param_types: List(Type), return_type: Type) -> Scheme {
-  Scheme([], Fn(param_types, return_type))
-}
-
-// Infer a top-level function, returning its (still ungeneralized) `Fn` type.
-fn infer_function(
-  env: Env,
-  st: State,
-  function: glance.Function,
-) -> Result(#(Type, State), Error) {
-  // Type-variable names are shared across the whole signature so that, e.g.,
-  // a parameter `a` and the return `a` refer to the same variable.
-  let #(rev_param_types, body_env, st, names) =
-    list.fold(function.parameters, #([], env, st, dict.new()), fn(acc, param) {
-      let #(types_, env, st, names) = acc
-      let #(t, st, names) = case param.type_ {
-        Some(ann) -> hydrate_threaded(env, names, st, ann)
-        None -> {
-          let #(t, st) = fresh(st)
-          #(t, st, names)
-        }
-      }
-      let env = case param.name {
-        glance.Named(name) -> bind_value(env, name, Scheme([], t))
-        glance.Discarded(_) -> env
-      }
-      #([t, ..types_], env, st, names)
-    })
-  let param_types = list.reverse(rev_param_types)
-  case function.body {
-    // External functions (e.g. `@external`) have no body; their type comes
-    // entirely from the signature annotations.
-    [] -> {
-      let #(return_type, st) = case function.return {
-        Some(ann) -> {
-          let #(t, st, _names) = hydrate_threaded(env, names, st, ann)
-          #(t, st)
-        }
-        None -> fresh(st)
-      }
-      Ok(#(Fn(param_types, return_type), st))
-    }
-    _ -> {
-      use #(body_type, st) <- result.try(infer_statements(
-        body_env,
-        st,
-        function.body,
-      ))
-      use st <- result.try(case function.return {
-        Some(ann) -> {
-          let #(t, st, _names) = hydrate_threaded(env, names, st, ann)
-          unify(st, body_type, t)
-        }
-        None -> Ok(st)
-      })
-      Ok(#(Fn(param_types, body_type), st))
-    }
-  }
-}
-
-// Infer a module constant, returning its type (an annotation, if present, is
-// applied).
-fn infer_constant(
-  env: Env,
-  st: State,
-  constant: glance.Constant,
-) -> Result(#(Type, State), Error) {
-  use #(value_type, st) <- result.try(infer_expr(env, st, constant.value))
-  case constant.annotation {
-    Some(ann) -> {
-      let #(t, st) = hydrate(env, st, ann)
-      use st <- result.try(unify(st, value_type, t))
-      Ok(#(value_type, st))
-    }
-    None -> Ok(#(value_type, st))
-  }
-}
-
-// Register a custom type's constructors as value schemes in the environment,
-// generalized over the type's parameters.
-fn register_custom_type(
-  env: Env,
-  st: State,
-  custom_type: glance.CustomType,
-) -> #(Env, State) {
-  // Record the type as local first so its own fields can refer to it.
-  let env =
-    declare_type(env, custom_type.name, list.length(custom_type.parameters))
-  let #(rev_param_ids, st) =
-    list.fold(custom_type.parameters, #([], st), fn(acc, _name) {
-      let #(ids, st) = acc
-      let #(id, st) = fresh_id(st)
-      #([id, ..ids], st)
-    })
-  let param_ids = list.reverse(rev_param_ids)
-  let param_vars = list.map(param_ids, Var)
-  let names = dict.from_list(list.zip(custom_type.parameters, param_vars))
-  let return_type = Named(env.current_module, custom_type.name, param_vars)
-
-  // Build constructors, collecting each variant's labelled-field types so we
-  // can later expose accessors for labels shared across all variants.
-  let #(env, st, rev_variant_labels) =
-    list.fold(custom_type.variants, #(env, st, []), fn(acc, variant) {
-      let #(env, st, variant_labels) = acc
-      let #(rev_field_types, labelled, st) =
-        list.fold(variant.fields, #([], dict.new(), st), fn(acc, field) {
-          let #(types_, labelled, st) = acc
-          let #(t, st) = hydrate_in(env, names, st, variant_field_type(field))
-          let labelled = case field {
-            glance.LabelledVariantField(_, label) ->
-              dict.insert(labelled, label, t)
-            glance.UnlabelledVariantField(..) -> labelled
-          }
-          #([t, ..types_], labelled, st)
-        })
-      let field_types = list.reverse(rev_field_types)
-      let ctor_type = case field_types {
-        [] -> return_type
-        _ -> Fn(field_types, return_type)
-      }
-      let env =
-        register_field_map(
-          env,
-          variant.name,
-          list.map(variant.fields, fn(f) {
-            case f {
-              glance.LabelledVariantField(_, label) -> Some(label)
-              glance.UnlabelledVariantField(..) -> None
-            }
-          }),
-        )
-      let env = bind_value(env, variant.name, Scheme(param_ids, ctor_type))
-      #(env, st, [labelled, ..variant_labels])
-    })
-
-  // A label is accessible iff it appears in every variant with the same type.
-  // (Single-variant records are the degenerate case where every label qualifies.)
-  let accessors =
-    shared_accessors(list.reverse(rev_variant_labels), param_ids, return_type)
-  let env =
-    Env(
-      ..env,
-      accessors: dict.insert(env.accessors, custom_type.name, accessors),
-    )
-  #(env, st)
-}
-
-// Accessor schemes for the labels present in every variant with a consistent
-// type, given each variant's `label -> field type` map.
-fn shared_accessors(
-  variants: List(Dict(String, Type)),
-  param_ids: List(Int),
-  return_type: Type,
-) -> Dict(String, Scheme) {
-  case variants {
-    [] -> dict.new()
-    [first, ..rest] ->
-      dict.fold(first, dict.new(), fn(accessors, label, field_type) {
-        let shared =
-          list.all(rest, fn(variant) {
-            dict.get(variant, label) == Ok(field_type)
-          })
-        case shared {
-          True ->
-            dict.insert(
-              accessors,
-              label,
-              Scheme(param_ids, Fn([return_type], field_type)),
-            )
-          False -> accessors
-        }
-      })
-  }
-}
-
-// Look up the accessor scheme for `label` on a (resolved) record type. The
-// accessors live with whichever module defined the type — the current module,
-// or an imported one identified by the type's origin module.
-fn accessor(env: Env, record: Type, label: String) -> Result(Scheme, Error) {
-  case record {
-    Named(module, name, _) -> {
-      let accessors = accessors_of_module(env, module)
-      case dict.get(accessors, name) {
-        Ok(labels) ->
-          case dict.get(labels, label) {
-            Ok(scheme) -> Ok(scheme)
-            Error(_) -> Error(NoSuchField(name, label))
-          }
-        Error(_) -> Error(NoSuchField(name, label))
-      }
-    }
-    _ -> Error(NotARecord)
-  }
-}
-
-fn accessors_of_module(
-  env: Env,
-  module: String,
-) -> Dict(String, Dict(String, Scheme)) {
-  // A type can surface from a module the current one never imports directly (a
-  // helper returning another module's record), and an alias collision can evict
-  // that module from the alias-keyed `modules` map — so resolve by origin name
-  // through `module_index`, which holds the whole transitively-reachable graph.
-  case module == env.current_module {
-    True -> env.accessors
-    False ->
-      case dict.get(env.module_index, module) {
-        Ok(interface) -> interface.accessors
-        Error(_) -> env.accessors
-      }
-  }
-}
-
-// Resolve field accesses that were deferred because the record type was
-// unknown when first seen. By now inference has fixed the record types; any
-// that are still unknown are genuinely ambiguous (the compiler rejects these
-// too).
-fn resolve_pending(env: Env, st: State) -> Result(State, Error) {
-  // Process in discovery order so inner accesses of a chain (`a.b.c`) resolve
-  // before the outer ones, and loop to a fixpoint for any remaining cross
-  // dependencies. Anything still unresolved is genuinely ambiguous.
-  let pending = list.reverse(st.pending)
-  resolve_pending_loop(
-    env,
-    State(..st, pending: []),
-    pending,
-    list.length(pending),
-  )
-}
-
-fn resolve_pending_loop(
-  env: Env,
-  st: State,
-  pending: List(Pending),
-  fuel: Int,
-) -> Result(State, Error) {
-  case pending, fuel <= 0 {
-    [], _ -> Ok(st)
-    [_, ..], True -> Error(NotARecord)
-    _, False -> {
-      use #(st, remaining, progressed) <- result.try(
-        list.try_fold(pending, #(st, [], False), fn(acc, item) {
-          let #(st, remaining, progressed) = acc
-          use #(st, resolved) <- result.try(resolve_one(env, st, item))
-          case resolved {
-            True -> Ok(#(st, remaining, True))
-            False -> Ok(#(st, [item, ..remaining], progressed))
-          }
-        }),
-      )
-      case progressed {
-        True -> resolve_pending_loop(env, st, list.reverse(remaining), fuel - 1)
-        False -> Error(NotARecord)
-      }
-    }
-  }
-}
-
-// Try to resolve one deferred access. Returns `#(state, resolved?)`: `False`
-// means the container is still an unbound variable, so keep it for a later
-// pass. A container fixed to the wrong shape is a hard error.
-fn resolve_one(
-  env: Env,
-  st: State,
-  item: Pending,
-) -> Result(#(State, Bool), Error) {
-  case item {
-    PendingField(container, label, field) ->
-      case resolve(st, container) {
-        Named(_, _, _) as record -> {
-          use scheme <- result.try(accessor(env, record, label))
-          let #(accessor_type, st) = instantiate(st, scheme)
-          use st <- result.try(unify(st, accessor_type, Fn([container], field)))
-          Ok(#(st, True))
-        }
-        Var(_) -> Ok(#(st, False))
-        _ -> Error(NotARecord)
-      }
-    PendingIndex(container, index, result) ->
-      case resolve(st, container) {
-        Tuple(elements) ->
-          case list_at(elements, index) {
-            Ok(element) -> {
-              use st <- result.try(unify(st, element, result))
-              Ok(#(st, True))
-            }
-            Error(_) -> Error(TupleIndexOutOfRange(index))
-          }
-        Var(_) -> Ok(#(st, False))
-        _ -> Error(NotATuple)
-      }
-  }
-}
-
-fn variant_field_type(field: glance.VariantField) -> glance.Type {
-  case field {
-    glance.LabelledVariantField(item, _label) -> item
-    glance.UnlabelledVariantField(item) -> item
-  }
 }
 
 // Building the annotated module
