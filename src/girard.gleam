@@ -32,6 +32,9 @@ import simplifile
 // `Annotation` and whole-module `AnnotatedModule` results, and the
 // `Resolver` and `Target` knobs that configure a run.
 
+/// The structured type girard infers for an expression or definition. Pattern-
+/// match on its variants to inspect an inferred type, or render it to Gleam
+/// syntax with [`type_to_string`](#type_to_string).
 pub type Type {
   /// A named, nominal type such as `Int`, `List(a)`, `Result(a, e)` or a
   /// user-defined custom type. `module` is `"gleam"` for prelude types.
