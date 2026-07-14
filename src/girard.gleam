@@ -25,7 +25,12 @@ import gleam/set.{type Set}
 import gleam/string
 import simplifile
 
-// Public API
+// Public types
+//
+// The vocabulary a consumer pattern-matches on: the structured `Type` and
+// its generalized `Scheme`, the inference `Error`, the per-expression
+// `Annotation` and whole-module `AnnotatedModule` results, and the
+// `Resolver` and `Target` knobs that configure a run.
 
 pub type Type {
   /// A named, nominal type such as `Int`, `List(a)`, `Result(a, e)` or a
@@ -110,33 +115,11 @@ pub type Target {
   JavaScript
 }
 
-// A top-level definition that participates in the dependency graph.
-type Def {
-  FunctionDef(glance.Function)
-  ConstantDef(glance.Constant)
-}
-
-fn def_name(def: Def) -> String {
-  case def {
-    FunctionDef(f) -> f.name
-    ConstantDef(c) -> c.name
-  }
-}
-
-// `#(value references, field-access qualifier names)` of a definition.
-fn def_refs(def: Def) -> #(List(String), List(String)) {
-  case def {
-    FunctionDef(f) -> reference.in_function(f)
-    ConstantDef(c) -> reference.in_constant(c)
-  }
-}
-
-fn infer_def(env: Env, st: State, def: Def) -> Result(#(Type, State), Error) {
-  case def {
-    FunctionDef(f) -> infer_function(env, st, f)
-    ConstantDef(c) -> infer_constant(env, st, c)
-  }
-}
+// Options
+//
+// How a module is annotated — the resolver that finds imported modules and
+// the build target to type for. Build one with `default_options` and adjust
+// it with the `with_*` helpers.
 
 /// How a module is annotated: which [`Resolver`](#Resolver) finds imported
 /// modules, and which build [`Target`](#Target) to type for. Build one from
@@ -169,6 +152,46 @@ pub fn with_target(options: Options, target: Target) -> Options {
   Options(..options, target:)
 }
 
+// Default resolver
+//
+// The resolver `default_options` uses: read an imported module's source from
+// `src/` or the installed packages under `build/packages`.
+
+/// The default resolver: looks for an imported module's source under `src/` and
+/// the `build/packages/*/src` dependency sources, relative to the current
+/// working directory. The `build/packages` listing is read once and captured,
+/// so resolving many imports does not re-scan the directory each time.
+pub fn disk_resolver() -> Resolver {
+  let packages = case simplifile.read_directory("build/packages") {
+    Ok(packages) -> packages
+    Error(_) -> []
+  }
+  fn(path: String) -> Result(String, Nil) {
+    let candidates =
+      list.map(packages, fn(pkg) {
+        "build/packages/" <> pkg <> "/src/" <> path <> ".gleam"
+      })
+    first_readable(["src/" <> path <> ".gleam", ..candidates])
+  }
+}
+
+fn first_readable(paths: List(String)) -> Result(String, Nil) {
+  case paths {
+    [] -> Error(Nil)
+    [path, ..rest] ->
+      case simplifile.read(path) {
+        Ok(source) -> Ok(source)
+        Error(_) -> first_readable(rest)
+      }
+  }
+}
+
+// Annotating a module
+//
+// The primary entry points. Annotate source text or a pre-parsed `glance`
+// module, inferring every expression and top-level signature, or return the
+// first inference error.
+
 /// Annotate a Gleam source string: parse it with `glance`, then annotate as
 /// [`annotate_module`](#annotate_module). Returns the inferred error if the
 /// module does not type. The quick path is `annotate(source, default_options())`.
@@ -200,6 +223,16 @@ pub fn annotate_module(
   ))
   Ok(render(module, env, st))
 }
+
+fn parse(source: String) -> Result(glance.Module, Error) {
+  glance.module(source) |> result.map_error(ParseFailed)
+}
+
+// Caching
+//
+// A reusable cache of inferred module interfaces, threaded across annotation
+// calls so a shared import is resolved and inferred once rather than
+// repeatedly — an editor re-checking a file, or a walk over a package.
 
 /// A reusable cache of inferred module interfaces, threaded across
 /// [`annotate_with_cache`](#annotate_with_cache) calls. Annotating a module
@@ -272,6 +305,12 @@ pub fn invalidate(cache: Cache, path: String) -> Cache {
   Cache(dict.delete(cache.interfaces, path))
 }
 
+// Annotating a package
+//
+// Annotate every module of a package in one pass, sharing inference of common
+// imports. Best-effort per definition: one ill-typed definition (and its
+// dependants) is reported as skipped while the rest are still annotated.
+
 /// The result of annotating one module of a package: its
 /// [`AnnotatedModule`](#AnnotatedModule) plus the definitions that could not be
 /// typed. `skipped` names each top-level function or constant girard declined,
@@ -326,608 +365,36 @@ pub fn annotate_package(
   results
 }
 
-// Interfaces resolved so far in this run, keyed by module path. Resolving a
-// module is expensive (it infers the whole module), and a deep import graph
-// imports the same dependency many times; memoizing keeps each module inferred
-// once rather than re-inferring it exponentially.
-type InterfaceCache =
-  dict.Dict(String, ModuleInterface)
-
-// Module inference
-
-// Fully infer a module: resolve imports, register types, and infer every
-// definition in dependency order. Returns the final environment and state
-// plus the module's public interface.
-fn infer_module(
-  options: Options,
-  loading: Set(String),
-  cache: InterfaceCache,
-  module_name: String,
-  module: glance.Module,
-  best_effort best_effort: Bool,
-) -> Result(
-  #(#(Env, State), ModuleInterface, InterfaceCache, List(#(String, Error))),
-  Error,
-) {
-  // Drop definitions and imports compiled only for another target — a
-  // `@target(javascript)` sibling (e.g. simplifile's JS `do_file_info`
-  // returning a different error type) must not shadow the matching one when
-  // typing for Erlang, and vice versa.
-  let module = for_target(module, options.target)
-  let #(prelude_env, st) = prelude()
-  let env = set_module(prelude_env, module_name)
-
-  // 1. Imports.
-  use #(env, cache) <- result.try(process_imports(
-    options,
-    loading,
-    cache,
-    env,
-    module.imports,
-    best_effort:,
-  ))
-
-  // 2. Pre-declare local type names so forward references resolve, then
-  //    register aliases, custom-type constructors/accessors, and field maps.
-  let env =
-    list.fold(module.custom_types, env, fn(env, d) {
-      let ct = d.definition
-      declare_type(env, ct.name, list.length(ct.parameters))
-    })
-  let env =
-    list.fold(module.type_aliases, env, fn(env, d) {
-      register_type_alias(env, d.definition)
-    })
-  let #(env, st) =
-    list.fold(module.custom_types, #(env, st), fn(acc, d) {
-      let #(env, st) = acc
-      register_custom_type(env, st, d.definition)
-    })
-  let env =
-    list.fold(module.functions, env, fn(env, d) {
-      let function = d.definition
-      register_field_map(
-        env,
-        function.name,
-        list.map(function.parameters, fn(p) { p.label }),
-      )
-    })
-
-  // 3. Infer definitions in strongly-connected-component order.
-  let functions =
-    list.map(module.functions, fn(d) { FunctionDef(d.definition) })
-  let constants =
-    list.map(module.constants, fn(d) { ConstantDef(d.definition) })
-  let defs = list.append(functions, constants)
-  // Names in scope as imported modules. A field access `name.member` whose
-  // `name` is one of these is qualified module access, not a dependency on a
-  // same-named local definition.
-  let module_aliases =
-    set.from_list(
-      list.filter_map(module.imports, fn(d) { qualified_alias(d.definition) }),
-    )
-  use #(#(final_env, st), skipped) <- result.try(infer_defs(
-    env,
-    st,
-    module_aliases,
-    defs,
-    best_effort:,
-  ))
-
-  let interface =
-    build_interface(
-      final_env,
-      st,
-      module_name,
-      public_value_names(module),
-      public_type_names(module),
-      public_accessor_type_names(module),
-    )
-  Ok(#(#(final_env, st), interface, cache, skipped))
-}
-
-fn infer_defs(
-  env: Env,
-  st: State,
-  module_aliases: Set(String),
-  defs: List(Def),
-  best_effort best_effort: Bool,
-) -> Result(#(#(Env, State), List(#(String, Error))), Error) {
-  let by_name = dict.from_list(list.map(defs, fn(d) { #(def_name(d), d) }))
-  let names = list.map(defs, def_name)
-  let name_set = set.from_list(names)
-  let edges =
-    dict.from_list(
-      list.map(defs, fn(d) {
-        let #(values, qualifiers) = def_refs(d)
-        // A qualifier edge survives only for a local definition that is not a
-        // shadowed module name; value references always count.
-        let kept_qualifiers =
-          list.filter(qualifiers, fn(name) {
-            !set.contains(module_aliases, name)
-          })
-        let refs =
-          list.filter(list.append(values, kept_qualifiers), set.contains(
-            name_set,
-            _,
-          ))
-        #(def_name(d), refs)
-      }),
-    )
-  // Each component is a group of mutually recursive definitions, in dependency
-  // order. Resolve the names back to definitions up front.
-  let groups =
-    list.map(scc.components(names, edges), fn(group) {
-      list.filter_map(group, dict.get(by_name, _))
-    })
-
-  // Strict mode stops at the first component that fails to type, returning its
-  // error. Best-effort mode keeps the pre-component environment on a failure —
-  // discarding that component's partial annotations and substitution — records
-  // every definition in it as skipped (with the error), and carries on; a later
-  // component referring to a skipped one fails in turn (an unbound variable) and
-  // cascades naturally.
-  case best_effort {
-    False -> {
-      use #(env, st) <- result.map(
-        list.try_fold(groups, #(env, st), fn(acc, group) {
-          let #(env, st) = acc
-          infer_group(env, st, group)
-        }),
-      )
-      #(#(env, st), [])
-    }
-    True -> Ok(list.fold(groups, #(#(env, st), []), best_effort_group))
-  }
-}
-
-// One best-effort step over a strongly-connected component: on success adopt
-// the new environment; on failure keep the prior one (discarding the
-// component's partial work) and record every definition in it as skipped.
-fn best_effort_group(
-  acc: #(#(Env, State), List(#(String, Error))),
-  group: List(Def),
-) -> #(#(Env, State), List(#(String, Error))) {
-  let #(#(env, st), skipped) = acc
-  case infer_group(env, st, group) {
-    Ok(env_st) -> #(env_st, skipped)
-    Error(error) -> {
-      let entries = list.map(group, fn(d) { #(def_name(d), error) })
-      #(#(env, st), list.append(skipped, entries))
-    }
-  }
-}
-
-// Infer one strongly-connected component of mutually recursive definitions,
-// then generalize each against the surrounding environment and add it back for
-// later components.
+// Reporting
 //
-// A function with signature variables is pre-registered at a scheme over those
-// variables so recursion and siblings see it polymorphically; its body is
-// checked against the signature with those variables rigid, and within its own
-// body it sees itself at the rigid monotype (no polymorphic recursion). Every
-// other definition is inferred monomorphically against a fresh placeholder.
-// The members are marked *live* (see `mark_live`): a reference to a
-// sibling resolves its scheme through the current substitution, so once a
-// member's body has settled an unannotated part (absorbing it into a signature
-// variable) a later sibling sees the resolved type — the compiler's shared
-// mutable cells, reproduced through girard's threaded substitution. Because of
-// that, bodies are inferred *provider-first*: a member whose signature has an
-// unannotated part is typed before the fully-annotated members that consume it
-// (a dependency-respecting order within the component, as Tarjan provides).
-fn infer_group(
-  env: Env,
-  st: State,
-  group: List(Def),
-) -> Result(#(Env, State), Error) {
-  let #(group_env, rev_items, st) =
-    list.fold(group, #(env, [], st), fn(acc, def) {
-      let #(env, items, st) = acc
-      prereg_def(env, items, st, def)
-    })
-  let group_env = mark_live(group_env, list.map(group, def_name))
-  let items = list.reverse(rev_items)
-  // Type members with an unannotated parameter or return first: their bodies
-  // settle those placeholders, which a later sibling reference then resolves.
-  let #(providers, consumers) =
-    list.partition(items, fn(item) {
-      case item {
-        AnnotatedDef(_, f, _, _) ->
-          f.return == option.None
-          || list.any(f.parameters, fn(p) { p.type_ == option.None })
-        PlaceholderDef(..) -> False
-      }
-    })
-  use st <- result.try(
-    list.try_fold(list.append(providers, consumers), st, fn(st, item) {
-      case item {
-        AnnotatedDef(def, f, params, return_type) -> {
-          // Inside its own body the function sees itself at the rigid
-          // (un-generalized) signature, so a self-recursive call must be at
-          // the same type — no polymorphic recursion. Bind the self-name
-          // first, then the parameters on top, so a parameter that shares the
-          // function's name shadows it (as in the source).
-          let body_env =
-            bind_params(
-              define(
-                group_env,
-                def_name(def),
-                rigid_self_scheme(params, return_type),
-              ),
-              f,
-              params,
-            )
-          check_body(body_env, st, f, return_type)
-        }
-        PlaceholderDef(def, var) -> {
-          use #(inferred, st) <- result.try(infer_def(group_env, st, def))
-          unify(st, var, inferred)
-        }
-      }
-    }),
-  )
-  // The component's bodies are fully inferred, so any field accesses deferred
-  // because their record type was unknown can now be resolved — before we
-  // generalize, so the field types are reflected in the schemes.
-  use st <- result.try(resolve_pending(group_env, st))
-  let env =
-    list.fold(items, env, fn(env, item) {
-      case item {
-        AnnotatedDef(def, _, params, return_type) ->
-          define(
-            env,
-            def_name(def),
-            function_scheme(env, st, params, return_type),
-          )
-        PlaceholderDef(def, var) ->
-          define(env, def_name(def), generalize(st, env, var))
-      }
-    })
-  Ok(#(env, st))
-}
+// Human-readable rendering of inferred types and errors: a single `Type` to
+// Gleam syntax, a whole module to a text report, or an `Error` to a short
+// description.
 
-// A member of a strongly-connected component during inference.
-type GroupItem {
-  // A fully-annotated function: bound at its declared scheme up front; its body
-  // is checked against the signature (rigid variables).
-  AnnotatedDef(
-    def: Def,
-    function: glance.Function,
-    params: List(Type),
-    return_type: Type,
-  )
-  // Any other definition: inferred monomorphically against `var`, then
-  // generalized.
-  PlaceholderDef(def: Def, var: Type)
-}
-
-fn placeholder(
-  env: Env,
-  items: List(GroupItem),
-  st: State,
-  def: Def,
-) -> #(Env, List(GroupItem), State) {
-  let #(var, st) = fresh_var(st)
-  #(
-    define(env, def_name(def), Scheme([], var)),
-    [PlaceholderDef(def, var), ..items],
-    st,
-  )
-}
-
-// Pre-register one SCC member: a function with signature variables is bound at
-// its declared scheme (`AnnotatedDef`); any other definition gets a fresh
-// monomorphic placeholder.
-fn prereg_def(
-  env: Env,
-  items: List(GroupItem),
-  st: State,
-  def: Def,
-) -> #(Env, List(GroupItem), State) {
-  let annotated = case def {
-    FunctionDef(f) ->
-      case has_annotation_vars(f) {
-        True -> Ok(f)
-        False -> Error(Nil)
-      }
-    ConstantDef(_) -> Error(Nil)
+/// A short, human-readable description of an inference error.
+pub fn describe_error(error: Error) -> String {
+  case error {
+    TypeMismatch(a, b) ->
+      "type mismatch: " <> to_string(a) <> " vs " <> to_string(b)
+    ArityMismatch -> "wrong number of arguments"
+    RecursiveType(_, type_) -> "recursive type: " <> to_string(type_)
+    UnboundVariable(name) -> "unbound variable: " <> name
+    UnknownConstructor(name) -> "unknown constructor: " <> name
+    UnknownModule(alias) -> "unknown module: " <> alias
+    NoSuchExport(module, name) ->
+      "module `" <> module <> "` has no `" <> name <> "`"
+    NoSuchField(type_name, label) ->
+      "type `" <> type_name <> "` has no field `" <> label <> "`"
+    NotARecord -> "field access or update on a non-record value"
+    NotATuple -> "tuple index on a non-tuple value"
+    TupleIndexOutOfRange(index) ->
+      "tuple index out of range: " <> int.to_string(index)
+    UnknownLabel(label) -> "unknown argument label: " <> label
+    AmbiguousCall -> "labelled arguments to an unknown callable"
+    MissingArgument -> "missing argument"
+    Unsupported(feature) -> "unsupported: " <> feature
+    ParseFailed(_) -> "could not parse source"
   }
-  case annotated {
-    Error(_) -> placeholder(env, items, st, def)
-    Ok(f) -> {
-      let #(params, return_type, rigid_ids, st) = signature_skeleton(env, st, f)
-      #(
-        define(env, def_name(def), rigid_scheme(rigid_ids, params, return_type)),
-        [AnnotatedDef(def, f, params, return_type), ..items],
-        st,
-      )
-    }
-  }
-}
-
-// Imports
-
-fn process_imports(
-  options: Options,
-  loading: Set(String),
-  cache: InterfaceCache,
-  env: Env,
-  imports: List(glance.Definition(glance.Import)),
-  best_effort best_effort: Bool,
-) -> Result(#(Env, InterfaceCache), Error) {
-  list.try_fold(imports, #(env, cache), fn(acc, definition) {
-    let #(env, cache) = acc
-    let import_ = definition.definition
-    let path = import_.module
-    // Cyclic import: break the cycle by skipping.
-    use <- bool.guard(
-      when: set.contains(loading, path),
-      return: Ok(#(env, cache)),
-    )
-    use #(maybe_interface, cache) <- result.try(resolve_interface(
-      options,
-      loading,
-      cache,
-      path,
-      best_effort:,
-    ))
-    case maybe_interface {
-      // Unresolvable or unparsable: best effort, skip (uses of it surface later
-      // as unbound variables).
-      None -> Ok(#(env, cache))
-      Some(interface) -> Ok(#(import_items(env, import_, interface), cache))
-    }
-  })
-}
-
-// Bring an import's qualified alias and unqualified values/types into scope.
-fn import_items(
-  env: Env,
-  import_: glance.Import,
-  interface: ModuleInterface,
-) -> Env {
-  // A discarded alias (`import x as _y`) imports the module for its unqualified
-  // items only — it must NOT be bound under any qualified name, or we'd bind it
-  // under the module's last segment and shadow a real import sharing that name
-  // (mist's `gleam/http as _ghttp` vs `mist/internal/http`).
-  let env = case qualified_alias(import_) {
-    Ok(alias) -> import_qualified(env, alias, interface)
-    Error(_) -> env
-  }
-  let env =
-    list.fold(import_.unqualified_values, env, fn(env, u) {
-      import_value(env, option.unwrap(u.alias, u.name), interface, u.name)
-    })
-  list.fold(import_.unqualified_types, env, fn(env, u) {
-    import_type(env, option.unwrap(u.alias, u.name), interface, u.name)
-  })
-}
-
-fn resolve_interface(
-  options: Options,
-  loading: Set(String),
-  cache: InterfaceCache,
-  path: String,
-  best_effort best_effort: Bool,
-) -> Result(#(Option(ModuleInterface), InterfaceCache), Error) {
-  // `import gleam` refers to the built-in prelude module, which has no source
-  // file; resolve it to a synthetic interface of the prelude's types/values.
-  use <- bool.lazy_guard(when: path == prelude_module, return: fn() {
-    Ok(#(Some(prelude_interface()), cache))
-  })
-  case dict.get(cache, path) {
-    // Already inferred in this run: reuse it rather than inferring again.
-    Ok(interface) -> Ok(#(Some(interface), cache))
-    Error(_) -> resolve_uncached(options, loading, cache, path, best_effort:)
-  }
-}
-
-fn resolve_uncached(
-  options: Options,
-  loading: Set(String),
-  cache: InterfaceCache,
-  path: String,
-  best_effort best_effort: Bool,
-) -> Result(#(Option(ModuleInterface), InterfaceCache), Error) {
-  case options.resolver(path) {
-    Error(_) -> Ok(#(None, cache))
-    Ok(source) ->
-      case glance.module(source) {
-        Error(_) -> Ok(#(None, cache))
-        Ok(module) -> {
-          // An import's own skipped definitions (best-effort) are irrelevant to
-          // the importer; only its public interface, partial or not, matters.
-          use #(_, interface, cache, _skipped) <- result.try(infer_module(
-            options,
-            set.insert(loading, path),
-            cache,
-            path,
-            module,
-            best_effort:,
-          ))
-          Ok(#(Some(interface), dict.insert(cache, path, interface)))
-        }
-      }
-  }
-}
-
-// The name under which an import is accessible for qualified access, or
-// `Error` when the module is imported with a discarded alias (`as _x`) and so
-// has no qualified name at all.
-fn qualified_alias(import_: glance.Import) -> Result(String, Nil) {
-  case import_.alias {
-    Some(glance.Named(alias)) -> Ok(alias)
-    Some(glance.Discarded(_)) -> Error(Nil)
-    None -> Ok(last_segment(import_.module))
-  }
-}
-
-fn last_segment(path: String) -> String {
-  case list.last(string.split(path, "/")) {
-    Ok(segment) -> segment
-    Error(_) -> path
-  }
-}
-
-// Keep only the definitions and imports compiled for `target`: those with no
-// `@target` attribute, or one naming the active target. A definition annotated
-// for the other target is dropped, exactly as the compiler omits it.
-fn for_target(module: glance.Module, target: Target) -> glance.Module {
-  glance.Module(
-    imports: list.filter(module.imports, on_target(_, target)),
-    custom_types: list.filter(module.custom_types, on_target(_, target)),
-    type_aliases: list.filter(module.type_aliases, on_target(_, target)),
-    constants: list.filter(module.constants, on_target(_, target)),
-    functions: list.filter(module.functions, on_target(_, target)),
-  )
-}
-
-fn on_target(definition: glance.Definition(a), target: Target) -> Bool {
-  let active = case target {
-    Erlang -> "erlang"
-    JavaScript -> "javascript"
-  }
-  list.all(definition.attributes, fn(attr) {
-    case attr.name, attr.arguments {
-      "target", [glance.Variable(_, t)] -> t == active
-      _, _ -> True
-    }
-  })
-}
-
-fn public_value_names(module: glance.Module) -> List(String) {
-  let functions =
-    list.filter_map(module.functions, fn(d) {
-      case d.definition.publicity {
-        glance.Public -> Ok(d.definition.name)
-        glance.Private -> Error(Nil)
-      }
-    })
-  let constants =
-    list.filter_map(module.constants, fn(d) {
-      case d.definition.publicity {
-        glance.Public -> Ok(d.definition.name)
-        glance.Private -> Error(Nil)
-      }
-    })
-  // Constructors of public, non-opaque types are public values.
-  let constructors =
-    list.flat_map(module.custom_types, fn(d) {
-      let ct = d.definition
-      case ct.publicity, ct.opaque_ {
-        glance.Public, False -> list.map(ct.variants, fn(v) { v.name })
-        _, _ -> []
-      }
-    })
-  list.flatten([functions, constants, constructors])
-}
-
-fn public_type_names(module: glance.Module) -> List(String) {
-  let types =
-    list.filter_map(module.custom_types, fn(d) {
-      case d.definition.publicity {
-        glance.Public -> Ok(d.definition.name)
-        glance.Private -> Error(Nil)
-      }
-    })
-  let aliases =
-    list.filter_map(module.type_aliases, fn(d) {
-      case d.definition.publicity {
-        glance.Public -> Ok(d.definition.name)
-        glance.Private -> Error(Nil)
-      }
-    })
-  list.append(types, aliases)
-}
-
-// Public types whose field accessors are reachable from other modules: public,
-// non-opaque custom types. An `opaque` type's fields are private to its
-// defining module, so its accessors are not exported — a same-named module
-// function then wins over the (inaccessible) field at an external call site, as
-// the compiler does (kata's opaque `Schema` with a `decode` field and a
-// `decode` function).
-fn public_accessor_type_names(module: glance.Module) -> List(String) {
-  list.filter_map(module.custom_types, fn(d) {
-    case d.definition.publicity, d.definition.opaque_ {
-      glance.Public, False -> Ok(d.definition.name)
-      _, _ -> Error(Nil)
-    }
-  })
-}
-
-// Default disk resolver
-
-/// The default resolver: looks for an imported module's source under `src/` and
-/// the `build/packages/*/src` dependency sources, relative to the current
-/// working directory. The `build/packages` listing is read once and captured,
-/// so resolving many imports does not re-scan the directory each time.
-pub fn disk_resolver() -> Resolver {
-  let packages = case simplifile.read_directory("build/packages") {
-    Ok(packages) -> packages
-    Error(_) -> []
-  }
-  fn(path: String) -> Result(String, Nil) {
-    let candidates =
-      list.map(packages, fn(pkg) {
-        "build/packages/" <> pkg <> "/src/" <> path <> ".gleam"
-      })
-    first_readable(["src/" <> path <> ".gleam", ..candidates])
-  }
-}
-
-fn first_readable(paths: List(String)) -> Result(String, Nil) {
-  case paths {
-    [] -> Error(Nil)
-    [path, ..rest] ->
-      case simplifile.read(path) {
-        Ok(source) -> Ok(source)
-        Error(_) -> first_readable(rest)
-      }
-  }
-}
-
-// Rendering
-
-fn render(module: glance.Module, env: Env, st: State) -> AnnotatedModule {
-  let functions =
-    list.map(module.functions, fn(d) { FunctionDef(d.definition) })
-  let constants =
-    list.map(module.constants, fn(d) { ConstantDef(d.definition) })
-
-  // `st.annotations` is in reverse discovery order; reverse it so that when a
-  // span was recorded more than once (e.g. a polymorphic reference and its
-  // use-instantiated type), the later, stable sort keeps the same one the
-  // string-based renderer did.
-  let expressions =
-    list.map(list.reverse(st.annotations), fn(entry) {
-      let #(span, type_) = entry
-      Annotation(span, zonk(st, type_))
-    })
-
-  AnnotatedModule(
-    functions: collect_schemes(functions, env),
-    constants: collect_schemes(constants, env),
-    expressions: sort_by_span(expressions),
-  )
-}
-
-// The inferred (generalized) scheme of each definition, in source order.
-// Definitions the environment somehow lacks are skipped.
-fn collect_schemes(defs: List(Def), env: Env) -> List(#(String, Scheme)) {
-  list.filter_map(defs, fn(def) {
-    let name = def_name(def)
-    case lookup(env, name) {
-      Ok(scheme) -> Ok(#(name, scheme))
-      Error(_) -> Error(Nil)
-    }
-  })
-}
-
-/// Render an inferred `Type` to Gleam syntax (e.g. `fn(Int) -> a`), naming type
-/// variables `a, b, c, …`. Each call names variables independently: an `a` in
-/// one rendered type is unrelated to an `a` in another.
-pub fn type_to_string(type_: Type) -> String {
-  to_string(type_)
 }
 
 /// Annotate a source string and render the result as a human-readable text
@@ -983,46 +450,16 @@ pub fn report(source: String) -> String {
   }
 }
 
-/// A short, human-readable description of an inference error.
-pub fn describe_error(error: Error) -> String {
-  case error {
-    TypeMismatch(a, b) ->
-      "type mismatch: " <> to_string(a) <> " vs " <> to_string(b)
-    ArityMismatch -> "wrong number of arguments"
-    RecursiveType(_, type_) -> "recursive type: " <> to_string(type_)
-    UnboundVariable(name) -> "unbound variable: " <> name
-    UnknownConstructor(name) -> "unknown constructor: " <> name
-    UnknownModule(alias) -> "unknown module: " <> alias
-    NoSuchExport(module, name) ->
-      "module `" <> module <> "` has no `" <> name <> "`"
-    NoSuchField(type_name, label) ->
-      "type `" <> type_name <> "` has no field `" <> label <> "`"
-    NotARecord -> "field access or update on a non-record value"
-    NotATuple -> "tuple index on a non-tuple value"
-    TupleIndexOutOfRange(index) ->
-      "tuple index out of range: " <> int.to_string(index)
-    UnknownLabel(label) -> "unknown argument label: " <> label
-    AmbiguousCall -> "labelled arguments to an unknown callable"
-    MissingArgument -> "missing argument"
-    Unsupported(feature) -> "unsupported: " <> feature
-    ParseFailed(_) -> "could not parse source"
-  }
+/// Render an inferred `Type` to Gleam syntax (e.g. `fn(Int) -> a`), naming type
+/// variables `a, b, c, …`. Each call names variables independently: an `a` in
+/// one rendered type is unrelated to an `a` in another.
+pub fn type_to_string(type_: Type) -> String {
+  to_string(type_)
 }
 
-fn parse(source: String) -> Result(glance.Module, Error) {
-  glance.module(source) |> result.map_error(ParseFailed)
-}
-
-fn sort_by_span(annotations: List(Annotation)) -> List(Annotation) {
-  list.sort(annotations, fn(a, b) {
-    case int.compare(a.span.start, b.span.start) {
-      order.Eq -> int.compare(a.span.end, b.span.end)
-      other -> other
-    }
-  })
-}
-
-// CLI
+// Command-line interface
+//
+// `gleam run` annotates a file or stdin and prints the text report.
 
 /// `gleam run -- <file.gleam>` annotates a file; `gleam run -- -` (or no
 /// arguments, or piped input) annotates stdin. Imports are resolved from disk.
@@ -1080,9 +517,15 @@ Output: each top-level definition's inferred signature, then one
 `<start>-<end>: <type>` line per expression (by source byte span)."
 }
 
-// Inference engine (private)
-
-// State & environment
+// Inference state and environment
+//
+// The threaded inference `State` and lexical `Env`, plus the prelude seeding
+// that starts every run. `State` carries the substitution, recorded
+// annotations, deferred accesses and rigid variables; `Env` carries the
+// value, type, alias, accessor and module bindings in scope.
+//
+// `ModuleInterface` is the public surface of an inferred module, consumed
+// when importing it elsewhere.
 
 type State {
   State(
@@ -1429,7 +872,491 @@ fn lookup(env: Env, name: String) -> Result(Scheme, Nil) {
   dict.get(env.values, name)
 }
 
-// Module interfaces & imports
+// Module inference
+//
+// The driver: fully infer a module by resolving imports, registering types,
+// ordering definitions by strongly-connected component, and inferring each
+// component before generalizing at the top-level boundary. Best-effort mode
+// keeps going past a component that fails to type.
+
+// A top-level definition that participates in the dependency graph.
+type Def {
+  FunctionDef(glance.Function)
+  ConstantDef(glance.Constant)
+}
+
+fn def_name(def: Def) -> String {
+  case def {
+    FunctionDef(f) -> f.name
+    ConstantDef(c) -> c.name
+  }
+}
+
+// `#(value references, field-access qualifier names)` of a definition.
+fn def_refs(def: Def) -> #(List(String), List(String)) {
+  case def {
+    FunctionDef(f) -> reference.in_function(f)
+    ConstantDef(c) -> reference.in_constant(c)
+  }
+}
+
+fn infer_def(env: Env, st: State, def: Def) -> Result(#(Type, State), Error) {
+  case def {
+    FunctionDef(f) -> infer_function(env, st, f)
+    ConstantDef(c) -> infer_constant(env, st, c)
+  }
+}
+
+// Interfaces resolved so far in this run, keyed by module path. Resolving a
+// module is expensive (it infers the whole module), and a deep import graph
+// imports the same dependency many times; memoizing keeps each module inferred
+// once rather than re-inferring it exponentially.
+type InterfaceCache =
+  dict.Dict(String, ModuleInterface)
+
+// Fully infer a module: resolve imports, register types, and infer every
+// definition in dependency order. Returns the final environment and state
+// plus the module's public interface.
+fn infer_module(
+  options: Options,
+  loading: Set(String),
+  cache: InterfaceCache,
+  module_name: String,
+  module: glance.Module,
+  best_effort best_effort: Bool,
+) -> Result(
+  #(#(Env, State), ModuleInterface, InterfaceCache, List(#(String, Error))),
+  Error,
+) {
+  // Drop definitions and imports compiled only for another target — a
+  // `@target(javascript)` sibling (e.g. simplifile's JS `do_file_info`
+  // returning a different error type) must not shadow the matching one when
+  // typing for Erlang, and vice versa.
+  let module = for_target(module, options.target)
+  let #(prelude_env, st) = prelude()
+  let env = set_module(prelude_env, module_name)
+
+  // 1. Imports.
+  use #(env, cache) <- result.try(process_imports(
+    options,
+    loading,
+    cache,
+    env,
+    module.imports,
+    best_effort:,
+  ))
+
+  // 2. Pre-declare local type names so forward references resolve, then
+  //    register aliases, custom-type constructors/accessors, and field maps.
+  let env =
+    list.fold(module.custom_types, env, fn(env, d) {
+      let ct = d.definition
+      declare_type(env, ct.name, list.length(ct.parameters))
+    })
+  let env =
+    list.fold(module.type_aliases, env, fn(env, d) {
+      register_type_alias(env, d.definition)
+    })
+  let #(env, st) =
+    list.fold(module.custom_types, #(env, st), fn(acc, d) {
+      let #(env, st) = acc
+      register_custom_type(env, st, d.definition)
+    })
+  let env =
+    list.fold(module.functions, env, fn(env, d) {
+      let function = d.definition
+      register_field_map(
+        env,
+        function.name,
+        list.map(function.parameters, fn(p) { p.label }),
+      )
+    })
+
+  // 3. Infer definitions in strongly-connected-component order.
+  let functions =
+    list.map(module.functions, fn(d) { FunctionDef(d.definition) })
+  let constants =
+    list.map(module.constants, fn(d) { ConstantDef(d.definition) })
+  let defs = list.append(functions, constants)
+  // Names in scope as imported modules. A field access `name.member` whose
+  // `name` is one of these is qualified module access, not a dependency on a
+  // same-named local definition.
+  let module_aliases =
+    set.from_list(
+      list.filter_map(module.imports, fn(d) { qualified_alias(d.definition) }),
+    )
+  use #(#(final_env, st), skipped) <- result.try(infer_defs(
+    env,
+    st,
+    module_aliases,
+    defs,
+    best_effort:,
+  ))
+
+  let interface =
+    build_interface(
+      final_env,
+      st,
+      module_name,
+      public_value_names(module),
+      public_type_names(module),
+      public_accessor_type_names(module),
+    )
+  Ok(#(#(final_env, st), interface, cache, skipped))
+}
+
+fn infer_defs(
+  env: Env,
+  st: State,
+  module_aliases: Set(String),
+  defs: List(Def),
+  best_effort best_effort: Bool,
+) -> Result(#(#(Env, State), List(#(String, Error))), Error) {
+  let by_name = dict.from_list(list.map(defs, fn(d) { #(def_name(d), d) }))
+  let names = list.map(defs, def_name)
+  let name_set = set.from_list(names)
+  let edges =
+    dict.from_list(
+      list.map(defs, fn(d) {
+        let #(values, qualifiers) = def_refs(d)
+        // A qualifier edge survives only for a local definition that is not a
+        // shadowed module name; value references always count.
+        let kept_qualifiers =
+          list.filter(qualifiers, fn(name) {
+            !set.contains(module_aliases, name)
+          })
+        let refs =
+          list.filter(list.append(values, kept_qualifiers), set.contains(
+            name_set,
+            _,
+          ))
+        #(def_name(d), refs)
+      }),
+    )
+  // Each component is a group of mutually recursive definitions, in dependency
+  // order. Resolve the names back to definitions up front.
+  let groups =
+    list.map(scc.components(names, edges), fn(group) {
+      list.filter_map(group, dict.get(by_name, _))
+    })
+
+  // Strict mode stops at the first component that fails to type, returning its
+  // error. Best-effort mode keeps the pre-component environment on a failure —
+  // discarding that component's partial annotations and substitution — records
+  // every definition in it as skipped (with the error), and carries on; a later
+  // component referring to a skipped one fails in turn (an unbound variable) and
+  // cascades naturally.
+  case best_effort {
+    False -> {
+      use #(env, st) <- result.map(
+        list.try_fold(groups, #(env, st), fn(acc, group) {
+          let #(env, st) = acc
+          infer_group(env, st, group)
+        }),
+      )
+      #(#(env, st), [])
+    }
+    True -> Ok(list.fold(groups, #(#(env, st), []), best_effort_group))
+  }
+}
+
+// One best-effort step over a strongly-connected component: on success adopt
+// the new environment; on failure keep the prior one (discarding the
+// component's partial work) and record every definition in it as skipped.
+fn best_effort_group(
+  acc: #(#(Env, State), List(#(String, Error))),
+  group: List(Def),
+) -> #(#(Env, State), List(#(String, Error))) {
+  let #(#(env, st), skipped) = acc
+  case infer_group(env, st, group) {
+    Ok(env_st) -> #(env_st, skipped)
+    Error(error) -> {
+      let entries = list.map(group, fn(d) { #(def_name(d), error) })
+      #(#(env, st), list.append(skipped, entries))
+    }
+  }
+}
+
+// Infer one strongly-connected component of mutually recursive definitions,
+// then generalize each against the surrounding environment and add it back for
+// later components.
+//
+// A function with signature variables is pre-registered at a scheme over those
+// variables so recursion and siblings see it polymorphically; its body is
+// checked against the signature with those variables rigid, and within its own
+// body it sees itself at the rigid monotype (no polymorphic recursion). Every
+// other definition is inferred monomorphically against a fresh placeholder.
+// The members are marked *live* (see `mark_live`): a reference to a
+// sibling resolves its scheme through the current substitution, so once a
+// member's body has settled an unannotated part (absorbing it into a signature
+// variable) a later sibling sees the resolved type — the compiler's shared
+// mutable cells, reproduced through girard's threaded substitution. Because of
+// that, bodies are inferred *provider-first*: a member whose signature has an
+// unannotated part is typed before the fully-annotated members that consume it
+// (a dependency-respecting order within the component, as Tarjan provides).
+fn infer_group(
+  env: Env,
+  st: State,
+  group: List(Def),
+) -> Result(#(Env, State), Error) {
+  let #(group_env, rev_items, st) =
+    list.fold(group, #(env, [], st), fn(acc, def) {
+      let #(env, items, st) = acc
+      prereg_def(env, items, st, def)
+    })
+  let group_env = mark_live(group_env, list.map(group, def_name))
+  let items = list.reverse(rev_items)
+  // Type members with an unannotated parameter or return first: their bodies
+  // settle those placeholders, which a later sibling reference then resolves.
+  let #(providers, consumers) =
+    list.partition(items, fn(item) {
+      case item {
+        AnnotatedDef(_, f, _, _) ->
+          f.return == option.None
+          || list.any(f.parameters, fn(p) { p.type_ == option.None })
+        PlaceholderDef(..) -> False
+      }
+    })
+  use st <- result.try(
+    list.try_fold(list.append(providers, consumers), st, fn(st, item) {
+      case item {
+        AnnotatedDef(def, f, params, return_type) -> {
+          // Inside its own body the function sees itself at the rigid
+          // (un-generalized) signature, so a self-recursive call must be at
+          // the same type — no polymorphic recursion. Bind the self-name
+          // first, then the parameters on top, so a parameter that shares the
+          // function's name shadows it (as in the source).
+          let body_env =
+            bind_params(
+              define(
+                group_env,
+                def_name(def),
+                rigid_self_scheme(params, return_type),
+              ),
+              f,
+              params,
+            )
+          check_body(body_env, st, f, return_type)
+        }
+        PlaceholderDef(def, var) -> {
+          use #(inferred, st) <- result.try(infer_def(group_env, st, def))
+          unify(st, var, inferred)
+        }
+      }
+    }),
+  )
+  // The component's bodies are fully inferred, so any field accesses deferred
+  // because their record type was unknown can now be resolved — before we
+  // generalize, so the field types are reflected in the schemes.
+  use st <- result.try(resolve_pending(group_env, st))
+  let env =
+    list.fold(items, env, fn(env, item) {
+      case item {
+        AnnotatedDef(def, _, params, return_type) ->
+          define(
+            env,
+            def_name(def),
+            function_scheme(env, st, params, return_type),
+          )
+        PlaceholderDef(def, var) ->
+          define(env, def_name(def), generalize(st, env, var))
+      }
+    })
+  Ok(#(env, st))
+}
+
+// A member of a strongly-connected component during inference.
+type GroupItem {
+  // A fully-annotated function: bound at its declared scheme up front; its body
+  // is checked against the signature (rigid variables).
+  AnnotatedDef(
+    def: Def,
+    function: glance.Function,
+    params: List(Type),
+    return_type: Type,
+  )
+  // Any other definition: inferred monomorphically against `var`, then
+  // generalized.
+  PlaceholderDef(def: Def, var: Type)
+}
+
+fn placeholder(
+  env: Env,
+  items: List(GroupItem),
+  st: State,
+  def: Def,
+) -> #(Env, List(GroupItem), State) {
+  let #(var, st) = fresh_var(st)
+  #(
+    define(env, def_name(def), Scheme([], var)),
+    [PlaceholderDef(def, var), ..items],
+    st,
+  )
+}
+
+// Pre-register one SCC member: a function with signature variables is bound at
+// its declared scheme (`AnnotatedDef`); any other definition gets a fresh
+// monomorphic placeholder.
+fn prereg_def(
+  env: Env,
+  items: List(GroupItem),
+  st: State,
+  def: Def,
+) -> #(Env, List(GroupItem), State) {
+  let annotated = case def {
+    FunctionDef(f) ->
+      case has_annotation_vars(f) {
+        True -> Ok(f)
+        False -> Error(Nil)
+      }
+    ConstantDef(_) -> Error(Nil)
+  }
+  case annotated {
+    Error(_) -> placeholder(env, items, st, def)
+    Ok(f) -> {
+      let #(params, return_type, rigid_ids, st) = signature_skeleton(env, st, f)
+      #(
+        define(env, def_name(def), rigid_scheme(rigid_ids, params, return_type)),
+        [AnnotatedDef(def, f, params, return_type), ..items],
+        st,
+      )
+    }
+  }
+}
+
+// Import resolution
+//
+// Resolve each import to a `ModuleInterface` — from the run's cache, the
+// prelude, or by inferring the imported module's source through the resolver
+// — and bring its qualified alias and unqualified items into scope.
+
+fn process_imports(
+  options: Options,
+  loading: Set(String),
+  cache: InterfaceCache,
+  env: Env,
+  imports: List(glance.Definition(glance.Import)),
+  best_effort best_effort: Bool,
+) -> Result(#(Env, InterfaceCache), Error) {
+  list.try_fold(imports, #(env, cache), fn(acc, definition) {
+    let #(env, cache) = acc
+    let import_ = definition.definition
+    let path = import_.module
+    // Cyclic import: break the cycle by skipping.
+    use <- bool.guard(
+      when: set.contains(loading, path),
+      return: Ok(#(env, cache)),
+    )
+    use #(maybe_interface, cache) <- result.try(resolve_interface(
+      options,
+      loading,
+      cache,
+      path,
+      best_effort:,
+    ))
+    case maybe_interface {
+      // Unresolvable or unparsable: best effort, skip (uses of it surface later
+      // as unbound variables).
+      None -> Ok(#(env, cache))
+      Some(interface) -> Ok(#(import_items(env, import_, interface), cache))
+    }
+  })
+}
+
+// Bring an import's qualified alias and unqualified values/types into scope.
+fn import_items(
+  env: Env,
+  import_: glance.Import,
+  interface: ModuleInterface,
+) -> Env {
+  // A discarded alias (`import x as _y`) imports the module for its unqualified
+  // items only — it must NOT be bound under any qualified name, or we'd bind it
+  // under the module's last segment and shadow a real import sharing that name
+  // (mist's `gleam/http as _ghttp` vs `mist/internal/http`).
+  let env = case qualified_alias(import_) {
+    Ok(alias) -> import_qualified(env, alias, interface)
+    Error(_) -> env
+  }
+  let env =
+    list.fold(import_.unqualified_values, env, fn(env, u) {
+      import_value(env, option.unwrap(u.alias, u.name), interface, u.name)
+    })
+  list.fold(import_.unqualified_types, env, fn(env, u) {
+    import_type(env, option.unwrap(u.alias, u.name), interface, u.name)
+  })
+}
+
+fn resolve_interface(
+  options: Options,
+  loading: Set(String),
+  cache: InterfaceCache,
+  path: String,
+  best_effort best_effort: Bool,
+) -> Result(#(Option(ModuleInterface), InterfaceCache), Error) {
+  // `import gleam` refers to the built-in prelude module, which has no source
+  // file; resolve it to a synthetic interface of the prelude's types/values.
+  use <- bool.lazy_guard(when: path == prelude_module, return: fn() {
+    Ok(#(Some(prelude_interface()), cache))
+  })
+  case dict.get(cache, path) {
+    // Already inferred in this run: reuse it rather than inferring again.
+    Ok(interface) -> Ok(#(Some(interface), cache))
+    Error(_) -> resolve_uncached(options, loading, cache, path, best_effort:)
+  }
+}
+
+fn resolve_uncached(
+  options: Options,
+  loading: Set(String),
+  cache: InterfaceCache,
+  path: String,
+  best_effort best_effort: Bool,
+) -> Result(#(Option(ModuleInterface), InterfaceCache), Error) {
+  case options.resolver(path) {
+    Error(_) -> Ok(#(None, cache))
+    Ok(source) ->
+      case glance.module(source) {
+        Error(_) -> Ok(#(None, cache))
+        Ok(module) -> {
+          // An import's own skipped definitions (best-effort) are irrelevant to
+          // the importer; only its public interface, partial or not, matters.
+          use #(_, interface, cache, _skipped) <- result.try(infer_module(
+            options,
+            set.insert(loading, path),
+            cache,
+            path,
+            module,
+            best_effort:,
+          ))
+          Ok(#(Some(interface), dict.insert(cache, path, interface)))
+        }
+      }
+  }
+}
+
+// The name under which an import is accessible for qualified access, or
+// `Error` when the module is imported with a discarded alias (`as _x`) and so
+// has no qualified name at all.
+fn qualified_alias(import_: glance.Import) -> Result(String, Nil) {
+  case import_.alias {
+    Some(glance.Named(alias)) -> Ok(alias)
+    Some(glance.Discarded(_)) -> Error(Nil)
+    None -> Ok(last_segment(import_.module))
+  }
+}
+
+fn last_segment(path: String) -> String {
+  case list.last(string.split(path, "/")) {
+    Ok(segment) -> segment
+    Error(_) -> path
+  }
+}
+
+// Module interfaces
+//
+// Build an inferred module's public interface, and bring an imported
+// interface's values, types, aliases and accessors into the environment
+// (under a qualified alias, or unqualified).
 
 // Build the public interface of an inferred module by keeping only the named
 // public values and types.
@@ -1581,7 +1508,103 @@ fn import_type(
   }
 }
 
-// Substitution: resolve / zonk / free variables
+// Target filtering and public surface
+//
+// Drop definitions and imports compiled for the other build target, and
+// collect the names of a module's public values, types and field-accessor
+// types for its interface.
+
+// Keep only the definitions and imports compiled for `target`: those with no
+// `@target` attribute, or one naming the active target. A definition annotated
+// for the other target is dropped, exactly as the compiler omits it.
+fn for_target(module: glance.Module, target: Target) -> glance.Module {
+  glance.Module(
+    imports: list.filter(module.imports, on_target(_, target)),
+    custom_types: list.filter(module.custom_types, on_target(_, target)),
+    type_aliases: list.filter(module.type_aliases, on_target(_, target)),
+    constants: list.filter(module.constants, on_target(_, target)),
+    functions: list.filter(module.functions, on_target(_, target)),
+  )
+}
+
+fn on_target(definition: glance.Definition(a), target: Target) -> Bool {
+  let active = case target {
+    Erlang -> "erlang"
+    JavaScript -> "javascript"
+  }
+  list.all(definition.attributes, fn(attr) {
+    case attr.name, attr.arguments {
+      "target", [glance.Variable(_, t)] -> t == active
+      _, _ -> True
+    }
+  })
+}
+
+fn public_value_names(module: glance.Module) -> List(String) {
+  let functions =
+    list.filter_map(module.functions, fn(d) {
+      case d.definition.publicity {
+        glance.Public -> Ok(d.definition.name)
+        glance.Private -> Error(Nil)
+      }
+    })
+  let constants =
+    list.filter_map(module.constants, fn(d) {
+      case d.definition.publicity {
+        glance.Public -> Ok(d.definition.name)
+        glance.Private -> Error(Nil)
+      }
+    })
+  // Constructors of public, non-opaque types are public values.
+  let constructors =
+    list.flat_map(module.custom_types, fn(d) {
+      let ct = d.definition
+      case ct.publicity, ct.opaque_ {
+        glance.Public, False -> list.map(ct.variants, fn(v) { v.name })
+        _, _ -> []
+      }
+    })
+  list.flatten([functions, constants, constructors])
+}
+
+fn public_type_names(module: glance.Module) -> List(String) {
+  let types =
+    list.filter_map(module.custom_types, fn(d) {
+      case d.definition.publicity {
+        glance.Public -> Ok(d.definition.name)
+        glance.Private -> Error(Nil)
+      }
+    })
+  let aliases =
+    list.filter_map(module.type_aliases, fn(d) {
+      case d.definition.publicity {
+        glance.Public -> Ok(d.definition.name)
+        glance.Private -> Error(Nil)
+      }
+    })
+  list.append(types, aliases)
+}
+
+// Public types whose field accessors are reachable from other modules: public,
+// non-opaque custom types. An `opaque` type's fields are private to its
+// defining module, so its accessors are not exported — a same-named module
+// function then wins over the (inaccessible) field at an external call site, as
+// the compiler does (kata's opaque `Schema` with a `decode` field and a
+// `decode` function).
+fn public_accessor_type_names(module: glance.Module) -> List(String) {
+  list.filter_map(module.custom_types, fn(d) {
+    case d.definition.publicity, d.definition.opaque_ {
+      glance.Public, False -> Ok(d.definition.name)
+      _, _ -> Error(Nil)
+    }
+  })
+}
+
+// Substitution
+//
+// Resolve a variable to its head constructor, fully apply the substitution
+// (`zonk`), and collect free variables — treating a scheme's own quantified
+// variables as opaque.
 
 // Follow bound variables one level to expose the head constructor.
 fn resolve(st: State, type_: Type) -> Type {
@@ -1682,6 +1705,9 @@ fn scheme_free_vars(
 }
 
 // Unification
+//
+// Unify two types, binding flexible variables and rejecting rigid ones, with
+// the occurs check that guards against infinite types.
 
 fn unify(st: State, left: Type, right: Type) -> Result(State, Error) {
   let left = resolve(st, left)
@@ -1748,7 +1774,11 @@ fn occurs(st: State, id: Int, type_: Type) -> Bool {
   list.contains(free_vars(st, type_), id)
 }
 
-// Generalization & instantiation
+// Generalization and instantiation
+//
+// Generalize a type into a scheme at a definition boundary — quantifying
+// variables free in the type but not the environment — and instantiate a
+// scheme back to a monotype with fresh variables.
 
 // Generalize a type into a scheme, quantifying variables that are free in the
 // type but not in the surrounding environment.
@@ -1868,6 +1898,11 @@ fn substitute(mapping: Dict(Int, Type), type_: Type) -> Type {
 }
 
 // Expression inference
+//
+// Infer the type of every expression: literals, variables, calls and
+// captures, operators and pipes, field access and record updates, tuples,
+// lists, lambdas, blocks and bit arrays — with the reordering that labelled
+// and shorthand arguments need to reach their declared positions.
 
 fn infer_expr(
   env: Env,
@@ -2925,6 +2960,9 @@ fn check(
 }
 
 // Statements
+//
+// Infer a block's statements in sequence, threading the environment, and
+// desugar `use` into the trailing-callback call it stands for.
 
 fn infer_statements(
   env: Env,
@@ -3152,6 +3190,10 @@ fn infer_expr_assignment(
 }
 
 // Case expressions
+//
+// Infer a `case`: unify every clause's patterns against the subjects and
+// every clause body against a shared result type, narrowing a matched
+// subject variable to its variant.
 
 fn infer_case(
   env: Env,
@@ -3224,6 +3266,10 @@ fn infer_clause(
 }
 
 // Patterns
+//
+// Infer a pattern against its expected type, binding the variables it
+// introduces — constructor, list, tuple, string-prefix and bit-array
+// patterns included.
 
 fn infer_pattern(
   env: Env,
@@ -3504,6 +3550,10 @@ fn indices_loop(i: Int, acc: List(Int)) -> List(Int) {
 }
 
 // Type annotation hydration
+//
+// Convert a written type annotation into an internal `Type`, expanding
+// aliases and attributing named types to their origin module. Hydration
+// never fails: unresolved names become fresh variables.
 
 // Convert a written type annotation into an internal `Type`. Unknown
 // type-variable names become fresh unbound variables. Hydration never fails:
@@ -3640,7 +3690,33 @@ fn hydrate_with(
   }
 }
 
+// Hydrate using (and threading) a fixed type-variable name map.
+fn hydrate_in(
+  env: Env,
+  names: Dict(String, Type),
+  st: State,
+  ast: glance.Type,
+) -> #(Type, State) {
+  hydrate_with(env, names, st, ast).0
+}
+
+// Hydrate while threading the type-variable name map so repeated names within
+// one signature resolve to the same variable.
+fn hydrate_threaded(
+  env: Env,
+  names: Dict(String, Type),
+  st: State,
+  ast: glance.Type,
+) -> #(Type, State, Dict(String, Type)) {
+  let #(#(t, st), names) = hydrate_with(env, names, st, ast)
+  #(t, st, names)
+}
+
 // Top-level definitions
+//
+// Infer a top-level function or constant and register a custom type's
+// constructors and accessors, then resolve the field and tuple accesses
+// deferred until inference fixed their container types.
 
 // Whether a function's signature names any type variable. The compiler makes
 // such a variable rigid for the body and keeps the function polymorphic over it
@@ -4069,29 +4145,60 @@ fn variant_field_type(field: glance.VariantField) -> glance.Type {
   }
 }
 
-// Hydrate using (and threading) a fixed type-variable name map.
-fn hydrate_in(
-  env: Env,
-  names: Dict(String, Type),
-  st: State,
-  ast: glance.Type,
-) -> #(Type, State) {
-  hydrate_with(env, names, st, ast).0
+// Building the annotated module
+//
+// Assemble the final `AnnotatedModule` from the inferred environment and
+// state: each definition's generalized scheme and every recorded expression
+// type, zonked and sorted by span.
+
+fn render(module: glance.Module, env: Env, st: State) -> AnnotatedModule {
+  let functions =
+    list.map(module.functions, fn(d) { FunctionDef(d.definition) })
+  let constants =
+    list.map(module.constants, fn(d) { ConstantDef(d.definition) })
+
+  // `st.annotations` is in reverse discovery order; reverse it so that when a
+  // span was recorded more than once (e.g. a polymorphic reference and its
+  // use-instantiated type), the later, stable sort keeps the same one the
+  // string-based renderer did.
+  let expressions =
+    list.map(list.reverse(st.annotations), fn(entry) {
+      let #(span, type_) = entry
+      Annotation(span, zonk(st, type_))
+    })
+
+  AnnotatedModule(
+    functions: collect_schemes(functions, env),
+    constants: collect_schemes(constants, env),
+    expressions: sort_by_span(expressions),
+  )
 }
 
-// Hydrate while threading the type-variable name map so repeated names within
-// one signature resolve to the same variable.
-fn hydrate_threaded(
-  env: Env,
-  names: Dict(String, Type),
-  st: State,
-  ast: glance.Type,
-) -> #(Type, State, Dict(String, Type)) {
-  let #(#(t, st), names) = hydrate_with(env, names, st, ast)
-  #(t, st, names)
+// The inferred (generalized) scheme of each definition, in source order.
+// Definitions the environment somehow lacks are skipped.
+fn collect_schemes(defs: List(Def), env: Env) -> List(#(String, Scheme)) {
+  list.filter_map(defs, fn(def) {
+    let name = def_name(def)
+    case lookup(env, name) {
+      Ok(scheme) -> Ok(#(name, scheme))
+      Error(_) -> Error(Nil)
+    }
+  })
+}
+
+fn sort_by_span(annotations: List(Annotation)) -> List(Annotation) {
+  list.sort(annotations, fn(a, b) {
+    case int.compare(a.span.start, b.span.start) {
+      order.Eq -> int.compare(a.span.end, b.span.end)
+      other -> other
+    }
+  })
 }
 
 // Small helpers
+//
+// Record an expression's type by span, recover an expression's span, and
+// index into a list.
 
 fn record(st: State, span: glance.Span, type_: Type) -> State {
   State(..st, annotations: [#(span, type_), ..st.annotations])
@@ -4131,48 +4238,54 @@ fn list_at(items: List(a), index: Int) -> Result(a, Nil) {
   }
 }
 
-// Prelude type constructors (private)
+// Prelude type constructors
+//
+// Constructors for the built-in prelude types, all in the `gleam` module.
 
 // The prelude module name shared by all built-in types.
 const prelude_module = "gleam"
 
-fn prelude_int() -> Type {
-  Named(prelude_module, "Int", [])
-}
-
-fn prelude_float() -> Type {
-  Named(prelude_module, "Float", [])
-}
-
-fn prelude_string() -> Type {
-  Named(prelude_module, "String", [])
+fn prelude_bit_array() -> Type {
+  Named(prelude_module, "BitArray", [])
 }
 
 fn prelude_bool() -> Type {
   Named(prelude_module, "Bool", [])
 }
 
-fn prelude_nil() -> Type {
-  Named(prelude_module, "Nil", [])
+fn prelude_float() -> Type {
+  Named(prelude_module, "Float", [])
+}
+
+fn prelude_int() -> Type {
+  Named(prelude_module, "Int", [])
 }
 
 fn prelude_list(element: Type) -> Type {
   Named(prelude_module, "List", [element])
 }
 
+fn prelude_nil() -> Type {
+  Named(prelude_module, "Nil", [])
+}
+
 fn prelude_result(ok: Type, error: Type) -> Type {
   Named(prelude_module, "Result", [ok, error])
 }
 
-fn prelude_bit_array() -> Type {
-  Named(prelude_module, "BitArray", [])
+fn prelude_string() -> Type {
+  Named(prelude_module, "String", [])
 }
 
 fn prelude_utf_codepoint() -> Type {
   Named(prelude_module, "UtfCodepoint", [])
 }
 
-// Type printer (private)
+// Type printer
+//
+// Render a `Type` to Gleam syntax, naming type variables `a, b, c, …` and
+// skipping reserved words, with a naming context so names stay stable across
+// several related types.
 
 type Names {
   Names(map: Dict(Int, String), next: Int)
