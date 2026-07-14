@@ -1783,8 +1783,6 @@ fn occurs(st: State, id: Int, type_: Type) -> Bool {
 // variables free in the type but not the environment — and instantiate a
 // scheme back to a monotype with fresh variables.
 
-// Generalize a type into a scheme, quantifying variables that are free in the
-// type but not in the surrounding environment.
 fn generalize(st: State, env: Env, type_: Type) -> Scheme {
   let zonked = zonk(st, type_)
   let env_vars = env_free_vars(st, env)
@@ -3554,13 +3552,10 @@ fn indices_loop(i: Int, acc: List(Int)) -> List(Int) {
 
 // Type annotation hydration
 //
-// Convert a written type annotation into an internal `Type`, expanding
-// aliases and attributing named types to their origin module. Hydration
-// never fails: unresolved names become fresh variables.
-
-// Convert a written type annotation into an internal `Type`. Unknown
-// type-variable names become fresh unbound variables. Hydration never fails:
-// references it cannot resolve fall back to a plausible interpretation.
+// Convert a written type annotation into an internal `Type`, expanding aliases
+// and attributing named types to their origin module. Hydration never fails:
+// unknown type variables become fresh variables, while unresolved named
+// references fall back to a plausible named type.
 fn hydrate(env: Env, st: State, ast: glance.Type) -> #(Type, State) {
   hydrate_with(env, dict.new(), st, ast).0
 }
