@@ -116,10 +116,11 @@ record of that coverage.
 
   A file that is a single section needs no header; its `////` module doc is
   enough. Order the entities within a section for readability: lead with the
-  public ones, then opaque, then private, and within each put constants before
-  types before functions — but keep a type next to the functions that build and
-  operate on it, put an entry point ahead of the helpers it calls, and fall
-  back to alphabetical order only to break ties among unrelated peers. Test
+  public API (including `pub opaque` types), then the private implementation,
+  and within each put constants before types before functions — but keep a type
+  next to the functions that build and operate on it, put an entry point ahead
+  of the helpers it calls, and fall back to alphabetical order only to break
+  ties among unrelated peers. Test
   modules follow the same sectioning and module-doc rules, but keep their
   sections in narrative order (by feature or scenario) rather than reordering by
   visibility or kind.
