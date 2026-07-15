@@ -23,7 +23,9 @@ import gleam/string
 import simplifile
 
 // Annotate every fixture under `golden/` and snapshot its report. The snapshot
-// title is the fixture's base name, so each fixture owns one snapshot.
+// title is the fixture's base name, so each fixture owns one snapshot. A pending
+// (new or changed) snapshot halts the loop, so after adding several fixtures at
+// once, accept with `gleam run -m birdie` and rerun to reach the rest.
 pub fn golden_modules_test() {
   let assert Ok(entries) = simplifile.read_directory("golden")
 
