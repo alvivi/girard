@@ -58,7 +58,8 @@ For every [`oracle/`](oracle/) Gleam fixture, the compiler exports both its
 public package interface and its per-expression types. The oracle test decodes
 both JSON files into girard's `Type`, renders them with girard's printer, and
 compares signatures and shared expression spans modulo canonical type-variable
-renaming. Regenerate the fixtures after adding or changing one:
+renaming. [`oracle/README.md`](oracle/README.md) describes the fixture layout and
+comparison rules. Regenerate the fixtures after adding or changing one:
 
 ```sh
 bash scripts/gen-oracle.sh
