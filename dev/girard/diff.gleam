@@ -1,10 +1,11 @@
 //// Differential per-expression check against the real compiler over a whole
 //// installed package. Given a package name and the JSON produced by the patched
 //// compiler's `gleam export expression-types`, it runs girard over every module
-//// of `build/packages/<package>/src` and reports every span where the compiler
-//// reports a single type and girard disagrees.
+//// of `<packages-root>/<package>/src` and reports every span where the compiler
+//// reports a single type and girard disagrees. The packages root defaults to
+//// girard's `build/packages`.
 ////
-////     gleam run -m girard/diff <package> <expr-types.json>
+////     gleam run -m girard/diff <package> <expr-types.json> [packages-root]
 ////
 //// Spans the compiler overlays with several types (desugaring artifacts) are
 //// skipped, as are spans girard does not annotate.
@@ -22,6 +23,12 @@ import gleam/set
 import gleam/string
 import simplifile
 
+// Differential check
+//
+// Run girard over every module of an installed package and report each span
+// where girard's inferred type disagrees with the compiler's single reported
+// type.
+
 pub fn main() -> Nil {
   case argv.load().arguments {
     [package, json_path] -> diff(package, json_path, "build/packages")
@@ -33,9 +40,9 @@ pub fn main() -> Nil {
   }
 }
 
-/// Resolve an imported module's source from a packages root (the directory
-/// holding `<pkg>/src/...`), instead of girard's own `build/packages` — so the
-/// swept closure never collides with girard's own compile dependencies.
+// Resolve an imported module's source from a packages root (the directory
+// holding `<pkg>/src/...`), instead of girard's own `build/packages` — so the
+// swept closure never collides with girard's own compile dependencies.
 fn dir_resolver(root: String) -> girard.Resolver {
   fn(path: String) -> Result(String, Nil) {
     case simplifile.read_directory(root) {
@@ -50,9 +57,9 @@ fn dir_resolver(root: String) -> girard.Resolver {
   }
 }
 
-/// Read the package's build target from its `gleam.toml`, defaulting to
-/// `Erlang` (the compiler's default) when unset or unreadable. A crude line
-/// scan suffices: the only values are `target = "erlang"` / `"javascript"`.
+// Read the package's build target from its `gleam.toml`, defaulting to `Erlang`
+// when unset or unreadable. The generated manifests spell JavaScript as the
+// exact line `target = "javascript"`, so a substring check is sufficient.
 fn target_of(toml_path: String) -> girard.Target {
   case simplifile.read(toml_path) {
     Ok(toml) ->
@@ -141,7 +148,7 @@ fn diff(package: String, json_path: String, pkg_root: String) -> Nil {
   )
 }
 
-/// Report mismatches for one module; returns how many were found.
+// Report mismatches for one module; return how many were found.
 fn compare(
   module_name: String,
   annotated: girard.AnnotatedModule,
@@ -191,6 +198,11 @@ fn compare(
   })
 }
 
+// Decoding the compiler's expression JSON
+//
+// Turn the JSON from the patched compiler's `gleam export expression-types`
+// into spans paired with girard's own `Type`.
+
 fn expression_decoder() -> Decoder(#(Int, Int, Type)) {
   use start <- decode.field("start", decode.int)
   use end <- decode.field("end", decode.int)
@@ -224,7 +236,12 @@ fn type_decoder() -> Decoder(Type) {
   }
 }
 
-/// Rename type variables to a canonical first-seen sequence.
+// Canonical type-variable spelling
+//
+// Rename type variables to a canonical sequence before comparison, since girard
+// and the compiler number them differently though equivalently.
+
+// Rename type variables to a canonical first-seen sequence.
 fn canonicalize(rendered: String) -> String {
   let #(out, run, map, next) =
     list.fold(

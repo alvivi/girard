@@ -127,6 +127,31 @@ girard.default_options()
 The resolver is `fn(module_path) -> Result(source, Nil)`; inject your own to
 resolve imports from anywhere (an in-memory map, a build tree, …).
 
+### Reusing imported interfaces
+
+An editor or package-walking tool can carry a `Cache` between annotations so
+shared imports are parsed and inferred once:
+
+```gleam
+let options = girard.default_options()
+let cache = girard.new_cache()
+
+let #(first_result, cache) =
+  girard.annotate_with_cache(first_source, options, cache)
+let #(second_result, cache) =
+  girard.annotate_with_cache(second_source, options, cache)
+```
+
+A cache assumes the same resolver and target for its whole lifetime. When an
+imported module changes, invalidate its module path before the next call:
+
+```gleam
+let cache = girard.invalidate(cache, "my_app/shared")
+```
+
+`invalidate` removes only that module. If its public interface changed, also
+invalidate cached importers, or start again from `new_cache()`.
+
 ### Annotating a whole package
 
 `girard.annotate_package(modules, options)` annotates many modules in one pass,
@@ -139,6 +164,42 @@ top-level function or constant that does not type — along with anything that
 depends on it — is listed in that module's `.skipped` (with the error that
 declined it) rather than failing the module, and every other definition is still
 annotated. A strict check is just `result.skipped == []`.
+
+The resolver must be able to load package-local imports as well as external
+dependencies. Supplying a module in `modules` gives girard its AST to annotate;
+it does not implicitly add that source to the resolver. An in-memory package can
+provide both views from one source table:
+
+```gleam
+import girard
+import glance
+import gleam/dict
+import gleam/list
+
+let sources =
+  dict.from_list([
+    #("my_app/a", "pub fn answer() { 42 }"),
+    #(
+      "my_app/b",
+      "import my_app/a\npub fn answer() { a.answer() }",
+    ),
+  ])
+
+let resolver = fn(path) { dict.get(sources, path) }
+let modules =
+  sources
+  |> dict.to_list
+  |> list.map(fn(entry) {
+    let #(path, source) = entry
+    let assert Ok(module) = glance.module(source)
+    #(path, module)
+  })
+
+let options =
+  girard.default_options()
+  |> girard.with_resolver(resolver)
+let results = girard.annotate_package(modules, options)
+```
 
 ## Limitations
 
@@ -163,7 +224,8 @@ annotated. A strict check is just `result.skipped == []`.
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development workflow,
-differential testing against the real compiler, and an overview of the
-architecture.
+differential testing, and code and commit conventions. See
+[`AGENTS.md`](AGENTS.md) for the architecture, inference pipeline, state model,
+and design decisions.
 
 API documentation is available at <https://hexdocs.pm/girard>.

@@ -9,8 +9,8 @@ bash scripts/sweep.sh <package>
 ```
 
 `sweep.sh` resolves the package's full transitive dependency tree, exports the
-oracle with the package as the build root, syncs those exact dependency versions
-into `build/packages`, and runs `gleam run -m girard/diff <package> <oracle>`.
+oracle with the package as the build root, stages those exact dependency
+versions in a separate packages root, and passes that root to `girard/diff`.
 
 ## Legend
 

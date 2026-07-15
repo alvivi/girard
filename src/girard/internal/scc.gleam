@@ -115,8 +115,8 @@ fn pop_component(state: Tarjan, root: String, acc: List(String)) -> Tarjan {
   }
 }
 
-/// Look up an index/lowlink. Tarjan always assigns these before reading them,
-/// so the default is unreachable; we return one rather than crash.
+// Look up an index/lowlink. Tarjan always assigns these before reading them,
+// so the default is unreachable; return one rather than crash.
 fn get(d: Dict(String, Int), key: String) -> Int {
   case dict.get(d, key) {
     Ok(value) -> value

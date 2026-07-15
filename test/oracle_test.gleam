@@ -1,12 +1,12 @@
-//// Differential signature oracle: compare girard's inferred top-level
-//// signatures against the *real* Gleam compiler's, using the JSON produced by
-//// `gleam export package-interface` (see scripts/gen-oracle.sh).
+//// Differential oracle: compare girard's inferred top-level signatures and
+//// per-expression types against the *real* Gleam compiler's, using its
+//// `package-interface` and `expression-types` JSON exports (see
+//// scripts/gen-oracle.sh).
 ////
-//// The compiler's type JSON is decoded straight into girard's own `Type` and
-//// rendered with girard's printer, so the only thing that can differ is the
-//// inferred structure. Type-variable names are canonicalised before comparison
-//// (the compiler numbers variables per signature; girard shares a naming
-//// context across a module — both are correct, just different spellings).
+//// The compiler's types are decoded straight into girard's own `Type` and
+//// rendered with girard's printer. Type-variable names are canonicalised before
+//// comparison because the two implementations may number equivalent variables
+//// differently.
 
 import girard.{type Type, Fn, Named, Tuple, Var}
 import gleam/dict
@@ -18,6 +18,12 @@ import gleam/option
 import gleam/set
 import gleam/string
 import simplifile
+
+// Oracle comparison
+//
+// Read each sample under `oracle/`, annotate it with girard, and check every
+// public signature — and every per-expression span both sides report —
+// against the compiler's corresponding exports.
 
 pub fn signatures_match_compiler_test() {
   let assert Ok(entries) = simplifile.read_directory("oracle")
@@ -31,8 +37,8 @@ pub fn signatures_match_compiler_test() {
   list.each(samples, check_sample)
 }
 
-/// Compare every public function and constant of one oracle sample against the
-/// compiler's interface for that module.
+// Compare every public function and constant of one oracle sample against the
+// compiler's interface for that module.
 fn check_sample(name: String) -> Nil {
   let assert Ok(json_string) =
     simplifile.read("oracle/" <> name <> ".interface.json")
@@ -58,9 +64,9 @@ fn check_sample(name: String) -> Nil {
   check_expressions(name, annotated)
 }
 
-/// Compare girard's per-expression types against the compiler's, on the spans
-/// both sides report (the compiler desugars pipes/`use`, so it emits some spans
-/// girard does not; we only require agreement where the spans coincide).
+// Compare girard's per-expression types against the compiler's on the spans
+// both sides report. Compiler desugaring emits some spans girard does not, so
+// require agreement only where the spans coincide.
 fn check_expressions(name: String, annotated: girard.AnnotatedModule) -> Nil {
   let assert Ok(expr_json) = simplifile.read("oracle/" <> name <> ".expr.json")
   let assert Ok(oracle_exprs) =
@@ -126,8 +132,8 @@ fn expression_decoder() -> Decoder(#(Int, Int, Type)) {
   decode.success(#(start, end, type_))
 }
 
-/// Compare girard's rendered signature string against the compiler's type,
-/// both reduced to a canonical type-variable spelling.
+// Compare girard's rendered signature string against the compiler's type, both
+// reduced to a canonical type-variable spelling.
 fn check(name: String, ours: Type, theirs: Type) -> Nil {
   let expected = canonicalize(girard.type_to_string(theirs))
   let actual = canonicalize(girard.type_to_string(ours))
@@ -146,6 +152,9 @@ fn check(name: String, ours: Type, theirs: Type) -> Nil {
 }
 
 // Decoding the compiler's package-interface JSON
+//
+// Turn the JSON from `gleam export package-interface` into girard's own `Type`,
+// so the compiler's signatures can be compared in the same representation.
 
 fn module_decoder() -> Decoder(
   #(dict.Dict(String, Type), dict.Dict(String, Type)),
@@ -207,10 +216,13 @@ fn type_decoder() -> Decoder(Type) {
 }
 
 // Canonical type-variable spelling
+//
+// Rename type variables to a canonical sequence before comparison, since girard
+// and the compiler number them differently though equivalently.
 
-/// Rename type variables to a canonical first-seen sequence so that, e.g.,
-/// `fn(a) -> a` and `fn(x) -> x` compare equal. Type variables are the only
-/// lowercase identifiers in a rendered type other than the `fn` keyword.
+// Rename type variables to a canonical first-seen sequence so that, e.g.,
+// `fn(a) -> a` and `fn(x) -> x` compare equal. Type variables are the only
+// lowercase identifiers in a rendered type other than the `fn` keyword.
 fn canonicalize(rendered: String) -> String {
   let #(out, run, map, next) =
     list.fold(

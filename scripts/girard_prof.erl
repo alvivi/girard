@@ -4,8 +4,9 @@
 %%   erl -noshell -pa build/dev/erlang/*/ebin -s girard_prof main \
 %%       <eprof|fprof> <packages-root> <package> -s init stop
 %%
-%% Mirrors dev/girard/bench.gleam's resolver/target so the profiled work is the
-%% same work the benchmark measures.
+%% Uses the same staged source corpus and resolver as dev/girard/bench.gleam.
+%% Unlike the benchmark it uses the default Erlang target and does not share an
+%% interface cache between modules, so compare call shapes rather than timings.
 -module(girard_prof).
 -export([main/1, run/2]).
 

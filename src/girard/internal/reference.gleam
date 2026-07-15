@@ -24,6 +24,12 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/set.{type Set}
 
+// Reference collection
+//
+// Walk a function body or constant value and gather the value and qualifier
+// references it makes, threading the set of locally-bound names so a shadowed
+// reference is dropped rather than recorded as a dependency edge.
+
 /// `#(value references, field-access qualifier names)` in a function body.
 pub fn in_function(function: glance.Function) -> #(List(String), List(String)) {
   let bound = set.from_list(list.flat_map(function.parameters, param_names))
@@ -186,6 +192,10 @@ fn in_expr(expr: glance.Expression, bound: Set(String), acc: Acc) -> Acc {
 }
 
 // Bound-name extraction
+//
+// The names a parameter or pattern introduces. These are the locals that
+// shadow top-level definitions, and so are excluded from the references
+// collected above.
 
 fn assignment_name(name: glance.AssignmentName) -> List(String) {
   case name {
@@ -202,7 +212,7 @@ fn fn_param_names(param: glance.FnParameter) -> List(String) {
   assignment_name(param.name)
 }
 
-/// Every variable a pattern binds.
+// Every variable a pattern binds.
 fn pattern_names(pattern: glance.Pattern) -> List(String) {
   case pattern {
     glance.PatternInt(..)

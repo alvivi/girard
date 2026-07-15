@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Benchmark girard's inference over a fixed corpus of real hex packages, staged
 # OFFLINE from the sweep cache (scripts/cache.sh). This is the number to track
-# across performance work: same corpus + same cache => same module/expression
-# set, so wall-time deltas are girard's alone.
+# across performance work: the same corpus and cache fix the module/expression
+# set, while repeated rounds help expose normal runtime noise.
 #
 #   scripts/bench.sh [listfile] [warmup-rounds] [measure-rounds]
 #

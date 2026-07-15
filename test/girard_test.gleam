@@ -1,3 +1,8 @@
+//// Tests for girard's public API — inference, error reporting, per-expression
+//// annotations, and the package and CLI surface — exercised directly against
+//// `girard.annotate` and friends. Sections are grouped by feature, from core
+//// inference through imports, records, and package annotation.
+
 import girard
 import glance
 import gleam/dict
@@ -11,8 +16,11 @@ pub fn main() {
 }
 
 // Helpers
+//
+// Small wrappers over `girard.annotate` that pull out a single signature,
+// constant type, or per-expression type for a test to assert on.
 
-/// The inferred signature of the named top-level function.
+// The inferred signature of the named top-level function.
 fn signature(source: String, name: String) -> String {
   let assert Ok(annotated) = girard.annotate(source, girard.default_options())
   case list.key_find(annotated.functions, name) {
@@ -21,8 +29,8 @@ fn signature(source: String, name: String) -> String {
   }
 }
 
-/// The inferred signature of `name` in `source`, resolving imports from the
-/// given in-memory modules (path -> source).
+// The inferred signature of `name` in `source`, resolving imports from the
+// given in-memory modules (path -> source).
 fn signature_with(
   source: String,
   modules: List(#(String, String)),
@@ -38,7 +46,7 @@ fn signature_with(
   }
 }
 
-/// The inferred type of the named top-level constant.
+// The inferred type of the named top-level constant.
 fn constant_type(source: String, name: String) -> String {
   let assert Ok(annotated) = girard.annotate(source, girard.default_options())
   case list.key_find(annotated.constants, name) {
@@ -47,8 +55,8 @@ fn constant_type(source: String, name: String) -> String {
   }
 }
 
-/// The inferred type of the first occurrence of `snippet` in `source`,
-/// matched by its exact byte span.
+// The inferred type of the first occurrence of `snippet` in `source`, matched
+// by its exact byte span.
 fn type_of(source: String, snippet: String) -> String {
   let assert Ok(start) = first_index(source, snippet)
   let end = start + string.byte_size(snippet)
@@ -74,6 +82,8 @@ fn first_index(haystack: String, needle: String) -> Result(Int, Nil) {
 }
 
 // Ill-typed input is reported, not crashed
+//
+// Each inference failure surfaces as a structured `Error` rather than a panic.
 
 pub fn unbound_variable_is_error_test() {
   let assert Error(girard.UnboundVariable("x")) =
@@ -99,7 +109,10 @@ pub fn occurs_check_is_error_test() {
     girard.annotate("pub fn f(g) { g(g) }", girard.default_options())
 }
 
-// printer
+// Type printer
+//
+// Rendering types to Gleam syntax, including skipping reserved words when
+// naming type variables.
 
 pub fn printer_skips_reserved_words_test() {
   // Type-variable names must never collide with a Gleam keyword (e.g. the 169th
@@ -115,7 +128,10 @@ pub fn printer_skips_reserved_words_test() {
   |> list.each(fn(keyword) { should.be_false(list.contains(names, keyword)) })
 }
 
-// report (the CLI's rendered report)
+// Text report
+//
+// The human-readable report `girard.report` produces for the CLI, for both a
+// well-typed module and an inference error.
 
 pub fn report_test() {
   girard.report("pub fn double(x) { x + x }")
@@ -128,6 +144,8 @@ pub fn report_error_test() {
 }
 
 // Function signature inference
+//
+// Inferring the generalized signature of a top-level function from its body.
 
 pub fn identity_test() {
   signature("pub fn id(x) { x }", "id")
@@ -221,6 +239,8 @@ pub fn labelled_capture_test() {
 }
 
 // Custom types
+//
+// Constructors, fields, and the types a custom type's values infer to.
 
 pub fn custom_type_unbox_test() {
   let source =
@@ -242,6 +262,8 @@ pub fn enum_test() {
 }
 
 // Per-expression annotations
+//
+// The type recorded for individual sub-expressions, keyed by source span.
 
 pub fn expression_annotation_test() {
   let source = "pub fn double(x) { x + x }"
@@ -270,7 +292,10 @@ pub fn pipe_into_saturated_call_test() {
   |> should.equal("fn(String) -> String")
 }
 
-// Module-level polymorphism (M2: dependency-ordered inference)
+// Module-level polymorphism and dependency-ordered inference
+//
+// Generalization at the definition boundary and inference in
+// strongly-connected-component order, so a helper is typed before its callers.
 
 pub fn polymorphic_helper_test() {
   // `id` must stay generic so it can be used at two different types.
@@ -332,7 +357,9 @@ pub fn mutual_recursion_test() {
   |> should.equal("fn(Int) -> Bool")
 }
 
-// Annotations, constants, type aliases (M3)
+// Annotations, constants, and type aliases
+//
+// Explicit type annotations, module constants, and type-alias expansion.
 
 pub fn shared_type_variable_test() {
   // The `a` in the return must be the same variable as the parameter `a`.
@@ -369,7 +396,9 @@ pub fn parametric_alias_test() {
   |> should.equal("fn(a) -> #(a, a)")
 }
 
-// Record field access and update (M3)
+// Record field access and update
+//
+// Field accessors on records and the type of a record-update expression.
 
 pub fn field_access_test() {
   let source =
@@ -415,7 +444,10 @@ pub fn record_update_test() {
   |> should.equal("fn(User) -> User")
 }
 
-// Labelled arguments (M3)
+// Labelled arguments
+//
+// Reordering labelled and shorthand arguments to their declared positions in
+// calls and constructor patterns.
 
 pub fn labelled_constructor_test() {
   // Labels supplied out of declaration order must still type-check.
@@ -442,7 +474,9 @@ pub fn spread_pattern_test() {
   |> should.equal("fn(User) -> String")
 }
 
-// use expressions (M3)
+// Use expressions
+//
+// Desugaring `use <- callback` into the trailing-callback call it stands for.
 
 pub fn use_test() {
   let source =
@@ -460,7 +494,9 @@ pub fn use_chain_test() {
   |> should.equal("fn() -> Res(Int)")
 }
 
-// Bit arrays (M3)
+// Bit arrays
+//
+// Bit-array expressions and patterns, and their segment options.
 
 pub fn bit_array_test() {
   signature("pub fn bytes() { <<1, 2, 3>> }", "bytes")
@@ -491,7 +527,10 @@ pub fn bit_array_pattern_test() {
   |> should.equal("fn(BitArray) -> Int")
 }
 
-// Imports (M4)
+// Imports
+//
+// Resolving imported modules through the resolver: qualified and unqualified
+// values and types, aliases, and cross-module inference.
 
 pub fn qualified_import_test() {
   let other = "pub fn double(x: Int) -> Int { x + x }"
@@ -847,7 +886,10 @@ pub fn mutually_recursive_unannotated_accumulator_test() {
   |> should.equal("fn(Tree(a), b) -> b")
 }
 
-// Inferred-variant field access and multi-variant records (M5)
+// Inferred-variant field access and multi-variant records
+//
+// Narrowing a value to a matched constructor variant so a later field access
+// reaches fields present in only that variant.
 
 pub fn variant_narrowed_field_access_test() {
   // `kids` is present only in the `Branch` variant. Binding it with `as` after
@@ -1163,10 +1205,13 @@ pub fn signature_scheme_exposes_quantified_vars_test() {
   mono.vars |> should.equal([])
 }
 
-// annotate_package
+// Package annotation
+//
+// Annotating every module of a package in one pass, including the best-effort
+// skipping of definitions that do not type.
 
-/// Parse each `#(path, source)` and pair the path with its `glance.Module`,
-/// the shape `annotate_package` consumes.
+// Parse each `#(path, source)` and pair the path with its `glance.Module`, the
+// shape `annotate_package` consumes.
 fn parse_package(
   sources: List(#(String, String)),
 ) -> List(#(String, glance.Module)) {
@@ -1177,8 +1222,8 @@ fn parse_package(
   })
 }
 
-/// Annotate `sources` as a package with no import resolution, returning the
-/// `ModuleResult` for `path`.
+// Annotate `sources` as a package with no import resolution, returning the
+// `ModuleResult` for `path`.
 fn package_result(
   sources: List(#(String, String)),
   path: String,

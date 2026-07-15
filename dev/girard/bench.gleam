@@ -1,5 +1,6 @@
-//// A repeatable CPU benchmark for girard's inference, run over a corpus of real
-//// hex packages staged from the offline sweep cache (see `scripts/bench.sh`).
+//// A repeatable throughput benchmark for girard's inference, run over a corpus
+//// of real hex packages staged from the offline sweep cache (see
+//// `scripts/bench.sh`).
 ////
 ////     gleam run -m girard/bench <spec-file> [warmup-rounds] [measure-rounds]
 ////
@@ -7,12 +8,12 @@
 //// root holds `<package>/src/**.gleam` plus the package's resolved dependency
 //// closure (symlinked from the cache pool), so imports resolve exactly as in a
 //// sweep. The harness annotates every module of every listed package inside a
-//// single VM process, timing only the `girard.annotate` calls — not VM startup,
-//// file I/O, or directory walking — and reports total wall time and throughput
-//// (expressions annotated per second), the metric to track across commits.
+//// single VM process, timing only the `girard.annotate_with_cache` calls — not
+//// VM startup, file I/O, or directory walking — and reports total elapsed time
+//// and throughput (expressions annotated per second).
 ////
-//// Determinism: the same spec over the same cache yields the same module set
-//// and expression count every run, so wall-time deltas reflect girard alone.
+//// The same spec over the same cache fixes the module set and expression count;
+//// repeated measured rounds reduce, but do not eliminate, runtime noise.
 
 import argv
 import girard
@@ -24,7 +25,14 @@ import gleam/result
 import gleam/string
 import simplifile
 
-/// Microsecond-resolution monotonic counter; CPU work only, no wall-clock skew.
+// Benchmark harness
+//
+// Annotate every module of every package in the spec across warmup and measure
+// rounds, timing only `girard.annotate_with_cache`, and report elapsed time and
+// throughput.
+
+// Microsecond-resolution monotonic elapsed-time counter, unaffected by system
+// clock adjustments.
 @external(erlang, "os", "perf_counter")
 fn perf_counter(resolution: Int) -> Int
 
@@ -32,7 +40,7 @@ type PkgSpec {
   PkgSpec(package: String, root: String)
 }
 
-/// What one annotate pass produced — the denominators for throughput.
+// Counts and elapsed time produced by one annotation pass.
 type Tally {
   Tally(modules: Int, expressions: Int, errored: Int, micros: Int)
 }
@@ -84,7 +92,7 @@ fn run(spec_path: String, warmup: Int, measure: Int) -> Nil {
     <> " measured rounds",
   )
 
-  // Warm the JIT and disk cache without recording timings.
+  // Warm the JIT and filesystem cache without recording timings.
   list.each(list.repeat(Nil, warmup), fn(_) {
     list.each(specs, fn(spec) {
       let _ = bench_package(spec)
@@ -111,11 +119,11 @@ fn parse_spec(raw: String) -> List(PkgSpec) {
   })
 }
 
-/// Annotate every module of one package, timing only the annotate calls. One
-/// interface cache is threaded across the package's modules, so a shared import
-/// is inferred once for the whole package rather than once per importing module
-/// — the way a package-walking tool (or an editor across sibling files) uses
-/// girard.
+// Annotate every module of one package, timing only `annotate_with_cache`. One
+// interface cache is threaded across the package's modules, so a shared import
+// is inferred once for the whole package rather than once per importing module
+// — the way a package-walking tool (or an editor across sibling files) uses
+// girard.
 fn bench_package(spec: PkgSpec) -> Tally {
   let resolver = dir_resolver(spec.root)
   let target = target_of(spec.root <> "/" <> spec.package <> "/gleam.toml")
@@ -139,7 +147,7 @@ fn bench_package(spec: PkgSpec) -> Tally {
   tally
 }
 
-/// Time a single annotate call (cache threaded in and out) and bucket the result.
+// Time one `annotate_with_cache` call and bucket its result, threading the cache.
 fn time_annotate(
   source: String,
   options: girard.Options,
@@ -190,7 +198,10 @@ fn float_to_string(f: Float) -> String {
   int.to_string(float.round(f))
 }
 
-// Resolver + target (mirrors dev/girard/diff.gleam)
+// Resolver and target
+//
+// Resolve a package's imports from its staged dependency root, mirroring the
+// on-disk resolver a real sweep uses (see `dev/girard/diff.gleam`).
 
 fn dir_resolver(root: String) -> girard.Resolver {
   fn(path: String) -> Result(String, Nil) {
@@ -228,9 +239,12 @@ fn first_readable(paths: List(String)) -> Result(String, Nil) {
   }
 }
 
-// Recursive .gleam module walk
+// Recursive module walk
+//
+// List every `.gleam` source under a directory, so a package's modules can be
+// discovered without a manifest.
 
-/// Every `.gleam` file under `dir`, recursively, as full paths.
+// Every `.gleam` file under `dir`, recursively, as full paths.
 fn gleam_sources(dir: String) -> List(String) {
   case simplifile.read_directory(dir) {
     Error(_) -> []
