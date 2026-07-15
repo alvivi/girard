@@ -33,7 +33,7 @@ fix is required, add a regression test and link the commit.
 | acrostic | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | act | ✅ clean |  |
 | actorx | ⏭️ skip · resolve | not found / could not download. |
-| acumen | 📝 note | glance kind A: its dep `kryptos/internal/der` fails to **parse** — arithmetic in a bit-array *pattern* segment size, `<<0x00, value:bytes-size(len - 1), ..>>` (Minus). Cascades to `unbound variable: der`. A glance limitation, not girard. |
+| acumen | ✅ clean | was glance kind A (arithmetic in a bit-array *pattern* segment size, via dep `kryptos/internal/der` `bytes-size(len - 1)`); parses since glance 7.0.0. |
 | adglent | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | ag_html | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | aham | ✅ clean |  |
@@ -103,7 +103,7 @@ fix is required, add a regression test and link the commit.
 | bigi | ✅ clean |  |
 | binary_search | ✅ clean |  |
 | birch | ✅ clean |  |
-| birdie | 📝 note | glance kind A: arithmetic in a bit-array *pattern* segment size `size(end - start)` in `internal/diagnostic` (Minus). Cascades to `unbound variable: diagnostic`. |
+| birdie | ✅ clean | was glance kind A (arithmetic in a bit-array *pattern* segment size `size(end - start)` in `internal/diagnostic`); parses since glance 7.0.0. |
 | birl | ✅ clean |  |
 | biscotto | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | bison | ⏭️ skip · build |  |
@@ -226,7 +226,7 @@ fix is required, add a regression test and link the commit.
 | crew | 🔧 fixed | a parameter named `pool` shadowing a top-level `pool` created a spurious call-graph edge, merging `worker_loop` into `pool`'s component so it never generalized; `worker`'s call then over-unified its `PoolMsg`/`Work` type params. Fixed: lexical scoping in reference collection (`e915817`). |
 | crossbar | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | css_select | ✅ clean |  |
-| cthulhu | 📝 note | glance kind A: arithmetic in a bit-array *pattern* segment size `little-signed-size(is_dead * 32)` (Star). |
+| cthulhu | ✅ clean | was glance kind A (arithmetic in a bit-array *pattern* segment size `little-signed-size(is_dead * 32)`); parses since glance 7.0.0. |
 | cuid2_gleam | ✅ clean |  |
 | cx | ✅ clean |  |
 | cycle | ✅ clean |  |
@@ -344,7 +344,7 @@ fix is required, add a regression test and link the commit.
 | eyg_compiler | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | eyg_interpreter | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | eyg_ir | ✅ clean |  |
-| eyg_parser | 📝 note | glance parse gap: `eyg/parser/lexer` fails to parse (cascading to `unbound variable: lexer` in `eyg/parser`); same class as acumen/glupbit, a glance limitation not girard inference. |
+| eyg_parser | ✅ clean | was a glance bit-array *pattern* size parse gap in `eyg/parser/lexer` (had cascaded to `unbound variable: lexer`); parses since glance 7.0.0. |
 | ezconfig | ✅ clean |  |
 | fabulous | ✅ clean |  |
 | facet | ✅ clean |  |
@@ -702,7 +702,7 @@ fix is required, add a regression test and link the commit.
 | gluid | ✅ clean |  |
 | glum | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | gluon | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
-| glupbit | 📝 note | the kryptos `der` glance parse gap (depends on the unparseable bit-array module); same class as acumen, not girard inference. |
+| glupbit | ✅ clean | was glance kind A via its kryptos `der` dependency (bit-array pattern segment size arithmetic); parses since glance 7.0.0. |
 | gluple | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | gluri | ✅ clean |  |
 | glurp6 | ✅ clean |  |
@@ -772,7 +772,7 @@ fix is required, add a regression test and link the commit.
 | gzxcvbn | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | gzxcvbn_common | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | gzxcvbn_en | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
-| h2_frame | 📝 note | glance kind A: arithmetic in a bit-array *pattern* segment size `pad_length:size(8 * padded)` (Star). |
+| h2_frame | ✅ clean | was glance kind A (arithmetic in a bit-array *pattern* segment size `pad_length:size(8 * padded)`); parses since glance 7.0.0. |
 | halo | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | handles | ✅ clean |  |
 | handles_foxed | ✅ clean |  |
@@ -870,7 +870,7 @@ fix is required, add a regression test and link the commit.
 | kmh | ✅ clean |  |
 | knit_string | ✅ clean |  |
 | kreator | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
-| kryptos | 📝 note | glance kind A: `kryptos/internal/der` — arithmetic in a bit-array *pattern* segment size `bytes-size(len - 1)` (Minus). Construction-side arithmetic parses; pattern-side does not. Cascades to dependents (acumen). |
+| kryptos | ✅ clean | was glance kind A (`kryptos/internal/der` arithmetic in a bit-array *pattern* segment size `bytes-size(len - 1)`); parses since glance 7.0.0. |
 | kv_sessions | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | kv_sessions_postgres_adapter | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | kvite | ✅ clean |  |
@@ -1113,7 +1113,7 @@ fix is required, add a regression test and link the commit.
 | plume | ✅ clean |  |
 | plunk | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | plushie_gleam | ✅ clean |  |
-| pngleam | 📝 note | glance parse gap: bit-array segments it cannot parse (`<<chunk:bytes-8192, rest:bits>>` and `<<bit_array.byte_size(data):32, ..>>`); same class as acumen/glupbit, a glance limitation not girard inference. |
+| pngleam | ✅ clean | was a glance bit-array segment parse gap (`<<chunk:bytes-8192, rest:bits>>`, `<<bit_array.byte_size(data):32, ..>>`); parses since glance 7.0.0. |
 | pocket_watch | ✅ clean |  |
 | pocketenv | ✅ clean |  |
 | pog | ✅ clean |  |
