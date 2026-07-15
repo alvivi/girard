@@ -130,13 +130,9 @@ pub fn printer_skips_reserved_words_test() {
 
 // Text report
 //
-// The human-readable report `girard.report` produces for the CLI, for both a
-// well-typed module and an inference error.
-
-pub fn report_test() {
-  girard.report("pub fn double(x) { x + x }")
-  |> should.equal("double: fn(Int) -> Int\n19-20: Int\n19-24: Int\n23-24: Int")
-}
+// The human-readable report `girard.report` produces for the CLI on an
+// inference error. Its rendering of well-typed modules is covered by the golden
+// snapshots in `golden_test.gleam` (see `golden/double.gleam`).
 
 pub fn report_error_test() {
   girard.report("pub fn f() { 1 +. 2 }")

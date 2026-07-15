@@ -8,3 +8,7 @@ erl_crash.dump
 
 # Differential-sweep offline cache artifact (see scripts/cache.sh)
 /girard-sweep-cache.tar.gz
+
+# Birdie's pending snapshots: review with `gleam run -m birdie`, commit only
+# the `.accepted` files.
+/test/birdie_snapshots/*.new

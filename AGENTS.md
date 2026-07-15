@@ -22,6 +22,7 @@ still annotated.
 gleam format --check src/ test/ dev/  # check formatting
 gleam build --warnings-as-errors      # compile; no warnings allowed
 gleam test                            # run the full test suite
+gleam run -m birdie                   # review golden snapshot changes
 gleam run -m glinter                  # lint src/
 gleam run -m girard/sweep [package]   # sweep an installed dependency
 bash scripts/gen-oracle.sh            # regenerate compiler oracle fixtures
@@ -33,7 +34,11 @@ testing workflow, and code/changelog/commit conventions.
 Tests use **gleeunit**. `test/girard_test.gleam` covers inference and the public
 API directly. `test/oracle_test.gleam` compares inferred public signatures and
 per-expression types with committed JSON exports from the real Gleam compiler
-for sources under `oracle/`.
+for sources under `oracle/`. `test/golden_test.gleam` uses **birdie** to
+snapshot `girard.report`'s rendered output for each fixture under `golden/`;
+review pending snapshots with `gleam run -m birdie`. Both `oracle/` and
+`golden/` sit at the repo root, outside `src/` and `test/`, so `gleam` does not
+compile the fixtures as modules.
 
 ## Architecture
 

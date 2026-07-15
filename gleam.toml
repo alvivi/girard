@@ -20,6 +20,9 @@ glinter = ">= 2.19.0 and < 3.0.0"
 # Decoding the patched compiler's oracle JSON in dev/girard/diff and the oracle
 # test — not used by the library itself.
 gleam_json = ">= 3.1.0 and < 4.0.0"
+# Snapshot testing for the golden report fixtures under `golden/` (see
+# test/golden_test.gleam). Review changes with `gleam run -m birdie`.
+birdie = ">= 2.0.1 and < 3.0.0"
 
 # Linter config. Run with `gleam run -m glinter`.
 # We lint the library (src/) only: gleeunit tests are public, un-annotated, and
