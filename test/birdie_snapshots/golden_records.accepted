@@ -1,0 +1,28 @@
+---
+version: 2.0.1
+title: golden: records
+---
+=== source ===
+pub type User {
+  User(name: String, age: Int)
+}
+
+pub fn name(user: User) {
+  user.name
+}
+
+pub fn birthday(user: User) {
+  User(..user, age: user.age + 1)
+}
+
+=== annotation ===
+birthday: fn(User) -> User
+name: fn(User) -> String
+78-82: User
+78-87: String
+123-154: User
+130-134: User
+141-145: User
+141-149: Int
+141-153: Int
+152-153: Int

@@ -1,0 +1,15 @@
+# girard reports source spans as byte offsets, computed over source it reads
+# verbatim and then diffs against committed test data. A CRLF checkout (e.g.
+# Windows with core.autocrlf=true) adds a byte per line, shifting every offset
+# so the oracle fixtures and golden snapshots no longer match — the tests fail
+# with no semantic change. Force LF in the working tree for all text files.
+* text=auto eol=lf
+
+# The offset- and line-ending-sensitive test data, pinned explicitly so the
+# intent survives even if the blanket rule above is ever relaxed:
+#   - *.gleam            sources whose byte offsets are reported and compared
+#   - oracle/*.json      committed compiler exports carrying byte spans
+#   - *.accepted         Birdie snapshots embedding both source and offsets
+*.gleam                          text eol=lf
+oracle/*.json                    text eol=lf
+test/birdie_snapshots/*.accepted text eol=lf

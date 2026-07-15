@@ -1,0 +1,14 @@
+---
+version: 2.0.1
+title: golden: double
+---
+=== source ===
+pub fn double(x) {
+  x + x
+}
+
+=== annotation ===
+double: fn(Int) -> Int
+21-22: Int
+21-26: Int
+25-26: Int

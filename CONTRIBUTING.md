@@ -51,6 +51,30 @@ gleam run -m glinter                 # lint; warnings_as_errors = true
 - [`test/oracle_test.gleam`](test/oracle_test.gleam) compares girard's inferred
   public signatures and per-expression types with committed exports from the
   real compiler.
+- [`test/golden_test.gleam`](test/golden_test.gleam) snapshots girard's own
+  rendered report for each [`golden/`](golden/) fixture — see below.
+
+## Golden snapshots
+
+[`test/golden_test.gleam`](test/golden_test.gleam) annotates every
+[`golden/`](golden/) `*.gleam` fixture and captures `girard.report`'s output —
+the source paired with its inferred annotation — as a [Birdie][birdie] snapshot.
+Unlike the oracle suite (parity against the real compiler) these guard girard's
+own human-readable output against unintended regressions and make deliberate
+printer changes reviewable as a diff. Fixtures live at the repo root, beside
+`oracle/`, so `gleam` does not compile them as project modules.
+
+Add a fixture by dropping a `.gleam` file into `golden/`; it is picked up
+automatically. A new or changed snapshot fails the test until reviewed:
+
+```sh
+gleam test              # writes pending `.new` snapshots
+gleam run -m birdie     # review and accept/reject them interactively
+```
+
+Commit the resulting `.accepted` files; the `.new` files are git-ignored.
+
+[birdie]: https://hexdocs.pm/birdie/
 
 ## Differential testing against the real compiler
 
