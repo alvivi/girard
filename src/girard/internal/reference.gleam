@@ -68,7 +68,8 @@ fn in_statements(
         glance.Expression(expr) -> #(bound, in_expr(expr, bound, acc))
         glance.Assignment(_, _, pattern, _, value) -> {
           let acc = in_expr(value, bound, acc)
-          #(set.union(bound, set.from_list(pattern_names(pattern))), acc)
+          let inner = set.union(bound, set.from_list(pattern_names(pattern)))
+          #(inner, pattern_refs(pattern, inner, acc))
         }
         glance.Assert(_, expr, message) -> #(
           bound,
@@ -78,7 +79,12 @@ fn in_statements(
           let acc = in_expr(function, bound, acc)
           let names =
             list.flat_map(patterns, fn(p) { pattern_names(p.pattern) })
-          #(set.union(bound, set.from_list(names)), acc)
+          let inner = set.union(bound, set.from_list(names))
+          let acc =
+            list.fold(patterns, acc, fn(acc, p) {
+              pattern_refs(p.pattern, inner, acc)
+            })
+          #(inner, acc)
         }
       }
     })
@@ -178,8 +184,11 @@ fn in_expr(expr: glance.Expression, bound: Set(String), acc: Acc) -> Acc {
     // Each clause's patterns bind names visible in its guard and body.
     glance.Case(_, subjects, clauses) ->
       list.fold(clauses, in_exprs(subjects, bound, acc), fn(acc, clause) {
-        let names = list.flat_map(list.flatten(clause.patterns), pattern_names)
+        let patterns = list.flatten(clause.patterns)
+        let names = list.flat_map(patterns, pattern_names)
         let bound = set.union(bound, set.from_list(names))
+        let acc =
+          list.fold(patterns, acc, fn(acc, p) { pattern_refs(p, bound, acc) })
         in_optional(clause.guard, bound, in_expr(clause.body, bound, acc))
       })
 
@@ -258,5 +267,67 @@ fn pattern_names(pattern: glance.Pattern) -> List(String) {
           glance.ShorthandField(label, _) -> [label]
         }
       })
+  }
+}
+
+// Value references made *inside* a pattern. Patterns almost always only bind,
+// but a bit-array segment size (glance 7.0+) is an expression that references
+// already-bound variables or top-level constants (`<<v:size(len)>>`,
+// `<<v:bytes-size(key_size)>>`). Those top-level references are real dependency
+// edges — without them a constant used only as a pattern size is not ordered
+// before its user and reads as unbound. `bound` already carries the pattern's
+// own bindings, so a size naming a pattern-bound variable is dropped.
+fn pattern_refs(pattern: glance.Pattern, bound: Set(String), acc: Acc) -> Acc {
+  case pattern {
+    glance.PatternTuple(_, elements) ->
+      list.fold(elements, acc, fn(acc, p) { pattern_refs(p, bound, acc) })
+
+    glance.PatternList(_, elements, tail) -> {
+      let acc = list.fold(elements, acc, fn(acc, p) { pattern_refs(p, bound, acc) })
+      case tail {
+        Some(t) -> pattern_refs(t, bound, acc)
+        None -> acc
+      }
+    }
+
+    glance.PatternAssignment(_, pattern, _) -> pattern_refs(pattern, bound, acc)
+
+    glance.PatternBitString(_, segments) ->
+      list.fold(segments, acc, fn(acc, segment) {
+        list.fold(segment.1, acc, fn(acc, option) {
+          case option {
+            glance.SizeValueOption(size) -> bit_array_size_refs(size, bound, acc)
+            _ -> acc
+          }
+        })
+      })
+
+    glance.PatternVariant(_, _module, _constructor, arguments, _spread) ->
+      list.fold(arguments, acc, fn(acc, field) {
+        case field {
+          glance.UnlabelledField(p) -> pattern_refs(p, bound, acc)
+          glance.LabelledField(_, _, p) -> pattern_refs(p, bound, acc)
+          glance.ShorthandField(_, _) -> acc
+        }
+      })
+
+    // Leaf patterns and `PatternConcatenate` bind or match but reference nothing.
+    _ -> acc
+  }
+}
+
+// The top-level constants (or non-local variables) a bit-array pattern size
+// refers to, filtered against the names already in scope.
+fn bit_array_size_refs(
+  size: glance.BitArraySize,
+  bound: Set(String),
+  acc: Acc,
+) -> Acc {
+  case size {
+    glance.BitArraySizeInt(..) -> acc
+    glance.BitArraySizeVariable(_, name) -> value(acc, bound, name)
+    glance.BitArraySizeBinaryOperator(_, _, left, right) ->
+      bit_array_size_refs(right, bound, bit_array_size_refs(left, bound, acc))
+    glance.BitArraySizeBlock(_, inner) -> bit_array_size_refs(inner, bound, acc)
   }
 }
