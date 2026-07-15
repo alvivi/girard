@@ -10,19 +10,25 @@ pages = [{ title = "Changelog", path = "changelog.html", source = "CHANGELOG.md"
 
 [dependencies]
 gleam_stdlib = ">= 0.44.0 and < 2.0.0"
-glance = ">= 6.0.0 and < 7.0.0"
+glance = ">= 7.0.0 and < 8.0.0"
 simplifile = ">= 2.4.0 and < 3.0.0"
 argv = ">= 1.1.0 and < 2.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
-glinter = ">= 2.19.0 and < 3.0.0"
+# Temporary git override: glinter has not yet published a glance-7-compatible
+# release. The fork only widens its glance range (no code change); revert to a
+# published `>= 2.19.x` once upstream allows glance 7. See PR to pairshaped/glinter.
+glinter = { git = "https://github.com/alvivi/glinter.git", ref = "glance-7" }
 # Decoding the patched compiler's oracle JSON in dev/girard/diff and the oracle
 # test — not used by the library itself.
 gleam_json = ">= 3.1.0 and < 4.0.0"
 # Snapshot testing for the golden report fixtures under `golden/` (see
 # test/golden_test.gleam). Review changes with `gleam run -m birdie`.
-birdie = ">= 2.0.1 and < 3.0.0"
+# Temporary git override: birdie has not yet published a glance-7-compatible
+# release. The fork only widens its glance range (no code change); revert to a
+# published `>= 2.0.x` once upstream allows glance 7. See PR to giacomocavalieri/birdie.
+birdie = { git = "https://github.com/alvivi/birdie.git", ref = "glance-7" }
 
 # Linter config. Run with `gleam run -m glinter`.
 # We lint the library (src/) only: gleeunit tests are public, un-annotated, and
