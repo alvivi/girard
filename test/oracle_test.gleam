@@ -1,12 +1,12 @@
-//// Differential signature oracle: compare girard's inferred top-level
-//// signatures against the *real* Gleam compiler's, using the JSON produced by
-//// `gleam export package-interface` (see scripts/gen-oracle.sh).
+//// Differential oracle: compare girard's inferred top-level signatures and
+//// per-expression types against the *real* Gleam compiler's, using its
+//// `package-interface` and `expression-types` JSON exports (see
+//// scripts/gen-oracle.sh).
 ////
-//// The compiler's type JSON is decoded straight into girard's own `Type` and
-//// rendered with girard's printer, so the only thing that can differ is the
-//// inferred structure. Type-variable names are canonicalised before comparison
-//// (the compiler numbers variables per signature; girard shares a naming
-//// context across a module — both are correct, just different spellings).
+//// The compiler's types are decoded straight into girard's own `Type` and
+//// rendered with girard's printer. Type-variable names are canonicalised before
+//// comparison because the two implementations may number equivalent variables
+//// differently.
 
 import girard.{type Type, Fn, Named, Tuple, Var}
 import gleam/dict
@@ -23,7 +23,7 @@ import simplifile
 //
 // Read each sample under `oracle/`, annotate it with girard, and check every
 // public signature — and every per-expression span both sides report —
-// against the compiler's exported interface.
+// against the compiler's corresponding exports.
 
 pub fn signatures_match_compiler_test() {
   let assert Ok(entries) = simplifile.read_directory("oracle")

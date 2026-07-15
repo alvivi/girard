@@ -41,8 +41,9 @@ pub type Type {
   Named(module: String, name: String, arguments: List(Type))
   /// A function type `fn(a, b) -> c`.
   Fn(arguments: List(Type), return: Type)
-  /// A type variable. Its state (unbound / bound / generic) lives in the
-  /// substitution table keyed by `id` during inference.
+  /// A type variable identified by `id`. During inference the substitution
+  /// table may bind that id to another type; in a `Scheme`, `vars` identifies
+  /// which ids are universally quantified (generic).
   Var(id: Int)
   /// A tuple type `#(a, b, c)`.
   Tuple(elements: List(Type))

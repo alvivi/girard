@@ -49,15 +49,16 @@ gleam run -m glinter                 # lint; warnings_as_errors = true
 - [`test/girard_test.gleam`](test/girard_test.gleam) exercises inference and the
   public API. Add or update a focused test with every behaviour change.
 - [`test/oracle_test.gleam`](test/oracle_test.gleam) compares girard's inferred
-  top-level signatures with committed interfaces exported by the real compiler.
+  public signatures and per-expression types with committed exports from the
+  real compiler.
 
 ## Differential testing against the real compiler
 
-For every [`oracle/`](oracle/) Gleam fixture, `gleam export package-interface`
-produces a JSON representation of the compiler's inferred public interface.
-The oracle test decodes that JSON into girard's `Type`, renders it with girard's
-printer, and compares it modulo canonical type-variable renaming. Regenerate
-the fixtures after adding or changing one:
+For every [`oracle/`](oracle/) Gleam fixture, the compiler exports both its
+public package interface and its per-expression types. The oracle test decodes
+both JSON files into girard's `Type`, renders them with girard's printer, and
+compares signatures and shared expression spans modulo canonical type-variable
+renaming. Regenerate the fixtures after adding or changing one:
 
 ```sh
 bash scripts/gen-oracle.sh

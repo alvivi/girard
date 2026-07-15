@@ -1,10 +1,11 @@
 //// Differential per-expression check against the real compiler over a whole
 //// installed package. Given a package name and the JSON produced by the patched
 //// compiler's `gleam export expression-types`, it runs girard over every module
-//// of `build/packages/<package>/src` and reports every span where the compiler
-//// reports a single type and girard disagrees.
+//// of `<packages-root>/<package>/src` and reports every span where the compiler
+//// reports a single type and girard disagrees. The packages root defaults to
+//// girard's `build/packages`.
 ////
-////     gleam run -m girard/diff <package> <expr-types.json>
+////     gleam run -m girard/diff <package> <expr-types.json> [packages-root]
 ////
 //// Spans the compiler overlays with several types (desugaring artifacts) are
 //// skipped, as are spans girard does not annotate.

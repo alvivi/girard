@@ -31,9 +31,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the local dev loop, differential
 testing workflow, and code/changelog/commit conventions.
 
 Tests use **gleeunit**. `test/girard_test.gleam` covers inference and the public
-API directly. `test/oracle_test.gleam` compares inferred public signatures with
-committed JSON interfaces exported by the real Gleam compiler for sources under
-`oracle/`.
+API directly. `test/oracle_test.gleam` compares inferred public signatures and
+per-expression types with committed JSON exports from the real Gleam compiler
+for sources under `oracle/`.
 
 ## Architecture
 
@@ -76,10 +76,12 @@ The real compiler mutates type variables in place through
 variable as `Var(id)` and carries a `Dict(Int, Type)` substitution in the
 threaded inference `State`. An absent id is unbound; a present id is bound.
 
-Generalization happens only at module-level definition boundaries. Local `let`
-bindings remain monomorphic, matching Gleam. Explicitly annotated type
-variables are rigid within the definition being checked. Pending field and
-tuple accesses are revisited after inference fixes their container types.
+Generalization normally happens at module-level definition boundaries, so
+unannotated local `let` bindings remain monomorphic. The compiler-matching
+exception is a local function whose annotations name type variables: those
+variables are generalized explicitly. Type variables in a top-level signature
+are rigid while the definition is checked. Pending field and tuple accesses are
+revisited after inference fixes their container types.
 
 The public `Type` model has four variants:
 
@@ -90,21 +92,24 @@ The public `Type` model has four variants:
 
 ## Import Resolution and Caching
 
-`Options` holds the target, resolver, and optional reusable interface cache.
-The default disk resolver searches project sources and installed packages under
-`build/packages`. Callers can inject an in-memory or otherwise custom resolver.
+`Options` holds the target and resolver. Reusable inference state is a separate
+`Cache`, passed to `annotate_with_cache` and returned for the next call. The
+default disk resolver searches project sources and installed packages under
+`build/packages`; callers can inject an in-memory or otherwise custom resolver.
 
-An interface contains only the public types required by importing modules. The
-reusable cache avoids parsing and inferring a shared import more than once and
-can invalidate a single module when its source changes.
+An interface contains the public values, types, aliases, accessors and call
+metadata required by importing modules. The reusable cache avoids parsing and
+inferring a shared import more than once and can invalidate a single module when
+its source changes.
 
 ## Differential Testing
 
 There are three levels of compiler comparison:
 
-- `test/oracle_test.gleam` compares top-level public signatures against
-  committed `gleam export package-interface` JSON fixtures. Regenerate them
-  with `scripts/gen-oracle.sh`.
+- `test/oracle_test.gleam` compares top-level public signatures and
+  per-expression types against committed `package-interface` and
+  `expression-types` JSON fixtures. Regenerate them with
+  `scripts/gen-oracle.sh`.
 - `scripts/sweep.sh <package>` compares per-expression types with a patched
   compiler's `gleam export expression-types` over a package's resolved
   dependency closure.

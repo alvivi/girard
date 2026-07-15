@@ -1,5 +1,6 @@
-//// A repeatable CPU benchmark for girard's inference, run over a corpus of real
-//// hex packages staged from the offline sweep cache (see `scripts/bench.sh`).
+//// A repeatable throughput benchmark for girard's inference, run over a corpus
+//// of real hex packages staged from the offline sweep cache (see
+//// `scripts/bench.sh`).
 ////
 ////     gleam run -m girard/bench <spec-file> [warmup-rounds] [measure-rounds]
 ////
@@ -7,12 +8,12 @@
 //// root holds `<package>/src/**.gleam` plus the package's resolved dependency
 //// closure (symlinked from the cache pool), so imports resolve exactly as in a
 //// sweep. The harness annotates every module of every listed package inside a
-//// single VM process, timing only the `girard.annotate` calls — not VM startup,
-//// file I/O, or directory walking — and reports total wall time and throughput
-//// (expressions annotated per second), the metric to track across commits.
+//// single VM process, timing only the `girard.annotate_with_cache` calls — not
+//// VM startup, file I/O, or directory walking — and reports total elapsed time
+//// and throughput (expressions annotated per second).
 ////
-//// Determinism: the same spec over the same cache yields the same module set
-//// and expression count every run, so wall-time deltas reflect girard alone.
+//// The same spec over the same cache fixes the module set and expression count;
+//// repeated measured rounds reduce, but do not eliminate, runtime noise.
 
 import argv
 import girard
@@ -27,10 +28,11 @@ import simplifile
 // Benchmark harness
 //
 // Annotate every module of every package in the spec across warmup and measure
-// rounds, timing only the `girard.annotate` calls, and report total wall time
-// and throughput.
+// rounds, timing only `girard.annotate_with_cache`, and report elapsed time and
+// throughput.
 
-/// Microsecond-resolution monotonic counter; CPU work only, no wall-clock skew.
+/// Microsecond-resolution monotonic elapsed-time counter, unaffected by system
+/// clock adjustments.
 @external(erlang, "os", "perf_counter")
 fn perf_counter(resolution: Int) -> Int
 
@@ -90,7 +92,7 @@ fn run(spec_path: String, warmup: Int, measure: Int) -> Nil {
     <> " measured rounds",
   )
 
-  // Warm the JIT and disk cache without recording timings.
+  // Warm the JIT and filesystem cache without recording timings.
   list.each(list.repeat(Nil, warmup), fn(_) {
     list.each(specs, fn(spec) {
       let _ = bench_package(spec)
@@ -117,7 +119,7 @@ fn parse_spec(raw: String) -> List(PkgSpec) {
   })
 }
 
-/// Annotate every module of one package, timing only the annotate calls. One
+/// Annotate every module of one package, timing only `annotate_with_cache`. One
 /// interface cache is threaded across the package's modules, so a shared import
 /// is inferred once for the whole package rather than once per importing module
 /// — the way a package-walking tool (or an editor across sibling files) uses

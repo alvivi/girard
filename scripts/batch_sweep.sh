@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sweep a list of packages sequentially, recording a machine-readable result
-# per package. Sweeps cannot run in parallel: each rewrites girard's
-# build/packages and runs `gleam run` in the repo root.
+# per package. The default sweep staging root is shared, and sequential requests
+# can be paced to avoid hex throttling, so this driver does not run in parallel.
 #
 #   bash scripts/batch_sweep.sh <listfile> [results.tsv]
 #

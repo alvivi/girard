@@ -5,20 +5,20 @@
 #   bash scripts/sweep.sh <package>
 #
 # Steps:
-#   1. Create a throwaway project and let hex resolve the package's full
-#      transitive dependency tree (`gleam add` + `gleam deps download`).
+#   1. Create a throwaway project manifest and let hex resolve the package's
+#      full transitive dependency tree (`gleam deps download`).
 #   2. Export the per-expression oracle with the patched compiler, building the
 #      package *as the root* (the export only emits the root package's modules)
 #      against those resolved dependencies. Skip the package if it does not
 #      compile — then neither the compiler nor girard can type it.
-#   3. Sync the exact resolved dependency versions into girard's build/packages
-#      so girard resolves imports identically (no version skew → no false
-#      discrepancies).
+#   3. Stage the exact resolved dependency versions in a separate packages root
+#      so girard resolves imports identically without modifying its own build
+#      dependencies (no version skew → no false discrepancies).
 #   4. Run girard/diff against the oracle.
 #
 # Env overrides:
 #   GLEAM     patched compiler for the oracle (default ../gleam/target/debug/gleam)
-#   HEXGLEAM  stock gleam used to resolve/download/run (default asdf 1.16.0)
+#   HEXGLEAM  stock gleam used to resolve/download/run (default first on PATH)
 set -uo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
