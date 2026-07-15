@@ -212,7 +212,7 @@ fn fn_param_names(param: glance.FnParameter) -> List(String) {
   assignment_name(param.name)
 }
 
-/// Every variable a pattern binds.
+// Every variable a pattern binds.
 fn pattern_names(pattern: glance.Pattern) -> List(String) {
   case pattern {
     glance.PatternInt(..)

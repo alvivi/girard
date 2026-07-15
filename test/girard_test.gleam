@@ -1,7 +1,7 @@
 //// Tests for girard's public API — inference, error reporting, per-expression
 //// annotations, and the package and CLI surface — exercised directly against
-//// `girard.annotate` and friends. Sections are grouped by feature and roughly
-//// track the milestones (M2–M5) in which each capability landed.
+//// `girard.annotate` and friends. Sections are grouped by feature, from core
+//// inference through imports, records, and package annotation.
 
 import girard
 import glance
@@ -20,7 +20,7 @@ pub fn main() {
 // Small wrappers over `girard.annotate` that pull out a single signature,
 // constant type, or per-expression type for a test to assert on.
 
-/// The inferred signature of the named top-level function.
+// The inferred signature of the named top-level function.
 fn signature(source: String, name: String) -> String {
   let assert Ok(annotated) = girard.annotate(source, girard.default_options())
   case list.key_find(annotated.functions, name) {
@@ -29,8 +29,8 @@ fn signature(source: String, name: String) -> String {
   }
 }
 
-/// The inferred signature of `name` in `source`, resolving imports from the
-/// given in-memory modules (path -> source).
+// The inferred signature of `name` in `source`, resolving imports from the
+// given in-memory modules (path -> source).
 fn signature_with(
   source: String,
   modules: List(#(String, String)),
@@ -46,7 +46,7 @@ fn signature_with(
   }
 }
 
-/// The inferred type of the named top-level constant.
+// The inferred type of the named top-level constant.
 fn constant_type(source: String, name: String) -> String {
   let assert Ok(annotated) = girard.annotate(source, girard.default_options())
   case list.key_find(annotated.constants, name) {
@@ -55,8 +55,8 @@ fn constant_type(source: String, name: String) -> String {
   }
 }
 
-/// The inferred type of the first occurrence of `snippet` in `source`,
-/// matched by its exact byte span.
+// The inferred type of the first occurrence of `snippet` in `source`, matched
+// by its exact byte span.
 fn type_of(source: String, snippet: String) -> String {
   let assert Ok(start) = first_index(source, snippet)
   let end = start + string.byte_size(snippet)
@@ -292,7 +292,7 @@ pub fn pipe_into_saturated_call_test() {
   |> should.equal("fn(String) -> String")
 }
 
-// Module-level polymorphism (M2: dependency-ordered inference)
+// Module-level polymorphism and dependency-ordered inference
 //
 // Generalization at the definition boundary and inference in
 // strongly-connected-component order, so a helper is typed before its callers.
@@ -357,7 +357,7 @@ pub fn mutual_recursion_test() {
   |> should.equal("fn(Int) -> Bool")
 }
 
-// Annotations, constants, type aliases (M3)
+// Annotations, constants, and type aliases
 //
 // Explicit type annotations, module constants, and type-alias expansion.
 
@@ -396,7 +396,7 @@ pub fn parametric_alias_test() {
   |> should.equal("fn(a) -> #(a, a)")
 }
 
-// Record field access and update (M3)
+// Record field access and update
 //
 // Field accessors on records and the type of a record-update expression.
 
@@ -444,7 +444,7 @@ pub fn record_update_test() {
   |> should.equal("fn(User) -> User")
 }
 
-// Labelled arguments (M3)
+// Labelled arguments
 //
 // Reordering labelled and shorthand arguments to their declared positions in
 // calls and constructor patterns.
@@ -474,7 +474,7 @@ pub fn spread_pattern_test() {
   |> should.equal("fn(User) -> String")
 }
 
-// Use expressions (M3)
+// Use expressions
 //
 // Desugaring `use <- callback` into the trailing-callback call it stands for.
 
@@ -494,7 +494,7 @@ pub fn use_chain_test() {
   |> should.equal("fn() -> Res(Int)")
 }
 
-// Bit arrays (M3)
+// Bit arrays
 //
 // Bit-array expressions and patterns, and their segment options.
 
@@ -527,7 +527,7 @@ pub fn bit_array_pattern_test() {
   |> should.equal("fn(BitArray) -> Int")
 }
 
-// Imports (M4)
+// Imports
 //
 // Resolving imported modules through the resolver: qualified and unqualified
 // values and types, aliases, and cross-module inference.
@@ -886,7 +886,7 @@ pub fn mutually_recursive_unannotated_accumulator_test() {
   |> should.equal("fn(Tree(a), b) -> b")
 }
 
-// Inferred-variant field access and multi-variant records (M5)
+// Inferred-variant field access and multi-variant records
 //
 // Narrowing a value to a matched constructor variant so a later field access
 // reaches fields present in only that variant.
@@ -1210,8 +1210,8 @@ pub fn signature_scheme_exposes_quantified_vars_test() {
 // Annotating every module of a package in one pass, including the best-effort
 // skipping of definitions that do not type.
 
-/// Parse each `#(path, source)` and pair the path with its `glance.Module`,
-/// the shape `annotate_package` consumes.
+// Parse each `#(path, source)` and pair the path with its `glance.Module`, the
+// shape `annotate_package` consumes.
 fn parse_package(
   sources: List(#(String, String)),
 ) -> List(#(String, glance.Module)) {
@@ -1222,8 +1222,8 @@ fn parse_package(
   })
 }
 
-/// Annotate `sources` as a package with no import resolution, returning the
-/// `ModuleResult` for `path`.
+// Annotate `sources` as a package with no import resolution, returning the
+// `ModuleResult` for `path`.
 fn package_result(
   sources: List(#(String, String)),
   path: String,

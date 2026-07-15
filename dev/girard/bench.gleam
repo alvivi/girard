@@ -31,8 +31,8 @@ import simplifile
 // rounds, timing only `girard.annotate_with_cache`, and report elapsed time and
 // throughput.
 
-/// Microsecond-resolution monotonic elapsed-time counter, unaffected by system
-/// clock adjustments.
+// Microsecond-resolution monotonic elapsed-time counter, unaffected by system
+// clock adjustments.
 @external(erlang, "os", "perf_counter")
 fn perf_counter(resolution: Int) -> Int
 
@@ -40,7 +40,7 @@ type PkgSpec {
   PkgSpec(package: String, root: String)
 }
 
-/// What one annotate pass produced — the denominators for throughput.
+// Counts and elapsed time produced by one annotation pass.
 type Tally {
   Tally(modules: Int, expressions: Int, errored: Int, micros: Int)
 }
@@ -119,11 +119,11 @@ fn parse_spec(raw: String) -> List(PkgSpec) {
   })
 }
 
-/// Annotate every module of one package, timing only `annotate_with_cache`. One
-/// interface cache is threaded across the package's modules, so a shared import
-/// is inferred once for the whole package rather than once per importing module
-/// — the way a package-walking tool (or an editor across sibling files) uses
-/// girard.
+// Annotate every module of one package, timing only `annotate_with_cache`. One
+// interface cache is threaded across the package's modules, so a shared import
+// is inferred once for the whole package rather than once per importing module
+// — the way a package-walking tool (or an editor across sibling files) uses
+// girard.
 fn bench_package(spec: PkgSpec) -> Tally {
   let resolver = dir_resolver(spec.root)
   let target = target_of(spec.root <> "/" <> spec.package <> "/gleam.toml")
@@ -147,7 +147,7 @@ fn bench_package(spec: PkgSpec) -> Tally {
   tally
 }
 
-/// Time a single annotate call (cache threaded in and out) and bucket the result.
+// Time one `annotate_with_cache` call and bucket its result, threading the cache.
 fn time_annotate(
   source: String,
   options: girard.Options,
@@ -244,7 +244,7 @@ fn first_readable(paths: List(String)) -> Result(String, Nil) {
 // List every `.gleam` source under a directory, so a package's modules can be
 // discovered without a manifest.
 
-/// Every `.gleam` file under `dir`, recursively, as full paths.
+// Every `.gleam` file under `dir`, recursively, as full paths.
 fn gleam_sources(dir: String) -> List(String) {
   case simplifile.read_directory(dir) {
     Error(_) -> []

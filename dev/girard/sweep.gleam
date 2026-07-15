@@ -41,7 +41,7 @@ pub fn sweep(package: String) -> Nil {
   }
 }
 
-/// `#(module path, outcome)` where outcome is "ok" or an error description.
+// `#(module path, outcome)` where outcome is "ok" or an error description.
 fn classify(path: String) -> #(String, String) {
   case simplifile.read(path) {
     Error(_) -> #(path, "could not read file")
@@ -94,8 +94,8 @@ fn report(package: String, outcomes: List(#(String, String))) -> Nil {
   }
 }
 
-/// Collapse a specific error message into a coarse bucket (dropping the
-/// variable parts) so similar failures group together.
+// Collapse a specific error message into a coarse bucket (dropping the variable
+// parts) so similar failures group together.
 fn generalise(reason: String) -> String {
   case string.split_once(reason, ":") {
     Ok(#(head, _)) -> head

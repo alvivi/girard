@@ -37,8 +37,8 @@ pub fn signatures_match_compiler_test() {
   list.each(samples, check_sample)
 }
 
-/// Compare every public function and constant of one oracle sample against the
-/// compiler's interface for that module.
+// Compare every public function and constant of one oracle sample against the
+// compiler's interface for that module.
 fn check_sample(name: String) -> Nil {
   let assert Ok(json_string) =
     simplifile.read("oracle/" <> name <> ".interface.json")
@@ -64,9 +64,9 @@ fn check_sample(name: String) -> Nil {
   check_expressions(name, annotated)
 }
 
-/// Compare girard's per-expression types against the compiler's, on the spans
-/// both sides report (the compiler desugars pipes/`use`, so it emits some spans
-/// girard does not; we only require agreement where the spans coincide).
+// Compare girard's per-expression types against the compiler's on the spans
+// both sides report. Compiler desugaring emits some spans girard does not, so
+// require agreement only where the spans coincide.
 fn check_expressions(name: String, annotated: girard.AnnotatedModule) -> Nil {
   let assert Ok(expr_json) = simplifile.read("oracle/" <> name <> ".expr.json")
   let assert Ok(oracle_exprs) =
@@ -132,8 +132,8 @@ fn expression_decoder() -> Decoder(#(Int, Int, Type)) {
   decode.success(#(start, end, type_))
 }
 
-/// Compare girard's rendered signature string against the compiler's type,
-/// both reduced to a canonical type-variable spelling.
+// Compare girard's rendered signature string against the compiler's type, both
+// reduced to a canonical type-variable spelling.
 fn check(name: String, ours: Type, theirs: Type) -> Nil {
   let expected = canonicalize(girard.type_to_string(theirs))
   let actual = canonicalize(girard.type_to_string(ours))
@@ -220,9 +220,9 @@ fn type_decoder() -> Decoder(Type) {
 // Rename type variables to a canonical sequence before comparison, since girard
 // and the compiler number them differently though equivalently.
 
-/// Rename type variables to a canonical first-seen sequence so that, e.g.,
-/// `fn(a) -> a` and `fn(x) -> x` compare equal. Type variables are the only
-/// lowercase identifiers in a rendered type other than the `fn` keyword.
+// Rename type variables to a canonical first-seen sequence so that, e.g.,
+// `fn(a) -> a` and `fn(x) -> x` compare equal. Type variables are the only
+// lowercase identifiers in a rendered type other than the `fn` keyword.
 fn canonicalize(rendered: String) -> String {
   let #(out, run, map, next) =
     list.fold(

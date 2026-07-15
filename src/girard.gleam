@@ -267,7 +267,7 @@ pub fn new_cache() -> Cache {
 /// added. Returns the result and the updated cache to thread into the next call.
 ///
 /// `annotate_with_cache(source, options, new_cache())` matches
-/// [`annotate`](#annotate)`(source, options)` exactly; the cache only pays off
+/// `annotate(source, options)` exactly; the cache only pays off
 /// when shared across calls that import overlapping modules — an editor
 /// re-checking a file as it changes, or a walk over a package's modules.
 pub fn annotate_with_cache(
@@ -341,8 +341,8 @@ pub type ModuleResult {
 /// Best-effort per definition: a top-level function or constant that does not
 /// type — along with any that depend on it — is reported in that module's
 /// `skipped` list rather than failing the module, while every other definition
-/// is still annotated. A module thus always appears in the result; a fully
-/// strict check is `result.skipped == []`.
+/// is still annotated. Definition failures therefore leave the module present
+/// in the result; a fully strict check is `result.skipped == []`.
 pub fn annotate_package(
   modules: List(#(String, glance.Module)),
   options: Options,
@@ -354,8 +354,9 @@ pub fn annotate_package(
       case
         infer_module(options, set.new(), cache, path, module, best_effort: True)
       {
-        // Best-effort inference does not fail; on the impossible error, omit the
-        // module rather than crash.
+        // Best-effort mode converts definition failures to skipped entries, so
+        // `infer_module` should not fail. If that invariant is broken, omit the
+        // module rather than crashing the whole package run.
         Error(_) -> #(results, cache)
         Ok(#(#(env, st), interface, cache, skipped)) -> {
           // Seed this module's own interface so a later module that imports it
@@ -932,10 +933,9 @@ fn infer_module(
   #(#(Env, State), ModuleInterface, InterfaceCache, List(#(String, Error))),
   Error,
 ) {
-  // Drop definitions and imports compiled only for another target — a
-  // `@target(javascript)` sibling (e.g. simplifile's JS `do_file_info`
-  // returning a different error type) must not shadow the matching one when
-  // typing for Erlang, and vice versa.
+  // Drop definitions and imports compiled only for another target. A pair of
+  // target-specific siblings may have different types, so the inactive one
+  // must not shadow the active definition.
   let module = for_target(module, options.target)
   let #(prelude_env, st) = prelude()
   let env = set_module(prelude_env, module_name)
@@ -1592,9 +1592,9 @@ fn public_type_names(module: glance.Module) -> List(String) {
 // Public types whose field accessors are reachable from other modules: public,
 // non-opaque custom types. An `opaque` type's fields are private to its
 // defining module, so its accessors are not exported — a same-named module
-// function then wins over the (inaccessible) field at an external call site, as
-// the compiler does (kata's opaque `Schema` with a `decode` field and a
-// `decode` function).
+// function then wins over the inaccessible field at an external call site, as
+// with an opaque `Schema` that has both a private `decode` field and a public
+// `decode` function.
 fn public_accessor_type_names(module: glance.Module) -> List(String) {
   list.filter_map(module.custom_types, fn(d) {
     case d.definition.publicity, d.definition.opaque_ {
@@ -1718,8 +1718,8 @@ fn unify(st: State, left: Type, right: Type) -> Result(State, Error) {
   let right = resolve(st, right)
   case left, right {
     Var(i), Var(j) if i == j -> Ok(st)
-    // A rigid variable never binds; left flexible one may bind to it. Two distinct
-    // rigids, or left rigid against left concrete type, are left mismatch.
+    // A rigid variable never binds; a flexible one may bind to it. Two distinct
+    // rigid variables, or a rigid variable against a concrete type, mismatch.
     Var(i), Var(j) ->
       case is_rigid(st, i), is_rigid(st, j) {
         True, True -> Error(TypeMismatch(left, right))
@@ -2519,6 +2519,10 @@ fn infer_field_access(
   container: glance.Expression,
   label: String,
 ) -> Result(#(Type, State), Error) {
+  // Resolve the same `name.label` syntax in this order: a field recorded by
+  // variant narrowing; a field on a bound record value; a same-named module
+  // export; then a field on any other record expression. `infer_callee` refines
+  // this order when the access is immediately called.
   // A variable narrowed to a variant by a pattern (`Ctor(..) as v`) resolves
   // `v.field` from that variant's recorded fields, reaching fields not shared
   // by every variant.
@@ -2530,11 +2534,8 @@ fn infer_field_access(
       }
     _ -> Error(Nil)
   }
-  // `module.value` qualified access. This is only a *candidate*: a local value
-  // of the same spelling shadows the module (lexical scoping), so a value whose
-  // type is a record exposing `label` wins. A value that is not such a record
-  // (e.g. a `dynamic` constant beside a `gleam/dynamic` import) falls through to
-  // the module export.
+  // Precompute a possible qualified module export; a bound record field may
+  // still take precedence over it.
   let module_access = case container {
     glance.Variable(_, name) ->
       case dict.get(env.modules, name) {
@@ -2547,11 +2548,6 @@ fn infer_field_access(
     Ok(field) -> Ok(#(field, st))
     Error(_) ->
       case container {
-        // A bound value whose type is a record exposing `label` resolves to
-        // that field, even when its name also spells an imported module (a
-        // `compression` parameter beside a `compression` module). A value whose
-        // type lacks the field (a `dict` parameter beside the `gleam/dict`
-        // module, accessing `dict.fold`) falls through to the module export.
         glance.Variable(_, name) ->
           case dict.has_key(env.values, name) {
             True -> value_field(env, st, container, label, module_access)
@@ -2921,10 +2917,9 @@ fn infer_lambda(
 }
 
 // Infer the callee of a call. In call position a same-named module export
-// wins over a record field of a shadowing value: `cache.events(cache)` calls
-// the module's `events` function even though the `cache` value has an `events`
-// field (the field is not callable). Outside call position the field wins
-// (`compression.deflate` reads the field), handled by `infer_field_access`.
+// wins over a non-callable record field of a shadowing value. A callable field
+// still wins; outside call position ordinary field access wins. Both cases
+// delegate to `infer_field_access` when the module export is not selected.
 fn infer_callee(
   env: Env,
   st: State,
@@ -2936,12 +2931,8 @@ fn infer_callee(
         Ok(interface) -> dict.get(interface.values, label)
         Error(_) -> Error(Nil)
       }
-      // A same-named module export wins over a value's field in call position
-      // (`dep.value(dep)` where dep's `value` field is plain data, not callable)
-      // — *unless* the local value's `label` field is itself a function, in
-      // which case the field is what's being called (a `components` parameter
-      // shadowing the `components` module alias, calling `components.hr()`), so
-      // defer to ordinary field access.
+      // A callable field on the local value takes precedence; otherwise use the
+      // module export when present.
       case module_export, field_is_callable(env, st, name, label) {
         Ok(scheme), False -> {
           let #(type_, st) = instantiate(st, scheme)
@@ -3988,8 +3979,9 @@ fn indices_loop(i: Int, acc: List(Int)) -> List(Int) {
 //
 // Convert a written type annotation into an internal `Type`, expanding aliases
 // and attributing named types to their origin module. Hydration never fails:
-// unknown type variables become fresh variables, while unresolved named
-// references fall back to a plausible named type.
+// unknown type variables become fresh variables. An unresolved unqualified
+// name is attributed to the prelude; an unresolved qualified name keeps its
+// written module alias.
 fn hydrate(env: Env, st: State, ast: glance.Type) -> #(Type, State) {
   hydrate_with(env, dict.new(), st, ast).0
 }
@@ -4156,10 +4148,9 @@ fn render(module: glance.Module, env: Env, st: State) -> AnnotatedModule {
   let constants =
     list.map(module.constants, fn(d) { ConstantDef(d.definition) })
 
-  // `st.annotations` is in reverse discovery order; reverse it so that when a
-  // span was recorded more than once (e.g. a polymorphic reference and its
-  // use-instantiated type), the later, stable sort keeps the same one the
-  // string-based renderer did.
+  // `st.annotations` is in reverse discovery order. Restore discovery order
+  // before the stable span sort, so annotations sharing a span retain the order
+  // in which inference recorded them.
   let expressions =
     list.map(list.reverse(st.annotations), fn(entry) {
       let #(span, type_) = entry
@@ -4174,7 +4165,7 @@ fn render(module: glance.Module, env: Env, st: State) -> AnnotatedModule {
 }
 
 // The inferred (generalized) scheme of each definition, in source order.
-// Definitions the environment somehow lacks are skipped.
+// Best-effort inference leaves skipped definitions unbound, so omit them here.
 fn collect_schemes(defs: List(Def), env: Env) -> List(#(String, Scheme)) {
   list.filter_map(defs, fn(def) {
     let name = def_name(def)
