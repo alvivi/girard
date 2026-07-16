@@ -23,7 +23,6 @@ gleam format --check src/ test/ dev/  # check formatting
 gleam build --warnings-as-errors      # compile; no warnings allowed
 gleam test                            # run the full test suite
 gleam run -m birdie                   # review golden snapshot changes
-gleam run -m glinter                  # lint src/
 gleam run -m girard/sweep [package]   # sweep an installed dependency
 bash scripts/gen-oracle.sh            # regenerate compiler oracle fixtures
 ```

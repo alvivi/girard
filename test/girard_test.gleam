@@ -523,6 +523,25 @@ pub fn bit_array_pattern_test() {
   |> should.equal("fn(BitArray) -> Int")
 }
 
+pub fn bit_array_pattern_arithmetic_size_test() {
+  // glance 7.0+ parses arithmetic in a bit-array pattern segment size; the
+  // size references a variable in scope (here the parameter `n`, used as Int).
+  let source =
+    "pub fn rest(b, n) { case b { <<_:size(n - 1)-bytes, tail:bytes>> -> tail\n_ -> b } }"
+  signature(source, "rest")
+  |> should.equal("fn(BitArray, Int) -> BitArray")
+}
+
+pub fn bit_array_pattern_const_size_test() {
+  // A top-level constant used only as a bit-array pattern size is a real
+  // dependency: the reference graph must order the constant before its user
+  // (declared *after* it here) or `key_size` reads as unbound.
+  let source =
+    "pub fn key(b) { case b { <<data:bytes-size(key_size)>> -> data\n_ -> b } }\nconst key_size = 32"
+  signature(source, "key")
+  |> should.equal("fn(BitArray) -> BitArray")
+}
+
 // Imports
 //
 // Resolving imported modules through the resolver: qualified and unqualified
