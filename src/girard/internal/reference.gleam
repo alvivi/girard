@@ -283,7 +283,8 @@ fn pattern_refs(pattern: glance.Pattern, bound: Set(String), acc: Acc) -> Acc {
       list.fold(elements, acc, fn(acc, p) { pattern_refs(p, bound, acc) })
 
     glance.PatternList(_, elements, tail) -> {
-      let acc = list.fold(elements, acc, fn(acc, p) { pattern_refs(p, bound, acc) })
+      let acc =
+        list.fold(elements, acc, fn(acc, p) { pattern_refs(p, bound, acc) })
       case tail {
         Some(t) -> pattern_refs(t, bound, acc)
         None -> acc
@@ -296,7 +297,8 @@ fn pattern_refs(pattern: glance.Pattern, bound: Set(String), acc: Acc) -> Acc {
       list.fold(segments, acc, fn(acc, segment) {
         list.fold(segment.1, acc, fn(acc, option) {
           case option {
-            glance.SizeValueOption(size) -> bit_array_size_refs(size, bound, acc)
+            glance.SizeValueOption(size) ->
+              bit_array_size_refs(size, bound, acc)
             _ -> acc
           }
         })
