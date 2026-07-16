@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.0] - 2026-07-16
 
 ### Changed
 
@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   // After
   import girard.{type Type, Fn, Named}
   ```
+
+- Updated `glance` to 7.0.0, which parses arithmetic in bit-array pattern
+  segment sizes (e.g. `<<_:size(n - 1)-bytes, tail:bytes>>`). Modules using
+  that form now annotate instead of failing to parse, values referenced in
+  segment sizes are typed as `Int`, and a top-level constant used only as a
+  segment size now counts as a dependency of the definition using it. Because
+  the public API accepts and annotates `glance` ASTs, this is a breaking
+  dependency bump: callers passing pre-parsed modules must move to glance 7.
 
 ## [1.1.1] - 2026-06-20
 
@@ -61,6 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   describe why a module could not be typed.
 - A command-line interface that annotates a file or standard input.
 
+[2.0.0]: https://github.com/alvivi/girard/releases/tag/v2.0.0
 [1.1.1]: https://github.com/alvivi/girard/releases/tag/v1.1.1
 [1.1.0]: https://github.com/alvivi/girard/releases/tag/v1.1.0
 [1.0.0]: https://github.com/alvivi/girard/releases/tag/v1.0.0
