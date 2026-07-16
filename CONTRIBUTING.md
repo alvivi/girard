@@ -30,15 +30,17 @@ after cloning.
 
 ## Pre-flight checklist
 
-CI runs four gates. Run them locally before pushing — green here means green on
-CI:
+CI runs three gates. Run them locally before pushing — green here means green
+on CI:
 
 ```sh
 gleam format --check src/ test/ dev/ # formatting (all Gleam source trees)
 gleam build --warnings-as-errors     # no warnings allowed
 gleam test                           # full suite, including oracle fixtures
-gleam run -m glinter                 # lint; warnings_as_errors = true
 ```
+
+A fourth gate, `gleam run -m glinter`, is temporarily disabled until glinter
+publishes a glance-7-compatible release (see the note in `gleam.toml`).
 
 `gleam format src/ test/ dev/` (no `--check`) fixes formatting in place.
 
