@@ -14,6 +14,29 @@ top-level definition's signature. Parsing is delegated to
 The project is stable: its inferred types are validated differentially against
 the real compiler across the hex ecosystem (see [`PACKAGES.md`](PACKAGES.md)).
 
+## Why?
+
+The Gleam compiler infers a type for every expression, but it does not expose
+that information as a library: there is no API a tool can call to ask "what is
+the type of the expression at this span?". girard exists to answer exactly
+that question.
+
+That makes it a building block for language tooling written in Gleam:
+
+- **Editor tooling and language servers** — code actions, hovers, and
+  completions that need the type of the expression under the cursor. For
+  example, a "wrap this element" refactor only makes sense when it knows the
+  expression already has the element type it is wrapping.
+- **Linters and analyzers** — rules that depend on types rather than syntax
+  alone, without reimplementing inference.
+- **Code generation and refactoring tools** — codemods that must know a
+  binding's signature to rewrite call sites safely.
+
+Because girard consumes [`glance`](https://hexdocs.pm/glance/) ASTs and keys
+its annotations by source span, a tool that already parses with glance can join
+inferred types directly back onto its own AST — no compiler invocation, no AST
+fork, no parsing twice.
+
 ## Usage
 
 Add the package to your Gleam project:
