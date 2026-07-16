@@ -3818,7 +3818,7 @@ fn infer_bit_pattern_segment(
   st: State,
   segment: #(
     glance.Pattern,
-    List(glance.BitStringSegmentOption(glance.Pattern)),
+    List(glance.BitStringSegmentOption(glance.BitArraySize)),
   ),
 ) -> Result(#(Env, State), Error) {
   let #(pattern, options) = segment
@@ -3837,10 +3837,38 @@ fn infer_bit_pattern_segment(
     let #(env, st) = acc
     case option {
       glance.SizeValueOption(size) ->
-        infer_pattern(env, st, size, prelude_int())
+        with_env(env, check_bit_array_size(env, st, size))
       _ -> Ok(#(env, st))
     }
   })
+}
+
+// Check a bit-array *pattern* segment size (glance 7.0+): a restricted
+// arithmetic expression over already-bound variables, every part of which is
+// an `Int`. Unlike a value size it binds nothing — a variable is a reference
+// that must already be in scope and is unified with `Int`; literals, binary
+// operators, and parenthesized blocks recurse.
+fn check_bit_array_size(
+  env: Env,
+  st: State,
+  size: glance.BitArraySize,
+) -> Result(State, Error) {
+  case size {
+    glance.BitArraySizeInt(..) -> Ok(st)
+    glance.BitArraySizeVariable(_, name) ->
+      case dict.get(env.values, name) {
+        Ok(scheme) -> {
+          let #(t, st) = instantiate(st, scheme)
+          unify(st, t, prelude_int())
+        }
+        Error(_) -> Error(UnboundVariable(name))
+      }
+    glance.BitArraySizeBinaryOperator(_, _, left, right) -> {
+      use st <- result.try(check_bit_array_size(env, st, left))
+      check_bit_array_size(env, st, right)
+    }
+    glance.BitArraySizeBlock(_, inner) -> check_bit_array_size(env, st, inner)
+  }
 }
 
 // Pair a (possibly failed) new state with an unchanged environment.

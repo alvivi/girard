@@ -22,6 +22,8 @@ jobs:
       - run: gleam build --warnings-as-errors
       - run: gleam test
       - run: gleam format --check src test dev
-      # Lint the library; `warnings_as_errors = true` in gleam.toml makes any
-      # remaining glinter warning a non-zero exit, so CI fails on it.
-      - run: gleam run -m glinter
+      # Linting is temporarily disabled: glinter has not yet published a
+      # glance-7-compatible release (see gleam.toml). Re-enable once it does;
+      # `warnings_as_errors = true` in gleam.toml makes any remaining glinter
+      # warning a non-zero exit, so CI fails on it.
+      # - run: gleam run -m glinter
