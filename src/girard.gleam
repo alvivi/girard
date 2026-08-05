@@ -161,26 +161,30 @@ pub fn with_target(options: Options, target: Target) -> Options {
 // The resolver `default_options` uses: read an imported module's source from
 // `src/` or the installed packages under `build/packages`.
 
-/// The default resolver: looks for an imported module's source under `src/` and
-/// the `build/packages/*/src` dependency sources, relative to the current
-/// working directory. Constructing the resolver touches no filesystem; the
-/// `build/packages` listing and every source read happen lazily, when the
-/// resolver is invoked to resolve an import. A missing `build/packages`
-/// directory or unreadable source is not an error here — it just means the
-/// import is not found, surfaced as `Error(Nil)` at resolution time. The
-/// listing is re-read on each resolution, which is negligible beside parsing
-/// and inferring the module it finds.
+/// The default resolver: looks for an imported module's source under `src/`
+/// first, then the `build/packages/*/src` dependency sources, relative to the
+/// current working directory. Constructing the resolver touches no filesystem;
+/// the `build/packages` listing and every source read happen lazily, when the
+/// resolver is invoked. A missing `build/packages` or an unreadable source is
+/// not an error here — the import is simply not found, surfaced as `Error(Nil)`
+/// at resolution time.
 pub fn disk_resolver() -> Resolver {
   fn(path: String) -> Result(String, Nil) {
-    let packages = case simplifile.read_directory("build/packages") {
-      Ok(packages) -> packages
-      Error(_) -> []
+    // Prefer the project's own sources; only scan the installed packages when
+    // the module is not found under `src/`, so in-project imports never pay for
+    // the directory listing.
+    case simplifile.read("src/" <> path <> ".gleam") {
+      Ok(source) -> Ok(source)
+      Error(_) -> {
+        let packages =
+          result.unwrap(simplifile.read_directory("build/packages"), [])
+        first_readable(
+          list.map(packages, fn(pkg) {
+            "build/packages/" <> pkg <> "/src/" <> path <> ".gleam"
+          }),
+        )
+      }
     }
-    let candidates =
-      list.map(packages, fn(pkg) {
-        "build/packages/" <> pkg <> "/src/" <> path <> ".gleam"
-      })
-    first_readable(["src/" <> path <> ".gleam", ..candidates])
   }
 }
 

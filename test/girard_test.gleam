@@ -548,13 +548,11 @@ pub fn bit_array_pattern_const_size_test() {
 // values and types, aliases, and cross-module inference.
 
 pub fn disk_resolver_construction_is_lazy_test() {
-  // Building the disk resolver touches no filesystem: it succeeds and hands
-  // back a resolver even for an import that cannot be found anywhere on disk.
-  // The lookup — and its `Error(Nil)` failure — happens only when the resolver
-  // is invoked, not at construction. (graded checks the effect side of this:
-  // `disk_resolver` and `default_options` infer as pure.)
+  // Building the disk resolver touches no filesystem: construction succeeds and
+  // hands back a resolver even for an import that exists nowhere on disk. The
+  // lookup — and its `Error(Nil)` — happens only when the resolver is invoked.
   let resolve = girard.disk_resolver()
-  resolve("girard_no_such/module_" <> "does_not_exist")
+  resolve("girard_no_such/module_does_not_exist")
   |> should.equal(Error(Nil))
 }
 
