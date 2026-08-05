@@ -16,11 +16,9 @@ argv = ">= 1.1.0 and < 2.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
-# Linting is temporarily disabled: glinter has not yet published a
-# glance-7-compatible release, and a git dev-dep would block `gleam publish`
-# (Hex rejects git dependencies). Re-enable this dep and the lint step in
-# .github/workflows/test.yml once upstream allows glance 7.
-# glinter = ">= 2.19.0 and < 3.0.0"
+# Linter. Run with `gleam run -m glinter`; CI runs the same. 2.19.2 is the
+# first glance-7-compatible release. See the [tools.glinter] config below.
+glinter = ">= 2.19.2 and < 3.0.0"
 # Decoding the patched compiler's oracle JSON in dev/girard/diff and the oracle
 # test — not used by the library itself.
 gleam_json = ">= 3.1.0 and < 4.0.0"
@@ -28,8 +26,7 @@ gleam_json = ">= 3.1.0 and < 4.0.0"
 # test/golden_test.gleam). Review changes with `gleam run -m birdie`.
 birdie = ">= 2.0.2 and < 3.0.0"
 
-# Linter config. Run with `gleam run -m glinter` (currently disabled — see the
-# glinter dev-dependency note above; the config is kept for re-enabling).
+# Linter config. Run with `gleam run -m glinter`.
 # We lint the library (src/) only: gleeunit tests are public, un-annotated, and
 # unused by other modules by convention, which trips several rules.
 [tools.glinter]

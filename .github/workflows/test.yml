@@ -14,7 +14,7 @@ jobs:
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "28"
-          gleam-version: "1.16.0"
+          gleam-version: "1.18.1"
           rebar3-version: "3"
           # elixir-version: "1"
       - run: gleam deps download
@@ -22,8 +22,6 @@ jobs:
       - run: gleam build --warnings-as-errors
       - run: gleam test
       - run: gleam format --check src test dev
-      # Linting is temporarily disabled: glinter has not yet published a
-      # glance-7-compatible release (see gleam.toml). Re-enable once it does;
-      # `warnings_as_errors = true` in gleam.toml makes any remaining glinter
-      # warning a non-zero exit, so CI fails on it.
-      # - run: gleam run -m glinter
+      # Lint the library. `warnings_as_errors = true` in gleam.toml makes any
+      # remaining glinter warning a non-zero exit, so CI fails on it.
+      - run: gleam run -m glinter
