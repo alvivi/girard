@@ -229,11 +229,8 @@ let results = girard.annotate_package(modules, options)
 - **Parsing is bounded by `glance`.** girard does not parse Gleam itself, so
   source that [`glance`](https://hexdocs.pm/glance/) cannot parse, girard cannot
   annotate. Since imports are resolved by parsing, an unparseable module also
-  makes its dependents fail with `unbound variable`. The gaps the sweep surfaces
-  are all in bit-array syntax — chiefly arithmetic in a bit-array *pattern*
-  segment size, e.g. `<<value:size(len - 1)>>` (the construction side parses, the
-  pattern side does not). These are `glance` limitations, not girard inference
-  errors.
+  makes its dependents fail with `unbound variable`. Such failures are `glance`
+  limitations, not girard inference errors.
 
 - **Inferred types, not diagnostics.** girard reproduces the types the compiler
   infers, but it is not a full type checker: when a module cannot be typed it
