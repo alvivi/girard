@@ -1,0 +1,138 @@
+{
+  "modules": {
+    "bottom": [
+      {
+        "start": 46,
+        "end": 84,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 55,
+        "end": 84,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 57,
+        "end": 82,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 57,
+        "end": 72,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 76,
+        "end": 82,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 114,
+        "end": 119,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 158,
+        "end": 200,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 166,
+        "end": 200,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 168,
+        "end": 198,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 168,
+        "end": 190,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 194,
+        "end": 198,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 233,
+        "end": 237,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      }
+    ]
+  }
+}

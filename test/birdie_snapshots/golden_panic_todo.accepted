@@ -1,0 +1,38 @@
+---
+version: 2.0.2
+title: golden: panic_todo
+---
+=== source ===
+pub fn unreachable(reason: String) -> Int {
+  panic as { "unreachable: " <> reason }
+}
+
+pub fn crash() -> Int {
+  panic
+}
+
+pub fn not_yet(name) -> String {
+  todo as { "not implemented for " <> name }
+}
+
+pub fn later() -> String {
+  todo
+}
+
+=== annotation ===
+later: fn() -> String
+not_yet: fn(String) -> String
+crash: fn() -> Int
+unreachable: fn(String) -> Int
+46-84: Int
+55-84: String
+57-72: String
+57-82: String
+76-82: String
+114-119: Int
+158-200: String
+166-200: String
+168-190: String
+168-198: String
+194-198: String
+233-237: String

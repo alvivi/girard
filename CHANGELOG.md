@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Expressions inside a `panic as` / `todo as` message are now annotated.
+  Previously nothing in the message got a type — `name` in
+  `panic as { "no such user: " <> name }` had no annotation at all. The message
+  is now inferred like any other expression and checked against `String`, so an
+  ill-typed message is reported instead of ignored. `panic` and `todo` still
+  unify with anything, and the message-less forms are unchanged.
+
 ## [2.1.1] - 2026-08-24
 
 ### Fixed
