@@ -1,0 +1,9 @@
+# Zero-dependency project template. `scripts/gen-differential.sh` copies this
+# file byte for byte into the temp project it compiles each fixture in, so the
+# bytes committed here are exactly the configuration the compiler saw — which
+# is what lets `inputs_hash` cover the build configuration (PR 1, §4).
+#
+# Almost every case uses this template. Only a case importing something outside
+# `differential/support` needs `differential/pinned/` instead.
+name = "differential"
+version = "1.0.0"
