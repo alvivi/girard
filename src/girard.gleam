@@ -2443,7 +2443,17 @@ fn infer_expr_inner(
       }
     }
 
-    glance.Todo(..) | glance.Panic(..) -> Ok(fresh(st))
+    // `panic` and `todo` are bottom, so the result is a fresh variable that
+    // unifies with anything. The message is still walked — and checked against
+    // `String`, as the compiler requires — so its subexpressions get annotated.
+    glance.Todo(_, message) | glance.Panic(_, message) ->
+      case message {
+        Some(m) -> {
+          use st <- result.try(check(env, st, m, prelude_string()))
+          Ok(fresh(st))
+        }
+        None -> Ok(fresh(st))
+      }
 
     glance.Echo(_, expression, _message) ->
       case expression {

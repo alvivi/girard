@@ -288,6 +288,52 @@ pub fn pipe_into_saturated_call_test() {
   |> should.equal("fn(String) -> String")
 }
 
+// Panic and todo
+//
+// `panic` and `todo` are bottom — they unify with anything — but their optional
+// message is a normal expression that the compiler requires to be a `String`.
+
+pub fn panic_message_is_annotated_test() {
+  // The message is walked, so its subexpressions are annotated and the operands
+  // are pinned to `String`.
+  let source = "pub fn f(a, b) { panic as { a <> b } }"
+  type_of(source, "a <> b")
+  |> should.equal("String")
+  signature(source, "f")
+  |> should.equal("fn(String, String) -> a")
+}
+
+pub fn todo_message_is_annotated_test() {
+  let source = "pub fn f(a, b) { todo as { a <> b } }"
+  type_of(source, "a <> b")
+  |> should.equal("String")
+  signature(source, "f")
+  |> should.equal("fn(String, String) -> a")
+}
+
+pub fn message_variable_is_checked_against_string_test() {
+  // A bare variable message constrains the variable to `String`.
+  signature("pub fn f(reason) { panic as reason }", "f")
+  |> should.equal("fn(String) -> a")
+  signature("pub fn f(reason) { todo as reason }", "f")
+  |> should.equal("fn(String) -> a")
+}
+
+pub fn non_string_message_is_error_test() {
+  let assert Error(girard.TypeMismatch(_, _)) =
+    girard.annotate("pub fn f() { panic as 1 }", girard.default_options())
+  let assert Error(girard.TypeMismatch(_, _)) =
+    girard.annotate("pub fn f() { todo as 1 }", girard.default_options())
+}
+
+pub fn message_less_panic_and_todo_are_bottom_test() {
+  // Without a message both still infer, and their result unifies with anything.
+  signature("pub fn f() { panic }", "f")
+  |> should.equal("fn() -> a")
+  signature("pub fn f() -> Int { todo }", "f")
+  |> should.equal("fn() -> Int")
+}
+
 // Module-level polymorphism and dependency-ordered inference
 //
 // Generalization at the definition boundary and inference in
