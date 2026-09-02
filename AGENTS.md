@@ -52,7 +52,7 @@ API.
 | File | Responsibility |
 |---|---|
 | `src/girard.gleam` | The whole public API and inference engine, in labelled comment sections, public API first: source/AST/package entry points and CLI; the public `Type`, `Scheme`, and inference `Error` vocabulary; Hindley-Milner inference (state, substitutions, environments and schemes, unification, generalization/instantiation, expression/pattern/statement inference, type hydration, module interfaces); the built-in prelude type constructors; and the type printer |
-| `src/girard/internal/ty.gleam` | The inference-side `Type` and `Scheme`: the public vocabulary plus the narrowed-variant slot on `Named`, converted to the public types when a result or an error is published |
+| `src/girard/internal/ty.gleam` | The inference-side `Type` and `Scheme`: the public vocabulary plus the narrowed variant on `Named`, converted to the public types when a result or an error is published |
 | `src/girard/internal/scc.gleam` | Tarjan strongly-connected components for dependency-ordered inference |
 | `src/girard/internal/reference.gleam` | Lexically scoped reference collection for the top-level definition graph |
 
@@ -89,6 +89,16 @@ threaded inference `State`. An absent id is unbound; a present id is bound.
 The substitution, the environment and module interfaces hold the inference-side
 `Type` from `girard/internal/ty`; the public `Type` is produced from it
 only where a result or an error is published.
+
+The inference-side `Named` carries the variant a value is known to have been
+built with, as the compiler's `Type::Named { inferred_variant }` does. A
+constructor's return type is stamped with its index; a pattern that matches a
+bare subject variable rebinds it, in that scope only, to a stamped copy of its
+type; field access on a stamped type reads that variant's own accessors instead
+of the shared ones. The stamp is erased when a type variable is bound to the
+type and when a top-level definition is generalized, so it never survives a
+generic function, a `case` result, or a module boundary except on a
+constructor.
 
 Generalization normally happens at module-level definition boundaries, so
 unannotated local `let` bindings remain monomorphic. The compiler-matching
