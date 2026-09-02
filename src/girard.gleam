@@ -616,19 +616,6 @@ type Env {
     // label of each positional parameter (`None` where unlabelled). Used to
     // reorder labelled and shorthand arguments at call/pattern sites.
     field_maps: Dict(String, List(Option(String))),
-    // In-scope unqualified constructor names -> (origin module, name there).
-    // Covers constructors of types defined in the current module and
-    // constructors brought in by unqualified imports. A renamed import
-    // (`import kinds.{Near as Close}`) is in scope as `Close` but is the same
-    // variant as `kinds.Near`; narrowings compare this identity, not the
-    // spelling.
-    constructors: Dict(String, #(String, String)),
-    // Variables that a pattern has narrowed to a specific constructor variant
-    // (e.g. `Element(..) as e`), mapping the variable to that variant and its
-    // `label -> field type` for the bound value. This lets `e.field` reach a
-    // field present in only some variants, mirroring the compiler's inferred
-    // variant narrowing. Field types are tied to the variable's own type.
-    variants: Dict(String, Narrowed),
     // The name of the module currently being inferred. Local types are minted
     // with this module so they stay distinct from imported types.
     current_module: String,
@@ -698,8 +685,6 @@ fn new_env() -> Env {
     accessors: dict.new(),
     local_types: dict.new(),
     field_maps: dict.new(),
-    constructors: dict.new(),
-    variants: dict.new(),
     current_module: "",
     modules: dict.new(),
     module_index: dict.new(),
@@ -867,11 +852,6 @@ fn prelude_interface() -> ModuleInterface {
 }
 
 fn bind_value(env: Env, name: String, scheme: ty.Scheme) -> Env {
-  // A new binding for `name` is a different value, so any variant narrowing
-  // recorded for the previous binding of that name no longer applies — drop it
-  // (a parameter shadowing a `let x = Ctor(..)`-narrowed outer variable must not
-  // inherit the outer value's recorded fields). `record_variant` re-adds the
-  // narrowing afterwards for bindings that are themselves narrowed.
   Env(
     ..env,
     values: dict.insert(env.values, name, scheme),
@@ -882,7 +862,6 @@ fn bind_value(env: Env, name: String, scheme: ty.Scheme) -> Env {
       True -> dict.delete(env.open_values, name)
       False -> dict.insert(env.open_values, name, scheme)
     },
-    variants: dict.delete(env.variants, name),
   )
 }
 
@@ -1516,19 +1495,6 @@ fn import_value(
     Ok(scheme) -> bind_value(env, local, scheme)
     Error(_) -> env
   }
-  // A constructor keeps the identity it has in its declaring module, whatever
-  // it is called here.
-  let env = case is_upper(original) {
-    True ->
-      Env(
-        ..env,
-        constructors: dict.insert(env.constructors, local, #(
-          interface.name,
-          original,
-        )),
-      )
-    False -> env
-  }
   case dict.get(interface.field_maps, original) {
     Ok(field_map) ->
       Env(..env, field_maps: dict.insert(env.field_maps, local, field_map))
@@ -1777,6 +1743,22 @@ fn stamp(st: State, type_: ty.Type, variant: Int) -> ty.Type {
     ty.Named(module, name, args, _) ->
       ty.Named(module, name, args, Some(variant))
     other -> other
+  }
+}
+
+// The variant a (resolved) type is known to have been built with.
+fn variant_of(type_: ty.Type) -> Option(Int) {
+  case type_ {
+    ty.Named(_, _, _, variant) -> variant
+    _ -> None
+  }
+}
+
+// The variant a constructor's scheme builds, read off the return of its type.
+fn scheme_variant(scheme: ty.Scheme) -> Option(Int) {
+  case scheme.type_ {
+    ty.Fn(_, return) -> variant_of(return)
+    other -> variant_of(other)
   }
 }
 
@@ -2267,14 +2249,6 @@ fn register_custom_type(
         }
         let env = register_field_map(env, variant.name, labels)
         let env = bind_value(env, variant.name, ty.Scheme(param_ids, ctor_type))
-        let env =
-          Env(
-            ..env,
-            constructors: dict.insert(env.constructors, variant.name, #(
-              env.current_module,
-              variant.name,
-            )),
-          )
         #(env, st, [fields, ..variant_fields])
       },
     )
@@ -2716,23 +2690,15 @@ type ModuleExport =
 // The one resolver for `name.label`, in projection and in call position
 // alike. The compiler's rule: a valid record access wins unconditionally, a
 // failing one falls through to a same-named module export, and the record
-// error is reported only when neither exists. A variable narrowed to a
-// variant by a pattern (`Ctor(..) as v`) resolves `v.field` from that
-// variant's recorded fields, reaching fields not shared by every variant.
+// error is reported only when neither exists. Which fields the record grants
+// is the type's business: a value known to be one variant reaches that
+// variant's own fields.
 fn infer_field_access(
   env: Env,
   st: State,
   container: glance.Expression,
   label: String,
 ) -> Result(#(ty.Type, Access, State), Error) {
-  let variant_field = case container {
-    glance.Variable(_, name) ->
-      case dict.get(env.variants, name) {
-        Ok(narrowed) -> dict.get(narrowed.fields, label)
-        Error(_) -> Error(Nil)
-      }
-    _ -> Error(Nil)
-  }
   // Precompute a possible qualified module export; a record field takes
   // precedence over it wherever one is reachable.
   let module_access = case container {
@@ -2747,17 +2713,13 @@ fn infer_field_access(
       }
     _ -> Error(Nil)
   }
-  case variant_field {
-    Ok(field) -> Ok(#(field, Field, st))
-    Error(_) ->
-      case container {
-        glance.Variable(_, name) ->
-          case dict.has_key(env.values, name) {
-            True -> value_field(env, st, container, label, module_access)
-            False -> module_or_record(env, st, container, label, module_access)
-          }
-        _ -> module_or_record(env, st, container, label, module_access)
+  case container {
+    glance.Variable(_, name) ->
+      case dict.has_key(env.values, name) {
+        True -> value_field(env, st, container, label, module_access)
+        False -> module_or_record(env, st, container, label, module_access)
       }
+    _ -> module_or_record(env, st, container, label, module_access)
   }
 }
 
@@ -2963,100 +2925,10 @@ fn constructor_field_map(
   }
 }
 
-// If `expr` is a direct constructor call (`Ctor(..)` or `module.Ctor(..)`),
-// its `#(module, constructor)`. Constructors are recognised by their leading
-// upper-case letter, the Gleam naming convention.
-fn constructor_call(
-  expr: glance.Expression,
-) -> Result(#(Option(String), String), Nil) {
-  let callee = case expr {
-    glance.Call(_, function, _) -> function
-    _ -> expr
-  }
-  case callee {
-    glance.Variable(_, name) ->
-      case is_upper(name) {
-        True -> Ok(#(None, name))
-        False -> Error(Nil)
-      }
-    glance.FieldAccess(_, glance.Variable(_, module), name) ->
-      case is_upper(name) {
-        True -> Ok(#(Some(module), name))
-        False -> Error(Nil)
-      }
-    _ -> Error(Nil)
-  }
-}
-
 fn is_upper(name: String) -> Bool {
   case string.first(name) {
     Ok(c) -> string.uppercase(c) == c && string.lowercase(c) != c
     Error(_) -> False
-  }
-}
-
-// A variable narrowed to one constructor variant: the constructor, identified
-// by the module that declares its type and its name there so a qualified, an
-// unqualified and a renamed spelling agree, and that variant's
-// `label -> field type` for the bound value.
-type Narrowed {
-  Narrowed(constructor: #(String, String), fields: Dict(String, ty.Type))
-}
-
-// Record, for a variable bound by `Ctor(..) as name`, that variant's labelled
-// fields with types tied to `value_type` (the variable's own type). Later
-// `name.field` reads from this even when the field is absent from other
-// variants. Best-effort: on any failure the environment is left unchanged.
-fn record_variant(
-  env: Env,
-  st: State,
-  module: Option(String),
-  constructor: String,
-  value_type: ty.Type,
-  name: String,
-) -> #(Env, State) {
-  let recorded = {
-    use scheme <- result.try(constructor_scheme(env, module, constructor))
-    let #(ctor_type, st) = instantiate(st, scheme)
-    let #(field_types, ret) = case ctor_type {
-      ty.Fn(args, ret) -> #(args, ret)
-      other -> #([], other)
-    }
-    use origin <- result.try(case resolve(st, ret) {
-      ty.Named(origin, _, _, _) -> Ok(origin)
-      _ -> Error(NotARecord)
-    })
-    // A qualified `alias.Ctor` is spelled as its module declares it; an
-    // unqualified name may be a renamed import, so read the identity it was
-    // bound with — the compiler compares variant indices, which no spelling
-    // moves.
-    let identity = case module {
-      Some(_) -> #(origin, constructor)
-      None ->
-        result.unwrap(dict.get(env.constructors, constructor), #(
-          origin,
-          constructor,
-        ))
-    }
-    // Tie this fresh instance to the variable's actual type so the recorded
-    // field types resolve correctly later.
-    use st <- result.try(unify(st, value_type, ret))
-    let labels = constructor_field_map(env, module, constructor)
-    let fields =
-      list.fold(list.zip(labels, field_types), dict.new(), fn(acc, pair) {
-        case pair.0 {
-          Some(label) -> dict.insert(acc, label, resolve(st, pair.1))
-          None -> acc
-        }
-      })
-    Ok(#(Narrowed(constructor: identity, fields:), st))
-  }
-  case recorded {
-    Ok(#(narrowed, st)) -> #(
-      Env(..env, variants: dict.insert(env.variants, name, narrowed)),
-      st,
-    )
-    Error(_) -> #(env, st)
   }
 }
 
@@ -3648,6 +3520,7 @@ fn infer_use(
         st,
         use_pattern.pattern,
         param,
+        None,
       ))
       Ok(#([param, ..types_], env, st))
     }),
@@ -3805,24 +3678,14 @@ fn infer_expr_assignment(
     }
     None -> Ok(st)
   })
-  use #(env, st) <- result.try(infer_pattern(env, st, pattern, value_type))
-  // Inferred-variant narrowing, so a later `x.field` reaches a field present in
-  // only one variant.
-  let #(env, st) = case pattern, value {
-    // `let x = Ctor(..)`: the constructed variant narrows `x`.
-    glance.PatternVariable(_, name), _ ->
-      case constructor_call(value) {
-        Ok(#(module, constructor)) ->
-          record_variant(env, st, module, constructor, value_type, name)
-        Error(_) -> #(env, st)
-      }
-    // `let Ctor(..) = x` / `let assert Ctor(..) = x`: matching a variant pattern
-    // against a bare variable narrows that variable to the variant.
-    glance.PatternVariant(_, module, constructor, _, _),
-      glance.Variable(_, name)
-    -> record_variant(env, st, module, constructor, value_type, name)
-    _, _ -> #(env, st)
-  }
+  // `let assert Ctor(..) = x` narrows `x` itself, for the rest of the block.
+  use #(env, st) <- result.try(infer_pattern(
+    env,
+    st,
+    pattern,
+    value_type,
+    subject_variable(value, reference.pattern_names(pattern)),
+  ))
   Ok(#(value_type, env, st))
 }
 
@@ -3873,7 +3736,18 @@ fn infer_clause(
       Ok(#([clause_env, ..envs], st))
     }),
   )
-  list.try_fold(agree_variants(list.reverse(rev_envs)), st, fn(st, clause_env) {
+  let names =
+    list.append(
+      list.filter_map(subjects, fn(subject) {
+        option.to_result(subject_of(subject), Nil)
+      }),
+      case clause.patterns {
+        [first, ..] -> list.flat_map(first, reference.pattern_names)
+        [] -> []
+      },
+    )
+  let envs = agree_variants(st, list.reverse(rev_envs), names)
+  list.try_fold(envs, st, fn(st, clause_env) {
     use st <- result.try(case clause.guard {
       Some(guard) -> check(clause_env, st, guard, prelude_bool())
       None -> Ok(st)
@@ -3892,59 +3766,152 @@ fn bind_alternative(
   subjects: List(glance.Expression),
   subject_types: List(ty.Type),
 ) -> Result(#(Env, State), Error) {
+  // Which names the alternative binds is a property of the whole multi-pattern,
+  // not of the column a subject sits in: `case left, io { io, Loud(..) -> .. }`
+  // binds `io` in one column and would narrow it in the other.
+  let bound = list.flat_map(patterns, reference.pattern_names)
   list.try_fold(
     list.zip(patterns, list.zip(subjects, subject_types)),
     #(env, st),
     fn(acc, pair) {
       let #(env, st) = acc
       let #(pattern, #(subject, subject_type)) = pair
-      use #(env, st) <- result.try(infer_pattern(env, st, pattern, subject_type))
-      // When a clause matches a bare subject variable against a variant
-      // pattern, that variable is narrowed to the variant within the clause
-      // (the compiler's inferred-variant narrowing), so its non-shared
-      // fields become accessible.
-      case subject, pattern {
-        glance.Variable(_, name),
-          glance.PatternVariant(_, module, constructor, _, _)
-        -> Ok(record_variant(env, st, module, constructor, subject_type, name))
-        _, _ -> Ok(#(env, st))
-      }
+      infer_pattern(
+        env,
+        st,
+        pattern,
+        subject_type,
+        subject_variable(subject, bound),
+      )
     },
   )
 }
 
-// Alternative patterns bind the same names, and the compiler keeps a
-// variable's inferred variant only when every alternative infers the same
-// one: `Loud(..) as io | Quiet(..) as io` narrows `io` to nothing. Keep a
-// narrowing only where every alternative records the same constructor for
-// the name, so the body reads the others un-narrowed under each alternative.
-fn agree_variants(envs: List(Env)) -> List(Env) {
-  list.map(envs, fn(env) {
-    Env(
-      ..env,
-      variants: dict.filter(env.variants, fn(name, narrowed) {
-        list.all(envs, fn(other) {
-          case dict.get(other.variants, name) {
-            Ok(recorded) -> recorded.constructor == narrowed.constructor
-            Error(_) -> False
+// Alternative patterns bind the same names, and the compiler keeps a name's
+// variant only where every alternative gives it the same one: `Loud(..) as io
+// | Quiet(..) as io` narrows `io` to nothing, and so does `Loud(..) | Quiet(..)`
+// on the subject `io`. `names` covers both — the subject variables and the
+// names the patterns bind — because the compiler has one rule for each and they
+// agree. Equal and unstamped is agreement too.
+fn agree_variants(
+  st: State,
+  envs: List(Env),
+  names: List(String),
+) -> List(Env) {
+  list.fold(names, envs, fn(envs, name) {
+    let variants = list.map(envs, bound_variant(st, _, name))
+    case list.unique(variants) {
+      [_] -> envs
+      _ ->
+        list.map(envs, fn(env) {
+          case dict.get(env.values, name) {
+            Ok(ty.Scheme(vars, type_)) ->
+              bind_value(
+                env,
+                name,
+                ty.Scheme(vars, erase_variant(resolve(st, type_))),
+              )
+            Error(_) -> env
           }
         })
-      }),
-    )
+    }
   })
+}
+
+// The variant a name is bound at in `env`, if it is bound at all. A name bound
+// by only some alternatives is a compile error in Gleam, so an absent binding
+// needs no answer of its own.
+fn bound_variant(st: State, env: Env, name: String) -> Option(Int) {
+  case dict.get(env.values, name) {
+    Ok(scheme) -> variant_of(resolve(st, scheme.type_))
+    Error(_) -> None
+  }
 }
 
 // Patterns
 //
 // Infer a pattern against its expected type, binding the variables it
 // introduces — constructor, list, tuple, string-prefix and bit-array
-// patterns included.
+// patterns included, and narrowing the bare variable the pattern is matched
+// against when there is one.
+
+// The bare variable a pattern is matched against, if the pattern is matched
+// against one. A constructor names a record rather than a local variable, and
+// `echo` is transparent, so `case echo io { .. }` narrows `io`.
+fn subject_of(expr: glance.Expression) -> Option(String) {
+  case expr {
+    glance.Variable(_, name) ->
+      case is_upper(name) {
+        True -> None
+        False -> Some(name)
+      }
+    glance.Echo(_, Some(inner), _) -> subject_of(inner)
+    _ -> None
+  }
+}
+
+// The subject a pattern may narrow: the bare variable it is matched against,
+// unless the pattern binds that name itself. A pattern's own binding is a
+// different value, and it wins over the narrowing whichever order the two are
+// registered in, so the compiler skips the narrowing outright.
+fn subject_variable(
+  subject: glance.Expression,
+  bound: List(String),
+) -> Option(String) {
+  case subject_of(subject) {
+    Some(name) ->
+      case list.contains(bound, name) {
+        True -> None
+        False -> Some(name)
+      }
+    None -> None
+  }
+}
+
+// The type an `as` name binds to: the pattern's own type, which for a
+// constructor pattern is that constructor's return, variant and all. Every
+// other pattern binds the expected type unchanged.
+fn pattern_type(
+  env: Env,
+  st: State,
+  pattern: glance.Pattern,
+  expected: ty.Type,
+) -> ty.Type {
+  let variant = case pattern {
+    glance.PatternVariant(_, module, constructor, _, _) ->
+      constructor_scheme(env, module, constructor)
+      |> result.map(scheme_variant)
+      |> result.unwrap(None)
+    _ -> None
+  }
+  case variant {
+    Some(index) -> stamp(st, expected, index)
+    None -> expected
+  }
+}
+
+// Rebind `name` to its type narrowed to `variant`. The compiler sets the
+// variant on a link-collapsed copy so the outer scope keeps its type; here the
+// rebinding is the copy, and it lives only as long as the environment it is
+// made in. A polymorphic name (a top-level function) is left alone, and so is
+// one whose type is not a record.
+fn narrow(env: Env, st: State, name: String, variant: Int) -> Env {
+  case dict.get(env.values, name) {
+    Ok(ty.Scheme([], type_)) ->
+      case stamp(st, type_, variant) {
+        ty.Named(..) as stamped -> bind_value(env, name, ty.Scheme([], stamped))
+        _ -> env
+      }
+    _ -> env
+  }
+}
 
 fn infer_pattern(
   env: Env,
   st: State,
   pattern: glance.Pattern,
   expected: ty.Type,
+  subject: Option(String),
 ) -> Result(#(Env, State), Error) {
   case pattern {
     glance.PatternInt(..) -> with_env(env, unify(st, expected, prelude_int()))
@@ -3969,7 +3936,7 @@ fn infer_pattern(
       list.try_fold(list.zip(elements, elem_types), #(env, st), fn(acc, pair) {
         let #(env, st) = acc
         let #(pattern, t) = pair
-        infer_pattern(env, st, pattern, t)
+        infer_pattern(env, st, pattern, t, None)
       })
     }
 
@@ -3979,25 +3946,35 @@ fn infer_pattern(
       use #(env, st) <- result.try(
         list.try_fold(elements, #(env, st), fn(acc, p) {
           let #(env, st) = acc
-          infer_pattern(env, st, p, elem)
+          infer_pattern(env, st, p, elem, None)
         }),
       )
       case tail {
-        Some(t) -> infer_pattern(env, st, t, prelude_list(elem))
+        Some(t) -> infer_pattern(env, st, t, prelude_list(elem), None)
         None -> Ok(#(env, st))
       }
     }
 
+    // `Ctor(..) as name` hands the subject on to the pattern inside it, which
+    // narrows the subject as it would on its own; the `as` name then takes the
+    // constructor pattern's own type, variant and all. The pattern is inferred
+    // first so its narrowing cannot overwrite this binding.
     glance.PatternAssignment(_, pattern, name) -> {
-      let env = bind_value(env, name, ty.Scheme([], expected))
-      // `Ctor(..) as name` narrows `name` to that variant: record the variant's
-      // fields so a later `name.field` reaches fields present only in it.
-      let #(env, st) = case pattern {
-        glance.PatternVariant(_, module, constructor, _, _) ->
-          record_variant(env, st, module, constructor, expected, name)
-        _ -> #(env, st)
-      }
-      infer_pattern(env, st, pattern, expected)
+      use #(env, st) <- result.try(infer_pattern(
+        env,
+        st,
+        pattern,
+        expected,
+        subject,
+      ))
+      Ok(#(
+        bind_value(
+          env,
+          name,
+          ty.Scheme([], pattern_type(env, st, pattern, expected)),
+        ),
+        st,
+      ))
     }
 
     glance.PatternConcatenate(_, _prefix, prefix_name, rest_name) -> {
@@ -4026,6 +4003,13 @@ fn infer_pattern(
         other -> #([], other)
       }
       use st <- result.try(unify(st, expected, ret))
+      // Matching a bare subject variable against this constructor narrows that
+      // variable to it, in this scope only: `env` is a value, so the scope the
+      // pattern opens carries the rebinding and the caller's does not.
+      let env = case subject, variant_of(ret) {
+        Some(name), Some(index) -> narrow(env, st, name, index)
+        _, _ -> env
+      }
       use arg_patterns <- result.try(order_pattern_args(
         env,
         module,
@@ -4039,7 +4023,7 @@ fn infer_pattern(
         fn(acc, pair) {
           let #(env, st) = acc
           let #(pattern, t) = pair
-          infer_pattern(env, st, pattern, t)
+          infer_pattern(env, st, pattern, t, None)
         },
       )
     }
@@ -4103,6 +4087,7 @@ fn infer_bit_pattern_segment(
     st,
     pattern,
     segment_value_type(options, default),
+    None,
   ))
   list.try_fold(options, #(env, st), fn(acc, option) {
     let #(env, st) = acc

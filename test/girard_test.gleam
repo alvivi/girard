@@ -1428,9 +1428,9 @@ pub fn agreeing_alternatives_narrow_test() {
 }
 
 pub fn mixed_spelling_alternatives_agree_test() {
-  // `Near(..) as io | kinds.Near(..) as io` names one variant two ways. The
-  // narrowing compares the constructor's resolved identity, not its spelling,
-  // so the alternatives agree and the field wins.
+  // `Near(..) as io | kinds.Near(..) as io` names one variant two ways. What
+  // the alternatives are compared on is the variant each one's type carries,
+  // not the spelling, so they agree and the field wins.
   let kinds =
     "pub type Remote {\n  Near(println: fn(String) -> Nil)\n  Far(n: Int)\n}"
   let source =
@@ -1448,9 +1448,9 @@ pub fn mixed_spelling_alternatives_agree_test() {
 
 pub fn renamed_import_alternatives_agree_test() {
   // `Close(..) as io | kinds.Near(..) as io` names one variant under a renamed
-  // unqualified import and its qualified spelling. The identity compared is
-  // the constructor's name in its declaring module, so `Close` and
-  // `kinds.Near` agree and the narrowed field wins over the `io` module.
+  // unqualified import and its qualified spelling. Both resolve to the same
+  // constructor, so both stamp the same variant, `Close` and `kinds.Near`
+  // agree, and the narrowed field wins over the `io` module.
   let kinds =
     "pub type Remote {\n  Near(println: fn(String) -> Nil)\n  Far(n: Int)\n}"
   let source =
@@ -1464,6 +1464,58 @@ pub fn renamed_import_alternatives_agree_test() {
     <> "}"
   signature_with(source, [#("io", io_println), #("kinds", kinds)], "run")
   |> should.equal("fn(Remote) -> Nil")
+}
+
+// A type with one label every variant declares and one only `Loud` does, so a
+// receiver's narrowing decides which of the two it can read.
+const tagged_type = "pub type Tagged {\n  Loud(tag: Int, println: fn(String) -> Nil)\n  Quiet(tag: Int)\n}\n"
+
+pub fn narrowing_is_scope_local_test() {
+  // A narrowing is a rebinding in the clause's own scope, so after the `case`
+  // the outer binding is the un-narrowed one: the shared label still resolves,
+  // and the label only `Loud` declares does not.
+  let after_case = fn(access: String) {
+    tagged_type
+    <> "pub fn run(t: Tagged) {\n"
+    <> "  let _ = case t {\n"
+    <> "    Loud(..) -> Nil\n"
+    <> "    Quiet(..) -> Nil\n"
+    <> "  }\n"
+    <> "  "
+    <> access
+    <> "\n"
+    <> "}"
+  }
+  signature(after_case("t.tag"), "run")
+  |> should.equal("fn(Tagged) -> Int")
+  error_with(after_case("t.println(\"hi\")"), [])
+  |> should.equal(girard.NoSuchField("Tagged", "println"))
+}
+
+pub fn record_update_narrows_result_test() {
+  // A record update's type is the named constructor's own, so the result is
+  // known to be that variant and a label only it declares is in reach.
+  let source =
+    tagged_type
+    <> "pub fn run(t: Tagged, f: fn(String) -> Nil) {\n"
+    <> "  let updated = Loud(..t, println: f)\n"
+    <> "  updated.println\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn(Tagged, fn(String) -> Nil) -> fn(String) -> Nil")
+}
+
+pub fn stamped_types_unify_test() {
+  // Two values built with different variants have the same type, so they share
+  // a list. The variant is carried on the type but is not part of what
+  // unification compares.
+  let source =
+    tagged_type
+    <> "pub fn run(f: fn(String) -> Nil) {\n"
+    <> "  [Loud(0, f), Quiet(1)]\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn(fn(String) -> Nil) -> List(Tagged)")
 }
 
 const io_labelled_println = "pub fn println(message message: String) -> Int { 1 }"

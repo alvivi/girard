@@ -112,16 +112,21 @@ depth.
   aggregate over all rows is pinned as a literal in the test file, so tampering
   has to touch two files in one diff.
 
-**The suite is green and the divergences are data.** A recorded disagreement is
-the expected answer today. The seven that remain share one root: girard tracks
-a narrowing by the *name* it was bound under, in `env.variants`, and re-derives
-it from the shape of the pattern or subject the value came from. So it is lost
-wherever the value is re-bound under another name or narrowed by a shape girard
-does not match — an `as` pattern, an `echo`ed subject — and it is wrongly kept
-where a sibling pattern rebinds the name. The compiler narrows the subject
-variable's own type instead. The change that narrows by type rather than by
-name must edit the manifest, flipping `divergent` from `true` to `false` line
-by line and lowering the count literal in `test/differential_test.gleam`.
+**The suite is green and there are no divergences.** girard and the pinned
+compiler answer every row here the same way. That is a floor rather than a
+finish: a new divergence means girard has drifted, and it has to be recorded
+here — with the mechanism and the change that removes it in `why` — before the
+suite can go green again, which is a reviewable diff and a raised count
+literal in `test/differential_test.gleam`. The literal is what stops the
+ratchet being walked around: it may fall when a divergence is fixed, and
+nothing else may move it.
+
+The rows that used to diverge shared one root, and it is worth stating because
+it is what a regression would look like: a narrowing was tracked by the *name*
+it was bound under and re-derived from the shape of the expression it came
+from, so it was lost wherever the value was re-bound or arrived by a shape
+nothing matched, and wrongly kept where a sibling pattern rebound the name. It
+now lives on the value's own type, as it does in the compiler.
 
 ## Regenerating
 

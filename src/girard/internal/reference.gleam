@@ -221,8 +221,10 @@ fn fn_param_names(param: glance.FnParameter) -> List(String) {
   assignment_name(param.name)
 }
 
-// Every variable a pattern binds.
-fn pattern_names(pattern: glance.Pattern) -> List(String) {
+/// Every variable a pattern binds. Reference collection needs it to know which
+/// names a clause's body sees locally; inference needs it to know which names a
+/// pattern rebinds, since a rebound name is not narrowed.
+pub fn pattern_names(pattern: glance.Pattern) -> List(String) {
   case pattern {
     glance.PatternInt(..)
     | glance.PatternFloat(..)

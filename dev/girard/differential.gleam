@@ -176,36 +176,26 @@ fn probe(
   )
 }
 
-// Every row whose field branch is out of reach passes today for a reason worth
-// stating in the manifest: girard under-narrows, and these rows want the
-// module. What keeps that from being an accident is the forced-field companion,
-// which must fail to compile - so the field really is unreachable, and
-// narrowing that follows the value rather than the name must not over-narrow
-// it back into reach.
-const unreachable = ". The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and narrowing that follows the value rather than the name must not over-narrow it back into reach"
+// Every row whose field branch is out of reach wants the module, on both sides.
+// What keeps that from being an accident is the forced-field companion, which
+// must fail to compile - so the field really is unreachable, and the narrowing
+// that follows the value must not over-narrow it back into reach.
+const unreachable = ". The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so agreement is not an accident of under-narrowing: these are the rows that keep narrowing carried on the value's type from over-narrowing it back into reach"
 
-// What the remaining divergences share, and the change that removes them: a
-// narrowing is keyed by the pattern-bound name in `env.variants`, so it is
-// lost when the value is re-bound under another name. The compiler carries the
-// inferred variant on the value's type, where a re-binding keeps it.
-const rebinding = "the narrowing is lost at the re-binding because `env.variants` follows the name, not the value; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
+// What the alias rows share: the value is re-bound under another name, and the
+// narrowing comes with it because it lives on the value's own type rather than
+// under the name it happened to be bound to.
+const rebinding = "the narrowing survives the re-binding because it lives on the value's type rather than under the name it was bound to"
 
 // What the rows that flip when a field access selects by variant share: the
 // constructed value reaches the receiver carrying the variant it was built
 // with, and the accessor lookup reads it off the type.
 const on_the_type = ". girard agrees because the value's type carries the variant it was constructed with, and a field access selects that variant's own accessors"
 
-// What the keep rows added for the type-carried variant share: the compiler
-// carries the inferred variant on the value's type, so a value that reaches the
-// receiver already known to be `Loud` keeps that knowledge whatever route it
-// took there. girard re-recognises the *shape* a narrowing arrived in instead,
-// so each divergent row names the shape it cannot see.
-const not_a_shape = ". girard recognises the shapes a narrowing can arrive in rather than carrying it on the value's type, so it does not see this one; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
-
-// The mechanism the rows that flipped from divergent share: the narrowing
-// girard already recorded is read in call position the way projection always
-// read it.
-const field_first = "narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`"
+// The mechanism the narrowed rows share: the receiver's own type says which
+// variant it was built with, and that reading is taken in call position the
+// way projection always took it.
+const field_first = "narrowing carried on the value's type, read field-first in call position since `infer_callee` resolves through `infer_field_access`"
 
 /// Every case, in the order they appear in the manifest.
 pub fn specs() -> List(Spec) {
@@ -251,7 +241,7 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..narrowed(
         "projection_narrowed",
-        "the projection path consults `env.variants` first, so `Ctor(..) as v` narrowing reaches projections; its call-position twin `narrowed_case` now resolves through the same path and agrees too",
+        "the projection path reads the receiver's own type, so `Ctor(..) as v` narrowing reaches projections; its call-position twin `narrowed_case` resolves through the same path and agrees too",
       ),
       label: "n",
       access: manifest.access_projection,
@@ -269,17 +259,18 @@ pub fn specs() -> List(Spec) {
     ),
     narrowed(
       "direct_construction",
-      "construction narrowing - `infer_expr_assignment` calls `record_variant` on the constructed variant - read field-first in call position since `infer_callee` resolves through `infer_field_access`",
+      "construction narrowing: a constructor's return type carries the variant it builds, so `let io = Loud(f)` needs nothing else. "
+        <> field_first,
     ),
     narrowed(
       "alias_let",
-      "narrowing survives `let io = l` after `let assert Loud(..) = l` in the compiler; girard cannot express that, because `env.variants` is keyed by the pattern-bound name: "
+      "`let assert Loud(..) = l` narrows `l` itself, and `let io = l` binds `io` to `l`'s type: "
         <> rebinding,
     ),
     Spec(
       ..narrowed(
         "alias_no_module",
-        "the same shape with the module removed: the compiler reads the field, girard has no module export to fall back to and errors outright. The worked example of a status divergence, and the reminder that girard's fallback is what keeps the other alias rows answering wrongly rather than failing",
+        "the same shape with the module removed, so the field is the only reading and there is nothing to fall through to. It was the worked example of a status divergence - girard errored outright where the compiler read the field - and is now what proves the other alias rows are answered rather than defaulted to the module",
       ),
       module_availability: Some(manifest.undeclared),
       module_member: None,
@@ -361,7 +352,7 @@ pub fn specs() -> List(Spec) {
     ),
     narrowed(
       "alias_block",
-      "the narrowed value leaves a block through its final expression. Measured: with the module out of scope girard errors, so `env.variants` cannot express it - `let io = { .. l }` binds a variable to a variable and no constructor call is in reach, exactly as in `alias_let`: "
+      "the narrowed value leaves a block through its final expression, and a block's type is that expression's, so `let io = { .. l }` is `alias_let` with a block in the way: "
         <> rebinding,
     ),
     narrowed(
@@ -371,7 +362,7 @@ pub fn specs() -> List(Spec) {
     ),
     narrowed(
       "alternatives_agree",
-      "both alternatives of the pattern are `Loud`, so the narrowing is to a single variant and the field stays in reach through an alternative pattern: `agree_variants` keeps a narrowing every alternative records the same constructor for, and it is read field-first in call position since `infer_callee` resolves through `infer_field_access`",
+      "both alternatives of the pattern are `Loud`, so the narrowing is to a single variant and the field stays in reach through an alternative pattern: `agree_variants` keeps a variant every alternative gives the name, and it is read field-first in call position since `infer_callee` resolves through `infer_field_access`",
     ),
     logger(
       "closure_param",
@@ -384,7 +375,7 @@ pub fn specs() -> List(Spec) {
     ),
     logger(
       "alternatives_disagree",
-      "the alternatives are `Loud` and `Quiet`, so no single variant is narrowed to and the field is out of reach: `agree_variants` drops a narrowing the alternatives disagree on before the body is checked under each of them, so neither alternative reads the first one's field"
+      "the alternatives are `Loud` and `Quiet`, so no single variant is narrowed to and the field is out of reach: `agree_variants` erases a variant the alternatives disagree on before the body is checked under each of them, so neither alternative reads the first one's field"
         <> unreachable,
     ),
     logger(
@@ -472,7 +463,7 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..narrowed(
         "renamed_alternatives",
-        "the alternatives name one variant two ways - a renamed unqualified import `Near as Close` and the qualified `kinds.Near` - so the narrowing survives `agree_variants`, which compares the constructor's identity in its declaring module rather than its spelling, as the compiler compares variant indices: "
+        "the alternatives name one variant two ways - a renamed unqualified import `Near as Close` and the qualified `kinds.Near` - so the narrowing survives `agree_variants`, which compares the variant each alternative's type carries rather than the constructor's spelling, exactly as the compiler compares variant indices: "
           <> field_first,
       ),
       narrowed_to: Some("Near"),
@@ -534,22 +525,19 @@ pub fn specs() -> List(Spec) {
     ),
     narrowed(
       "as_passes_subject",
-      "an assignment pattern hands the subject variable on to the pattern inside it, so `Loud(..) as l` narrows the subject `io` as well as binding `l`"
-        <> not_a_shape,
+      "an assignment pattern hands the subject variable on to the pattern inside it, so `Loud(..) as l` narrows the subject `io` as well as binding `l`. girard threads the subject through `PatternAssignment` for the same reason",
     ),
     narrowed(
       "echo_subject",
-      "`echo` is transparent to the subject rule, so `case echo io` narrows `io` exactly as `case io` does"
-        <> not_a_shape,
+      "`echo` is transparent to the subject rule, so `case echo io` narrows `io` exactly as `case io` does: `subject_of` looks through it as the compiler's `subject_variable` does",
     ),
     narrowed(
       "echo_let_assert",
-      "the same transparency on the `let assert` path, where the subject is the assigned value rather than a `case` subject"
-        <> not_a_shape,
+      "the same transparency on the `let assert` path, where the subject is the assigned value rather than a `case` subject",
     ),
     narrowed(
       "annotated_let",
-      "an annotation is unified against the value's type rather than substituted for it, so `let io: Logger = Loud(f)` keeps the constructed variant. girard agrees today because `constructor_call` reads the value's syntax, which the annotation leaves alone",
+      "an annotation is unified against the value's type rather than substituted for it, so `let io: Logger = Loud(f)` keeps the variant the constructor built and the annotation never displaces it",
     ),
     narrowed(
       "let_assert_as",
@@ -626,11 +614,12 @@ pub fn specs() -> List(Spec) {
     ),
     logger(
       "subject_rebound_by_sibling",
-      "a subject the multi-pattern itself rebinds is not narrowed: `io` in the first column binds `left`'s value, and the compiler lets that binding win. girard narrows by name and stamps the sibling's binding instead, over-narrowing where the compiler does not; narrowing carried on the type, which can ask up front which names the whole multi-pattern binds, is the change that removes this divergence. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves",
+      "a subject the multi-pattern itself rebinds is not narrowed: `io` in the first column binds `left`'s value, and that binding wins. girard asks which names the whole multi-pattern binds before narrowing any column's subject, so the sibling's binding is left alone"
+        <> unreachable,
     ),
     logger(
       "subject_narrowed_then_rebound",
-      "the other order of `subject_rebound_by_sibling`: the subject is narrowed by the first column and rebound by the second, and the pattern's binding still wins. girard agrees today only because `bind_value` clears the name's entry as it binds"
+      "the other order of `subject_rebound_by_sibling`: the subject is narrowed by the first column and rebound by the second, and the pattern's binding still wins. The rule is about the whole multi-pattern, so it holds in both orders"
         <> unreachable,
     ),
     probe(
