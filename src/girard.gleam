@@ -12,6 +12,7 @@
 import argv
 import girard/internal/reference
 import girard/internal/scc
+import girard/internal/type_ as ty
 import glance
 import gleam/bool
 import gleam/dict.{type Dict}
@@ -545,10 +546,10 @@ type State {
   State(
     next_id: Int,
     // Bound type variables. Absence means unbound.
-    subst: Dict(Int, Type),
+    subst: Dict(Int, ty.Type),
     // Inferred type recorded for each annotated source span, in reverse order
     // of discovery. Types are stored "live" and zonked at the end.
-    annotations: List(#(glance.Span, Type)),
+    annotations: List(#(glance.Span, ty.Type)),
     // Field accesses and tuple indexes whose container type was not yet known
     // when encountered; resolved by `resolve_pending` once inference has fixed
     // the container type (deferred resolution, like the real compiler).
@@ -565,16 +566,16 @@ type State {
 // A deferred access awaiting its container's type.
 type Pending {
   // `record.label` — the field type goes in `result`.
-  PendingField(container: Type, label: String, result: Type)
+  PendingField(container: ty.Type, label: String, result: ty.Type)
   // `tuple.index` — the element type goes in `result`.
-  PendingIndex(container: Type, index: Int, result: Type)
+  PendingIndex(container: ty.Type, index: Int, result: ty.Type)
 }
 
 type Env {
   Env(
     // Value bindings in scope: locals, parameters, top-level functions and
     // custom-type constructors.
-    values: Dict(String, Scheme),
+    values: Dict(String, ty.Scheme),
     // The subset of `values` that can contribute free type variables to the
     // environment — bindings whose scheme has a type variable not bound by its
     // own quantifier (live monomorphic bindings: locals, parameters, SCC
@@ -583,17 +584,17 @@ type Env {
     // the substitution and are omitted. `env_free_vars` scans only these, which
     // are few, instead of every binding in scope (mostly closed imports).
     // Maintained alongside `values` in `bind_value`, its sole writer.
-    open_values: Dict(String, Scheme),
+    open_values: Dict(String, ty.Scheme),
     // Locally-defined type aliases: name -> (parameter names, aliased type
     // AST), expanded during hydration in this module's environment.
     aliases: Dict(String, #(List(String), glance.Type)),
     // Type aliases brought in by unqualified imports, already resolved to a
     // type with the alias's parameters as variables (param ids + body), so
     // they need no re-hydration in this module's environment.
-    imported_aliases: Dict(String, #(List(Int), Type)),
+    imported_aliases: Dict(String, #(List(Int), ty.Type)),
     // Record field accessors: type name -> label -> a scheme for
     // `fn(record) -> field`, generalized over the type's parameters.
-    accessors: Dict(String, Dict(String, Scheme)),
+    accessors: Dict(String, Dict(String, ty.Scheme)),
     // In-scope type names -> (origin module, origin name, arity). Covers types
     // defined in the current module and types brought in by unqualified
     // imports. Used during hydration to resolve a bare type name to its module
@@ -646,12 +647,12 @@ type Env {
 type ModuleInterface {
   ModuleInterface(
     name: String,
-    values: Dict(String, Scheme),
+    values: Dict(String, ty.Scheme),
     types: Dict(String, #(String, String, Int)),
     // Public type aliases, resolved to a type with the alias's parameters as
     // variables (param ids + body).
-    aliases: Dict(String, #(List(Int), Type)),
-    accessors: Dict(String, Dict(String, Scheme)),
+    aliases: Dict(String, #(List(Int), ty.Type)),
+    accessors: Dict(String, Dict(String, ty.Scheme)),
     field_maps: Dict(String, List(Option(String))),
     // The modules this one imports, so a type it exposes from another module
     // (e.g. a `glance.Span` field) keeps its accessors reachable transitively.
@@ -740,29 +741,29 @@ fn fresh_id(st: State) -> #(Int, State) {
   #(st.next_id, State(..st, next_id: st.next_id + 1))
 }
 
-fn fresh(st: State) -> #(Type, State) {
+fn fresh(st: State) -> #(ty.Type, State) {
   let #(id, st) = fresh_id(st)
-  #(Var(id), st)
+  #(ty.Var(id), st)
 }
 
 // The id of a type variable. Callers pass freshly-minted `Var`s (custom-type
 // parameters, instantiated constructor heads), so a non-`Var` is `Error` rather
 // than a fabricated id.
-fn var_id(type_: Type) -> Result(Int, Nil) {
+fn var_id(type_: ty.Type) -> Result(Int, Nil) {
   case type_ {
-    Var(id) -> Ok(id)
+    ty.Var(id) -> Ok(id)
     _ -> Error(Nil)
   }
 }
 
 // Mint a fresh type variable (a thin wrapper over `fresh`).
-fn fresh_var(st: State) -> #(Type, State) {
+fn fresh_var(st: State) -> #(ty.Type, State) {
   fresh(st)
 }
 
 // Bind a value scheme into the environment (used to register top-level
 // functions and constructors).
-fn define(env: Env, name: String, scheme: Scheme) -> Env {
+fn define(env: Env, name: String, scheme: ty.Scheme) -> Env {
   bind_value(env, name, scheme)
 }
 
@@ -779,9 +780,9 @@ fn prelude() -> #(Env, State) {
   let st = new_state()
   let env =
     new_env()
-    |> bind_value("True", Scheme([], prelude_bool()))
-    |> bind_value("False", Scheme([], prelude_bool()))
-    |> bind_value("Nil", Scheme([], prelude_nil()))
+    |> bind_value("True", ty.Scheme([], prelude_bool()))
+    |> bind_value("False", ty.Scheme([], prelude_bool()))
+    |> bind_value("Nil", ty.Scheme([], prelude_nil()))
 
   // Ok(a) -> Result(a, e)
   let #(ok_a, st) = fresh_id(st)
@@ -790,9 +791,9 @@ fn prelude() -> #(Env, State) {
     bind_value(
       env,
       "Ok",
-      Scheme(
+      ty.Scheme(
         [ok_a, ok_e],
-        Fn([Var(ok_a)], prelude_result(Var(ok_a), Var(ok_e))),
+        ty.Fn([ty.Var(ok_a)], prelude_result(ty.Var(ok_a), ty.Var(ok_e))),
       ),
     )
 
@@ -803,9 +804,9 @@ fn prelude() -> #(Env, State) {
     bind_value(
       env,
       "Error",
-      Scheme(
+      ty.Scheme(
         [err_a, err_e],
-        Fn([Var(err_e)], prelude_result(Var(err_a), Var(err_e))),
+        ty.Fn([ty.Var(err_e)], prelude_result(ty.Var(err_a), ty.Var(err_e))),
       ),
     )
 
@@ -818,13 +819,15 @@ fn prelude() -> #(Env, State) {
 // types and value constructors.
 fn prelude_interface() -> ModuleInterface {
   let module = prelude_module
+  let ok = ty.Var(0)
+  let error = ty.Var(1)
   let values =
     dict.from_list([
-      #("True", Scheme([], prelude_bool())),
-      #("False", Scheme([], prelude_bool())),
-      #("Nil", Scheme([], prelude_nil())),
-      #("Ok", Scheme([0, 1], Fn([Var(0)], prelude_result(Var(0), Var(1))))),
-      #("Error", Scheme([0, 1], Fn([Var(1)], prelude_result(Var(0), Var(1))))),
+      #("True", ty.Scheme([], prelude_bool())),
+      #("False", ty.Scheme([], prelude_bool())),
+      #("Nil", ty.Scheme([], prelude_nil())),
+      #("Ok", ty.Scheme([0, 1], ty.Fn([ok], prelude_result(ok, error)))),
+      #("Error", ty.Scheme([0, 1], ty.Fn([error], prelude_result(ok, error)))),
     ])
   let types_ =
     dict.from_list([
@@ -849,7 +852,7 @@ fn prelude_interface() -> ModuleInterface {
   )
 }
 
-fn bind_value(env: Env, name: String, scheme: Scheme) -> Env {
+fn bind_value(env: Env, name: String, scheme: ty.Scheme) -> Env {
   // A new binding for `name` is a different value, so any variant narrowing
   // recorded for the previous binding of that name no longer applies — drop it
   // (a parameter shadowing a `let x = Ctor(..)`-narrowed outer variable must not
@@ -874,23 +877,23 @@ fn bind_value(env: Env, name: String, scheme: Scheme) -> Env {
 // purely syntactic and so substitution-independent — `scheme_free_vars`
 // resolves and collects only variables *not* in `bound`, so a scheme with none
 // such yields nothing for any substitution, now or later.
-fn scheme_is_closed(scheme: Scheme) -> Bool {
+fn scheme_is_closed(scheme: ty.Scheme) -> Bool {
   let bound = set.from_list(scheme.vars)
   all_vars_bound(scheme.type_, bound)
 }
 
-fn all_vars_bound(type_: Type, bound: Set(Int)) -> Bool {
+fn all_vars_bound(type_: ty.Type, bound: Set(Int)) -> Bool {
   case type_ {
-    Var(id) -> set.contains(bound, id)
-    Named(_, _, args) -> list.all(args, all_vars_bound(_, bound))
-    Fn(args, ret) ->
+    ty.Var(id) -> set.contains(bound, id)
+    ty.Named(_, _, args, _) -> list.all(args, all_vars_bound(_, bound))
+    ty.Fn(args, ret) ->
       list.all(args, all_vars_bound(_, bound)) && all_vars_bound(ret, bound)
-    Tuple(elements) -> list.all(elements, all_vars_bound(_, bound))
+    ty.Tuple(elements) -> list.all(elements, all_vars_bound(_, bound))
   }
 }
 
 // Look up a value's scheme in the environment.
-fn lookup(env: Env, name: String) -> Result(Scheme, Nil) {
+fn lookup(env: Env, name: String) -> Result(ty.Scheme, Nil) {
   dict.get(env.values, name)
 }
 
@@ -922,7 +925,11 @@ fn def_refs(def: Def) -> #(List(String), List(String)) {
   }
 }
 
-fn infer_def(env: Env, st: State, def: Def) -> Result(#(Type, State), Error) {
+fn infer_def(
+  env: Env,
+  st: State,
+  def: Def,
+) -> Result(#(ty.Type, State), Error) {
   case def {
     FunctionDef(f) -> infer_function(env, st, f)
     ConstantDef(c) -> infer_constant(env, st, c)
@@ -1193,12 +1200,12 @@ type GroupItem {
   AnnotatedDef(
     def: Def,
     function: glance.Function,
-    params: List(Type),
-    return_type: Type,
+    params: List(ty.Type),
+    return_type: ty.Type,
   )
   // Any other definition: inferred monomorphically against `var`, then
   // generalized.
-  PlaceholderDef(def: Def, var: Type)
+  PlaceholderDef(def: Def, var: ty.Type)
 }
 
 fn placeholder(
@@ -1209,7 +1216,7 @@ fn placeholder(
 ) -> #(Env, List(GroupItem), State) {
   let #(var, st) = fresh_var(st)
   #(
-    define(env, def_name(def), Scheme([], var)),
+    define(env, def_name(def), ty.Scheme([], var)),
     [PlaceholderDef(def, var), ..items],
     st,
   )
@@ -1410,7 +1417,7 @@ fn resolve_aliases(
   env: Env,
   st: State,
   type_names: List(String),
-) -> Dict(String, #(List(Int), Type)) {
+) -> Dict(String, #(List(Int), ty.Type)) {
   list.fold(type_names, #(dict.new(), st), fn(acc, name) {
     let #(resolved, st) = acc
     case dict.get(env.aliases, name) {
@@ -1429,9 +1436,9 @@ fn resolve_aliases(
 // Instantiate a resolved alias `#(param ids, body)` with concrete arguments.
 fn instantiate_alias(
   params: List(Int),
-  body: Type,
-  arguments: List(Type),
-) -> Type {
+  body: ty.Type,
+  arguments: List(ty.Type),
+) -> ty.Type {
   substitute(dict.from_list(list.zip(params, arguments)), body)
 }
 
@@ -1641,9 +1648,9 @@ fn public_accessor_type_names(module: glance.Module) -> List(String) {
 // variables as opaque.
 
 // Follow bound variables one level to expose the head constructor.
-fn resolve(st: State, type_: Type) -> Type {
+fn resolve(st: State, type_: ty.Type) -> ty.Type {
   case type_ {
-    Var(id) ->
+    ty.Var(id) ->
       case dict.get(st.subst, id) {
         Ok(bound) -> resolve(st, bound)
         Error(_) -> type_
@@ -1653,34 +1660,35 @@ fn resolve(st: State, type_: Type) -> Type {
 }
 
 // Fully apply the substitution, leaving only unbound variables as `Var`.
-fn zonk(st: State, type_: Type) -> Type {
+fn zonk(st: State, type_: ty.Type) -> ty.Type {
   case resolve(st, type_) {
-    Named(module, name, args) ->
-      Named(module, name, list.map(args, zonk(st, _)))
-    Fn(args, ret) -> Fn(list.map(args, zonk(st, _)), zonk(st, ret))
-    Tuple(elements) -> Tuple(list.map(elements, zonk(st, _)))
-    Var(id) -> Var(id)
+    ty.Named(module, name, args, variant) ->
+      ty.Named(module, name, list.map(args, zonk(st, _)), variant)
+    ty.Fn(args, ret) -> ty.Fn(list.map(args, zonk(st, _)), zonk(st, ret))
+    ty.Tuple(elements) -> ty.Tuple(list.map(elements, zonk(st, _)))
+    ty.Var(id) -> ty.Var(id)
   }
 }
 
-fn free_vars(st: State, type_: Type) -> List(Int) {
+fn free_vars(st: State, type_: ty.Type) -> List(Int) {
   free_vars_loop(zonk(st, type_), [])
 }
 
-fn free_vars_loop(type_: Type, acc: List(Int)) -> List(Int) {
+fn free_vars_loop(type_: ty.Type, acc: List(Int)) -> List(Int) {
   case type_ {
-    Var(id) ->
+    ty.Var(id) ->
       case list.contains(acc, id) {
         True -> acc
         False -> [id, ..acc]
       }
-    Named(_, _, args) -> list.fold(args, acc, fn(a, t) { free_vars_loop(t, a) })
-    Fn(args, ret) ->
+    ty.Named(_, _, args, _) ->
+      list.fold(args, acc, fn(a, t) { free_vars_loop(t, a) })
+    ty.Fn(args, ret) ->
       free_vars_loop(
         ret,
         list.fold(args, acc, fn(a, t) { free_vars_loop(t, a) }),
       )
-    Tuple(elements) ->
+    ty.Tuple(elements) ->
       list.fold(elements, acc, fn(a, t) { free_vars_loop(t, a) })
   }
 }
@@ -1706,17 +1714,17 @@ fn env_free_vars(st: State, env: Env) -> List(Int) {
 // free id is resolved and its remaining variables collected.
 fn scheme_free_vars(
   st: State,
-  type_: Type,
+  type_: ty.Type,
   bound: List(Int),
   acc: List(Int),
 ) -> List(Int) {
   case type_ {
-    Var(id) ->
+    ty.Var(id) ->
       case list.contains(bound, id) {
         True -> acc
         False ->
           case resolve(st, type_) {
-            Var(resolved) ->
+            ty.Var(resolved) ->
               case list.contains(acc, resolved) {
                 True -> acc
                 False -> [resolved, ..acc]
@@ -1724,16 +1732,16 @@ fn scheme_free_vars(
             other -> scheme_free_vars(st, other, bound, acc)
           }
       }
-    Named(_, _, args) ->
+    ty.Named(_, _, args, _) ->
       list.fold(args, acc, fn(a, t) { scheme_free_vars(st, t, bound, a) })
-    Fn(args, ret) ->
+    ty.Fn(args, ret) ->
       scheme_free_vars(
         st,
         ret,
         bound,
         list.fold(args, acc, fn(a, t) { scheme_free_vars(st, t, bound, a) }),
       )
-    Tuple(elements) ->
+    ty.Tuple(elements) ->
       list.fold(elements, acc, fn(a, t) { scheme_free_vars(st, t, bound, a) })
   }
 }
@@ -1743,48 +1751,48 @@ fn scheme_free_vars(
 // Unify two types, binding flexible variables and rejecting rigid ones, with
 // the occurs check that guards against infinite types.
 
-fn unify(st: State, left: Type, right: Type) -> Result(State, Error) {
+fn unify(st: State, left: ty.Type, right: ty.Type) -> Result(State, Error) {
   let left = resolve(st, left)
   let right = resolve(st, right)
   case left, right {
-    Var(i), Var(j) if i == j -> Ok(st)
+    ty.Var(i), ty.Var(j) if i == j -> Ok(st)
     // A rigid variable never binds; a flexible one may bind to it. Two distinct
     // rigid variables, or a rigid variable against a concrete type, mismatch.
-    Var(i), Var(j) ->
+    ty.Var(i), ty.Var(j) ->
       case is_rigid(st, i), is_rigid(st, j) {
-        True, True -> Error(TypeMismatch(left, right))
+        True, True -> Error(type_mismatch(left, right))
         True, False -> bind_var(st, j, left)
         False, _ -> bind_var(st, i, right)
       }
-    Var(i), other ->
+    ty.Var(i), other ->
       case is_rigid(st, i) {
-        True -> Error(TypeMismatch(left, right))
+        True -> Error(type_mismatch(left, right))
         False -> bind_var(st, i, other)
       }
-    other, Var(j) ->
+    other, ty.Var(j) ->
       case is_rigid(st, j) {
-        True -> Error(TypeMismatch(left, right))
+        True -> Error(type_mismatch(left, right))
         False -> bind_var(st, j, other)
       }
 
-    Named(m1, n1, a1), Named(m2, n2, a2) if m1 == m2 && n1 == n2 ->
+    ty.Named(m1, n1, a1, _), ty.Named(m2, n2, a2, _) if m1 == m2 && n1 == n2 ->
       unify_many(st, a1, a2)
 
-    Fn(args1, r1), Fn(args2, r2) -> {
+    ty.Fn(args1, r1), ty.Fn(args2, r2) -> {
       use st <- result.try(unify_many(st, args1, args2))
       unify(st, r1, r2)
     }
 
-    Tuple(e1), Tuple(e2) -> unify_many(st, e1, e2)
+    ty.Tuple(e1), ty.Tuple(e2) -> unify_many(st, e1, e2)
 
-    _, _ -> Error(TypeMismatch(left, right))
+    _, _ -> Error(type_mismatch(left, right))
   }
 }
 
 fn unify_many(
   st: State,
-  left: List(Type),
-  right: List(Type),
+  left: List(ty.Type),
+  right: List(ty.Type),
 ) -> Result(State, Error) {
   case left, right {
     [], [] -> Ok(st)
@@ -1796,15 +1804,14 @@ fn unify_many(
   }
 }
 
-fn bind_var(st: State, id: Int, type_: Type) -> Result(State, Error) {
-  use <- bool.guard(
-    when: occurs(st, id, type_),
-    return: Error(RecursiveType(id, type_)),
-  )
+fn bind_var(st: State, id: Int, type_: ty.Type) -> Result(State, Error) {
+  use <- bool.lazy_guard(when: occurs(st, id, type_), return: fn() {
+    Error(recursive_type(id, type_))
+  })
   Ok(State(..st, subst: dict.insert(st.subst, id, type_)))
 }
 
-fn occurs(st: State, id: Int, type_: Type) -> Bool {
+fn occurs(st: State, id: Int, type_: ty.Type) -> Bool {
   list.contains(free_vars(st, type_), id)
 }
 
@@ -1814,12 +1821,12 @@ fn occurs(st: State, id: Int, type_: Type) -> Bool {
 // variables free in the type but not the environment — and instantiate a
 // scheme back to a monotype with fresh variables.
 
-fn generalize(st: State, env: Env, type_: Type) -> Scheme {
+fn generalize(st: State, env: Env, type_: ty.Type) -> ty.Scheme {
   let zonked = zonk(st, type_)
   let env_vars = env_free_vars(st, env)
   let quantified =
     list.filter(free_vars(st, zonked), fn(id) { !list.contains(env_vars, id) })
-  Scheme(quantified, zonked)
+  ty.Scheme(quantified, zonked)
 }
 
 // Generalize a type over a specific set of candidate variable ids only (the
@@ -1828,9 +1835,9 @@ fn generalize(st: State, env: Env, type_: Type) -> Scheme {
 fn generalize_over(
   st: State,
   env: Env,
-  type_: Type,
+  type_: ty.Type,
   candidate_ids: List(Int),
-) -> Scheme {
+) -> ty.Scheme {
   let zonked = zonk(st, type_)
   let env_vars = env_free_vars(st, env)
   let free = free_vars(st, zonked)
@@ -1838,8 +1845,8 @@ fn generalize_over(
   // representative and keep it only if it is still a free variable of the type.
   let reps =
     list.filter_map(candidate_ids, fn(id) {
-      case zonk(st, Var(id)) {
-        Var(rep) -> Ok(rep)
+      case zonk(st, ty.Var(id)) {
+        ty.Var(rep) -> Ok(rep)
         _ -> Error(Nil)
       }
     })
@@ -1849,7 +1856,7 @@ fn generalize_over(
         list.contains(free, id) && !list.contains(env_vars, id)
       }),
     )
-  Scheme(quantified, zonked)
+  ty.Scheme(quantified, zonked)
 }
 
 // The type-variable names written in a `fn`'s parameter and return annotations.
@@ -1886,7 +1893,7 @@ fn type_var_names(ast: glance.Type) -> List(String) {
 }
 
 // Instantiate a scheme by replacing each quantified variable with a fresh one.
-fn instantiate(st: State, scheme: Scheme) -> #(Type, State) {
+fn instantiate(st: State, scheme: ty.Scheme) -> #(ty.Type, State) {
   let #(mapping, st) =
     list.fold(scheme.vars, #(dict.new(), st), fn(acc, old) {
       let #(mapping, st) = acc
@@ -1906,26 +1913,26 @@ fn instantiate_in(
   env: Env,
   st: State,
   name: String,
-  scheme: Scheme,
-) -> #(Type, State) {
+  scheme: ty.Scheme,
+) -> #(ty.Type, State) {
   case set.contains(env.live, name) {
-    True -> instantiate(st, Scheme(scheme.vars, zonk(st, scheme.type_)))
+    True -> instantiate(st, ty.Scheme(scheme.vars, zonk(st, scheme.type_)))
     False -> instantiate(st, scheme)
   }
 }
 
-fn substitute(mapping: Dict(Int, Type), type_: Type) -> Type {
+fn substitute(mapping: Dict(Int, ty.Type), type_: ty.Type) -> ty.Type {
   case type_ {
-    Var(id) ->
+    ty.Var(id) ->
       case dict.get(mapping, id) {
         Ok(replacement) -> replacement
         Error(_) -> type_
       }
-    Named(module, name, args) ->
-      Named(module, name, list.map(args, substitute(mapping, _)))
-    Fn(args, ret) ->
-      Fn(list.map(args, substitute(mapping, _)), substitute(mapping, ret))
-    Tuple(elements) -> Tuple(list.map(elements, substitute(mapping, _)))
+    ty.Named(module, name, args, variant) ->
+      ty.Named(module, name, list.map(args, substitute(mapping, _)), variant)
+    ty.Fn(args, ret) ->
+      ty.Fn(list.map(args, substitute(mapping, _)), substitute(mapping, ret))
+    ty.Tuple(elements) -> ty.Tuple(list.map(elements, substitute(mapping, _)))
   }
 }
 
@@ -1967,7 +1974,7 @@ fn signature_skeleton(
   env: Env,
   st: State,
   function: glance.Function,
-) -> #(List(Type), Type, List(Int), State) {
+) -> #(List(ty.Type), ty.Type, List(Int), State) {
   // One rigid id per distinct annotation variable name, shared across the whole
   // signature (so a parameter `a` and the return `a` are the same variable).
   let #(names, rigid_ids, st) =
@@ -1977,7 +1984,7 @@ fn signature_skeleton(
       fn(acc, name) {
         let #(names, ids, st) = acc
         let #(id, st) = fresh_id(st)
-        #(dict.insert(names, name, Var(id)), [id, ..ids], st)
+        #(dict.insert(names, name, ty.Var(id)), [id, ..ids], st)
       },
     )
   let st = mark_rigid(st, rigid_ids)
@@ -2001,12 +2008,12 @@ fn signature_skeleton(
 fn bind_params(
   env: Env,
   function: glance.Function,
-  param_types: List(Type),
+  param_types: List(ty.Type),
 ) -> Env {
   list.fold(list.zip(function.parameters, param_types), env, fn(env, pair) {
     let #(param, t) = pair
     case param.name {
-      glance.Named(name) -> bind_value(env, name, Scheme([], t))
+      glance.Named(name) -> bind_value(env, name, ty.Scheme([], t))
       glance.Discarded(_) -> env
     }
   })
@@ -2018,7 +2025,7 @@ fn check_body(
   env: Env,
   st: State,
   function: glance.Function,
-  return_type: Type,
+  return_type: ty.Type,
 ) -> Result(State, Error) {
   case function.body {
     [] -> Ok(st)
@@ -2039,10 +2046,10 @@ fn check_body(
 // across the component until the body fixes them.
 fn rigid_scheme(
   rigid_ids: List(Int),
-  param_types: List(Type),
-  return_type: Type,
-) -> Scheme {
-  Scheme(rigid_ids, Fn(param_types, return_type))
+  param_types: List(ty.Type),
+  return_type: ty.Type,
+) -> ty.Scheme {
+  ty.Scheme(rigid_ids, ty.Fn(param_types, return_type))
 }
 
 // Generalize a function's final parameter/return types into a scheme,
@@ -2050,10 +2057,10 @@ fn rigid_scheme(
 fn function_scheme(
   env: Env,
   st: State,
-  param_types: List(Type),
-  return_type: Type,
-) -> Scheme {
-  generalize(st, env, Fn(param_types, return_type))
+  param_types: List(ty.Type),
+  return_type: ty.Type,
+) -> ty.Scheme {
+  generalize(st, env, ty.Fn(param_types, return_type))
 }
 
 // The *monomorphic* scheme a fully-annotated function sees for itself inside
@@ -2061,8 +2068,11 @@ fn function_scheme(
 // self-recursive call must be at the same type — Gleam has no polymorphic
 // recursion, and recursing at a concrete type where the signature is generic
 // is a mismatch, exactly as the compiler reports.
-fn rigid_self_scheme(param_types: List(Type), return_type: Type) -> Scheme {
-  Scheme([], Fn(param_types, return_type))
+fn rigid_self_scheme(
+  param_types: List(ty.Type),
+  return_type: ty.Type,
+) -> ty.Scheme {
+  ty.Scheme([], ty.Fn(param_types, return_type))
 }
 
 // Infer a top-level function, returning its (still ungeneralized) `Fn` type.
@@ -2070,7 +2080,7 @@ fn infer_function(
   env: Env,
   st: State,
   function: glance.Function,
-) -> Result(#(Type, State), Error) {
+) -> Result(#(ty.Type, State), Error) {
   // Type-variable names are shared across the whole signature so that, e.g.,
   // a parameter `a` and the return `a` refer to the same variable.
   let #(rev_param_types, body_env, st, names) =
@@ -2084,7 +2094,7 @@ fn infer_function(
         }
       }
       let env = case param.name {
-        glance.Named(name) -> bind_value(env, name, Scheme([], t))
+        glance.Named(name) -> bind_value(env, name, ty.Scheme([], t))
         glance.Discarded(_) -> env
       }
       #([t, ..types_], env, st, names)
@@ -2101,7 +2111,7 @@ fn infer_function(
         }
         None -> fresh(st)
       }
-      Ok(#(Fn(param_types, return_type), st))
+      Ok(#(ty.Fn(param_types, return_type), st))
     }
     _ -> {
       use #(body_type, st) <- result.try(infer_statements(
@@ -2116,7 +2126,7 @@ fn infer_function(
         }
         None -> Ok(st)
       })
-      Ok(#(Fn(param_types, body_type), st))
+      Ok(#(ty.Fn(param_types, body_type), st))
     }
   }
 }
@@ -2127,7 +2137,7 @@ fn infer_constant(
   env: Env,
   st: State,
   constant: glance.Constant,
-) -> Result(#(Type, State), Error) {
+) -> Result(#(ty.Type, State), Error) {
   use #(value_type, st) <- result.try(infer_expr(env, st, constant.value))
   case constant.annotation {
     Some(ann) -> {
@@ -2156,9 +2166,10 @@ fn register_custom_type(
       #([id, ..ids], st)
     })
   let param_ids = list.reverse(rev_param_ids)
-  let param_vars = list.map(param_ids, Var)
+  let param_vars = list.map(param_ids, ty.Var)
   let names = dict.from_list(list.zip(custom_type.parameters, param_vars))
-  let return_type = Named(env.current_module, custom_type.name, param_vars)
+  let return_type =
+    ty.Named(env.current_module, custom_type.name, param_vars, None)
 
   // Build constructors, keeping each variant's fields in declaration order
   // (label and type per position) so we can later expose accessors for labels
@@ -2180,10 +2191,10 @@ fn register_custom_type(
       let #(labels, field_types) = list.unzip(fields)
       let ctor_type = case field_types {
         [] -> return_type
-        _ -> Fn(field_types, return_type)
+        _ -> ty.Fn(field_types, return_type)
       }
       let env = register_field_map(env, variant.name, labels)
-      let env = bind_value(env, variant.name, Scheme(param_ids, ctor_type))
+      let env = bind_value(env, variant.name, ty.Scheme(param_ids, ctor_type))
       let env =
         Env(
           ..env,
@@ -2214,10 +2225,10 @@ fn register_custom_type(
 // variant's labelled fields by index and keeps a label only when every other
 // variant has that label, with that type, at that index.
 fn shared_accessors(
-  variants: List(List(#(Option(String), Type))),
+  variants: List(List(#(Option(String), ty.Type))),
   param_ids: List(Int),
-  return_type: Type,
-) -> Dict(String, Scheme) {
+  return_type: ty.Type,
+) -> Dict(String, ty.Scheme) {
   case variants {
     [] -> dict.new()
     [first, ..rest] ->
@@ -2229,7 +2240,7 @@ fn shared_accessors(
             dict.insert(
               accessors,
               label,
-              Scheme(param_ids, Fn([return_type], field_type)),
+              ty.Scheme(param_ids, ty.Fn([return_type], field_type)),
             )
           _, _ -> accessors
         }
@@ -2240,9 +2251,13 @@ fn shared_accessors(
 // Look up the accessor scheme for `label` on a (resolved) record type. The
 // accessors live with whichever module defined the type — the current module,
 // or an imported one identified by the type's origin module.
-fn accessor(env: Env, record: Type, label: String) -> Result(Scheme, Error) {
+fn accessor(
+  env: Env,
+  record: ty.Type,
+  label: String,
+) -> Result(ty.Scheme, Error) {
   case record {
-    Named(module, name, _) -> {
+    ty.Named(module, name, _, _) -> {
       let accessors = accessors_of_module(env, module)
       case dict.get(accessors, name) {
         Ok(labels) ->
@@ -2260,7 +2275,7 @@ fn accessor(env: Env, record: Type, label: String) -> Result(Scheme, Error) {
 fn accessors_of_module(
   env: Env,
   module: String,
-) -> Dict(String, Dict(String, Scheme)) {
+) -> Dict(String, Dict(String, ty.Scheme)) {
   // A type can surface from a module the current one never imports directly (a
   // helper returning another module's record), and an alias collision can evict
   // that module from the alias-keyed `modules` map — so resolve by origin name
@@ -2331,18 +2346,22 @@ fn resolve_one(
   case item {
     PendingField(container, label, field) ->
       case resolve(st, container) {
-        Named(_, _, _) as record -> {
+        ty.Named(_, _, _, _) as record -> {
           use scheme <- result.try(accessor(env, record, label))
           let #(accessor_type, st) = instantiate(st, scheme)
-          use st <- result.try(unify(st, accessor_type, Fn([container], field)))
+          use st <- result.try(unify(
+            st,
+            accessor_type,
+            ty.Fn([container], field),
+          ))
           Ok(#(st, True))
         }
-        Var(_) -> Ok(#(st, False))
+        ty.Var(_) -> Ok(#(st, False))
         _ -> Error(NotARecord)
       }
     PendingIndex(container, index, result) ->
       case resolve(st, container) {
-        Tuple(elements) ->
+        ty.Tuple(elements) ->
           case list_at(elements, index) {
             Ok(element) -> {
               use st <- result.try(unify(st, element, result))
@@ -2350,7 +2369,7 @@ fn resolve_one(
             }
             Error(_) -> Error(TupleIndexOutOfRange(index))
           }
-        Var(_) -> Ok(#(st, False))
+        ty.Var(_) -> Ok(#(st, False))
         _ -> Error(NotATuple)
       }
   }
@@ -2374,7 +2393,7 @@ fn infer_expr(
   env: Env,
   st: State,
   expr: glance.Expression,
-) -> Result(#(Type, State), Error) {
+) -> Result(#(ty.Type, State), Error) {
   use #(type_, st) <- result.try(infer_expr_inner(env, st, expr))
   Ok(#(type_, record(st, span(expr), type_)))
 }
@@ -2383,7 +2402,7 @@ fn infer_expr_inner(
   env: Env,
   st: State,
   expr: glance.Expression,
-) -> Result(#(Type, State), Error) {
+) -> Result(#(ty.Type, State), Error) {
   case expr {
     glance.Int(..) -> Ok(#(prelude_int(), st))
     glance.Float(..) -> Ok(#(prelude_float(), st))
@@ -2409,7 +2428,7 @@ fn infer_expr_inner(
 
     glance.Tuple(_, elements) -> {
       use #(elem_types, st) <- result.try(infer_each(env, st, elements))
-      Ok(#(Tuple(elem_types), st))
+      Ok(#(ty.Tuple(elem_types), st))
     }
 
     glance.List(_, elements, rest) -> {
@@ -2449,13 +2468,13 @@ fn infer_expr_inner(
     glance.TupleIndex(_, tuple, index) -> {
       use #(t, st) <- result.try(infer_expr(env, st, tuple))
       case resolve(st, t) {
-        Tuple(elements) ->
+        ty.Tuple(elements) ->
           case list_at(elements, index) {
             Ok(element) -> Ok(#(element, st))
             Error(_) -> Error(TupleIndexOutOfRange(index))
           }
         // The tuple type is not known yet; defer until inference fixes it.
-        Var(_) -> {
+        ty.Var(_) -> {
           let #(element, st) = fresh(st)
           let st =
             State(..st, pending: [PendingIndex(t, index, element), ..st.pending])
@@ -2513,7 +2532,7 @@ fn update_field(
   env: Env,
   st: State,
   field: glance.RecordUpdateField(glance.Expression),
-  label_types: Dict(String, Type),
+  label_types: Dict(String, ty.Type),
   type_name: String,
 ) -> Result(State, Error) {
   use #(value_type, st) <- result.try(case field.item {
@@ -2573,7 +2592,7 @@ type Access {
 // A module export a `name.label` access may fall through to: its scheme and
 // its field map, both read from the interface while it is in hand.
 type ModuleExport =
-  #(Scheme, Result(List(Option(String)), Nil))
+  #(ty.Scheme, Result(List(Option(String)), Nil))
 
 // The one resolver for `name.label`, in projection and in call position
 // alike. The compiler's rule: a valid record access wins unconditionally, a
@@ -2586,7 +2605,7 @@ fn infer_field_access(
   st: State,
   container: glance.Expression,
   label: String,
-) -> Result(#(Type, Access, State), Error) {
+) -> Result(#(ty.Type, Access, State), Error) {
   let variant_field = case container {
     glance.Variable(_, name) ->
       case dict.get(env.variants, name) {
@@ -2627,7 +2646,7 @@ fn infer_field_access(
 fn module_export(
   st: State,
   export: ModuleExport,
-) -> Result(#(Type, Access, State), Error) {
+) -> Result(#(ty.Type, Access, State), Error) {
   let #(scheme, labels) = export
   let #(type_, st) = instantiate(st, scheme)
   Ok(#(type_, Export(labels), st))
@@ -2636,9 +2655,9 @@ fn module_export(
 // Defer `container.label` until inference fixes the container's type.
 fn pending_field(
   st: State,
-  container_type: Type,
+  container_type: ty.Type,
   label: String,
-) -> Result(#(Type, Access, State), Error) {
+) -> Result(#(ty.Type, Access, State), Error) {
   let #(field, st) = fresh(st)
   let st =
     State(..st, pending: [
@@ -2656,10 +2675,10 @@ fn value_field(
   container: glance.Expression,
   label: String,
   module_access: Result(ModuleExport, Nil),
-) -> Result(#(Type, Access, State), Error) {
+) -> Result(#(ty.Type, Access, State), Error) {
   use #(container_type, st) <- result.try(infer_expr(env, st, container))
   case resolve(st, container_type) {
-    Named(_, _, _) as record ->
+    ty.Named(_, _, _, _) as record ->
       case accessor(env, record, label) {
         Ok(_) -> {
           use #(field, st) <- result.try(field_type(env, st, record, label))
@@ -2674,7 +2693,7 @@ fn value_field(
       }
     // The record type is not known yet. Prefer a same-named module export;
     // otherwise defer until inference fixes the type.
-    Var(_) ->
+    ty.Var(_) ->
       case module_access {
         Ok(export) -> module_export(st, export)
         Error(_) -> pending_field(st, container_type, label)
@@ -2695,17 +2714,17 @@ fn module_or_record(
   container: glance.Expression,
   label: String,
   module_access: Result(ModuleExport, Nil),
-) -> Result(#(Type, Access, State), Error) {
+) -> Result(#(ty.Type, Access, State), Error) {
   case module_access {
     Ok(export) -> module_export(st, export)
     Error(_) -> {
       use #(container_type, st) <- result.try(infer_expr(env, st, container))
       case resolve(st, container_type) {
-        Named(_, _, _) as record -> {
+        ty.Named(_, _, _, _) as record -> {
           use #(field, st) <- result.try(field_type(env, st, record, label))
           Ok(#(field, Field, st))
         }
-        Var(_) -> pending_field(st, container_type, label)
+        ty.Var(_) -> pending_field(st, container_type, label)
         _ -> Error(NotARecord)
       }
     }
@@ -2716,15 +2735,15 @@ fn module_or_record(
 fn field_type(
   env: Env,
   st: State,
-  record: Type,
+  record: ty.Type,
   label: String,
-) -> Result(#(Type, State), Error) {
+) -> Result(#(ty.Type, State), Error) {
   // Resolve through the substitution: a caller may pass a variable that has
   // since been bound to the record type (e.g. record-update's kept fields).
   use accessor_scheme <- result.try(accessor(env, resolve(st, record), label))
   let #(accessor_type, st) = instantiate(st, accessor_scheme)
   let #(field, st) = fresh(st)
-  use st <- result.try(unify(st, accessor_type, Fn([record], field)))
+  use st <- result.try(unify(st, accessor_type, ty.Fn([record], field)))
   Ok(#(field, st))
 }
 
@@ -2735,7 +2754,7 @@ fn infer_record_update(
   constructor: String,
   record: glance.Expression,
   fields: List(glance.RecordUpdateField(glance.Expression)),
-) -> Result(#(Type, State), Error) {
+) -> Result(#(ty.Type, State), Error) {
   // A record update produces a *fresh* value of the type: updated fields take
   // their new value's type and kept fields are copied from the record. This is
   // what lets an update change a type parameter, as in
@@ -2744,11 +2763,11 @@ fn infer_record_update(
   use scheme <- result.try(constructor_scheme(env, module, constructor))
   let #(ctor_type, st) = instantiate(st, scheme)
   let #(field_types, return_type) = case ctor_type {
-    Fn(arguments, return) -> #(arguments, return)
+    ty.Fn(arguments, return) -> #(arguments, return)
     other -> #([], other)
   }
   case return_type {
-    Named(type_module, type_name, type_parameters) -> {
+    ty.Named(type_module, type_name, type_parameters, variant) -> {
       let labels = constructor_field_map(env, module, constructor)
       let label_types =
         list.fold(list.zip(labels, field_types), dict.new(), fn(acc, pair) {
@@ -2766,7 +2785,7 @@ fn infer_record_update(
       use st <- result.try(unify(
         st,
         record_type,
-        Named(type_module, type_name, record_parameters),
+        ty.Named(type_module, type_name, record_parameters, variant),
       ))
 
       // Updated fields take their new value's type.
@@ -2862,7 +2881,7 @@ fn is_upper(name: String) -> Bool {
 // unqualified and a renamed spelling agree, and that variant's
 // `label -> field type` for the bound value.
 type Narrowed {
-  Narrowed(constructor: #(String, String), fields: Dict(String, Type))
+  Narrowed(constructor: #(String, String), fields: Dict(String, ty.Type))
 }
 
 // Record, for a variable bound by `Ctor(..) as name`, that variant's labelled
@@ -2874,18 +2893,18 @@ fn record_variant(
   st: State,
   module: Option(String),
   constructor: String,
-  value_type: Type,
+  value_type: ty.Type,
   name: String,
 ) -> #(Env, State) {
   let recorded = {
     use scheme <- result.try(constructor_scheme(env, module, constructor))
     let #(ctor_type, st) = instantiate(st, scheme)
     let #(field_types, ret) = case ctor_type {
-      Fn(args, ret) -> #(args, ret)
+      ty.Fn(args, ret) -> #(args, ret)
       other -> #([], other)
     }
     use origin <- result.try(case resolve(st, ret) {
-      Named(origin, _, _) -> Ok(origin)
+      ty.Named(origin, _, _, _) -> Ok(origin)
       _ -> Error(NotARecord)
     })
     // A qualified `alias.Ctor` is spelled as its module declares it; an
@@ -2926,7 +2945,7 @@ fn infer_each(
   env: Env,
   st: State,
   exprs: List(glance.Expression),
-) -> Result(#(List(Type), State), Error) {
+) -> Result(#(List(ty.Type), State), Error) {
   use #(rev, st) <- result.try(
     list.try_fold(exprs, #([], st), fn(acc, e) {
       let #(types_, st) = acc
@@ -2943,7 +2962,7 @@ fn infer_fn(
   params: List(glance.FnParameter),
   return_annotation: Option(glance.Type),
   body: List(glance.Statement),
-) -> Result(#(Type, State), Error) {
+) -> Result(#(ty.Type, State), Error) {
   // Map each type-variable name written in the lambda's annotations to ONE
   // fresh variable, shared across every parameter and the return. A name like
   // `a` in `fn(msg: Message(a, b)) -> Next(_, Message(a, b))` denotes a single
@@ -2958,7 +2977,7 @@ fn infer_fn(
       fn(acc, nm) {
         let #(names, st) = acc
         let #(id, st) = fresh_id(st)
-        #(dict.insert(names, nm, Var(id)), st)
+        #(dict.insert(names, nm, ty.Var(id)), st)
       },
     )
   // No expected type: each parameter starts as a fresh variable.
@@ -2975,13 +2994,13 @@ fn infer_lambda(
   params: List(glance.FnParameter),
   return_annotation: Option(glance.Type),
   body: List(glance.Statement),
-  seed_params: List(Type),
-  expected_return: Option(Type),
+  seed_params: List(ty.Type),
+  expected_return: Option(ty.Type),
   // Pre-seeded type-variable names (name -> Var). When a `let`-bound function is
   // generalized over its explicit annotation variables, those share these ids
   // across every annotation in the lambda; otherwise this is empty.
-  names: Dict(String, Type),
-) -> Result(#(Type, State), Error) {
+  names: Dict(String, ty.Type),
+) -> Result(#(ty.Type, State), Error) {
   use #(rev_param_types, body_env, st) <- result.try(
     list.try_fold(list.zip(params, seed_params), #([], env, st), fn(acc, pair) {
       let #(types_, env, st) = acc
@@ -2995,7 +3014,7 @@ fn infer_lambda(
         None -> Ok(#(seed, st))
       })
       let env = case param.name {
-        glance.Named(name) -> bind_value(env, name, Scheme([], t))
+        glance.Named(name) -> bind_value(env, name, ty.Scheme([], t))
         glance.Discarded(_) -> env
       }
       Ok(#([t, ..types_], env, st))
@@ -3014,7 +3033,7 @@ fn infer_lambda(
     Some(expected) -> unify(st, body_type, expected)
     None -> Ok(st)
   })
-  Ok(#(Fn(param_types, body_type), st))
+  Ok(#(ty.Fn(param_types, body_type), st))
 }
 
 // Infer the callee of a call, returning its type and its field map when one
@@ -3028,7 +3047,7 @@ fn infer_callee(
   env: Env,
   st: State,
   function: glance.Expression,
-) -> Result(#(Type, Result(List(Option(String)), Nil), State), Error) {
+) -> Result(#(ty.Type, Result(List(Option(String)), Nil), State), Error) {
   case function {
     // Resolved here rather than through `infer_expr`, which would drop the
     // branch; the callee's span is recorded once, as `infer_expr` would.
@@ -3062,7 +3081,7 @@ fn infer_call(
   span: glance.Span,
   function: glance.Expression,
   arguments: List(glance.Field(glance.Expression)),
-) -> Result(#(Type, State), Error) {
+) -> Result(#(ty.Type, State), Error) {
   use #(fn_type, labels, st) <- result.try(infer_callee(env, st, function))
   use ordered <- result.try(
     order_fields(labels, arguments, fn(label, location) {
@@ -3075,7 +3094,7 @@ fn infer_call(
   // in `list.map(rows, fn(row) { row.field })`.
   let #(arg_holes, st) = fresh_n(st, list.length(ordered))
   let #(result, st) = fresh(st)
-  use st <- result.try(unify(st, fn_type, Fn(arg_holes, result)))
+  use st <- result.try(unify(st, fn_type, ty.Fn(arg_holes, result)))
   // Arguments are checked left to right, so types flowing from earlier
   // arguments (e.g. the list element type) constrain later ones (the callback).
   use st <- result.try(
@@ -3086,7 +3105,7 @@ fn infer_call(
   Ok(#(result, record(st, span, result)))
 }
 
-fn fresh_n(st: State, n: Int) -> #(List(Type), State) {
+fn fresh_n(st: State, n: Int) -> #(List(ty.Type), State) {
   use <- bool.guard(when: n <= 0, return: #([], st))
   let #(t, st) = fresh(st)
   let #(rest, st) = fresh_n(st, n - 1)
@@ -3203,9 +3222,9 @@ fn label_index(
 fn classify_call_arg(
   env: Env,
   index_of: Dict(String, Int),
-  acc: #(Dict(Int, Type), List(Type), State),
+  acc: #(Dict(Int, ty.Type), List(ty.Type), State),
   field: glance.Field(glance.Expression),
-) -> Result(#(Dict(Int, Type), List(Type), State), Error) {
+) -> Result(#(Dict(Int, ty.Type), List(ty.Type), State), Error) {
   let #(labelled, positional, st) = acc
   case field {
     glance.UnlabelledField(item) -> {
@@ -3237,7 +3256,7 @@ fn infer_capture(
   function: glance.Expression,
   before: List(glance.Field(glance.Expression)),
   after: List(glance.Field(glance.Expression)),
-) -> Result(#(Type, State), Error) {
+) -> Result(#(ty.Type, State), Error) {
   // `f(a, _, b)` becomes `fn(x) { f(a, x, b) }`. The hole and the surrounding
   // arguments are reordered into the callee's positional order exactly as a
   // direct call would be — labels (including the hole's own, `value: _`) move
@@ -3255,8 +3274,8 @@ fn infer_capture(
   // Fields are already typed, so the shorthand materializer is never invoked.
   use arg_types <- result.try(order_fields(labels, fields, fn(_, _) { hole }))
   let #(result, st) = fresh(st)
-  use st <- result.try(unify(st, fn_type, Fn(arg_types, result)))
-  let captured = Fn([hole], result)
+  use st <- result.try(unify(st, fn_type, ty.Fn(arg_types, result)))
+  let captured = ty.Fn([hole], result)
   Ok(#(captured, record(st, span, captured)))
 }
 
@@ -3267,7 +3286,7 @@ fn infer_fields_typed(
   env: Env,
   st: State,
   fields: List(glance.Field(glance.Expression)),
-) -> Result(#(List(glance.Field(Type)), State), Error) {
+) -> Result(#(List(glance.Field(ty.Type)), State), Error) {
   use #(rev, st) <- result.try(
     list.try_fold(fields, #([], st), fn(acc, field) {
       let #(typed, st) = acc
@@ -3301,7 +3320,7 @@ fn infer_binop(
   op: glance.BinaryOperator,
   left: glance.Expression,
   right: glance.Expression,
-) -> Result(#(Type, State), Error) {
+) -> Result(#(ty.Type, State), Error) {
   case op {
     glance.Pipe -> infer_pipe(env, st, span, left, right)
 
@@ -3360,7 +3379,7 @@ fn infer_pipe(
   span: glance.Span,
   left: glance.Expression,
   right: glance.Expression,
-) -> Result(#(Type, State), Error) {
+) -> Result(#(ty.Type, State), Error) {
   case right {
     glance.Call(call_span, function, arguments) -> {
       // `left |> f(args)` is `f(left, args)` when `f` takes one more argument
@@ -3369,7 +3388,7 @@ fn infer_pipe(
       // `f(args)(left)`. Distinguish on the callee's arity.
       use #(ft, st) <- result.try(infer_expr(env, st, function))
       let saturated = case resolve(st, ft) {
-        Fn(params, _) -> list.length(params) == list.length(arguments)
+        ty.Fn(params, _) -> list.length(params) == list.length(arguments)
         _ -> False
       }
       case saturated {
@@ -3383,7 +3402,7 @@ fn infer_pipe(
           ))
           use #(lt, st) <- result.try(infer_expr(env, st, left))
           let #(result, st) = fresh(st)
-          use st <- result.try(unify(st, call_type, Fn([lt], result)))
+          use st <- result.try(unify(st, call_type, ty.Fn([lt], result)))
           Ok(#(result, record(st, span, result)))
         }
         False ->
@@ -3398,7 +3417,7 @@ fn infer_pipe(
       use #(lt, st) <- result.try(infer_expr(env, st, left))
       use #(ft, st) <- result.try(infer_expr(env, st, right))
       let #(result, st) = fresh(st)
-      use st <- result.try(unify(st, ft, Fn([lt], result)))
+      use st <- result.try(unify(st, ft, ty.Fn([lt], result)))
       Ok(#(result, record(st, span, result)))
     }
   }
@@ -3411,12 +3430,12 @@ fn check(
   env: Env,
   st: State,
   expr: glance.Expression,
-  expected: Type,
+  expected: ty.Type,
 ) -> Result(State, Error) {
   let seeded = case expr {
     glance.Fn(_, params, _, _) ->
       case resolve(st, expected) {
-        Fn(expected_params, expected_return) ->
+        ty.Fn(expected_params, expected_return) ->
           case list.length(expected_params) == list.length(params) {
             True -> Ok(#(expected_params, expected_return))
             False -> Error(Nil)
@@ -3456,7 +3475,7 @@ fn infer_statements(
   env: Env,
   st: State,
   statements: List(glance.Statement),
-) -> Result(#(Type, State), Error) {
+) -> Result(#(ty.Type, State), Error) {
   case statements {
     [] -> Ok(#(prelude_nil(), st))
     // `use pats <- rhs` turns the remaining statements into a trailing callback.
@@ -3481,7 +3500,7 @@ fn infer_use(
   use_patterns: List(glance.UsePattern),
   function: glance.Expression,
   rest: List(glance.Statement),
-) -> Result(#(Type, State), Error) {
+) -> Result(#(ty.Type, State), Error) {
   // Build the callback: its parameters are the use patterns, its body is the
   // rest of the block.
   use #(rev_param_types, callback_env, st) <- result.try(
@@ -3502,7 +3521,7 @@ fn infer_use(
   )
   let param_types = list.reverse(rev_param_types)
   use #(body_type, st) <- result.try(infer_statements(callback_env, st, rest))
-  let callback_type = Fn(param_types, body_type)
+  let callback_type = ty.Fn(param_types, body_type)
 
   // The right-hand side is called with the callback as its final argument.
   let #(result, st) = fresh(st)
@@ -3511,7 +3530,7 @@ fn infer_use(
       infer_use_call(env, st, callee, arguments, callback_type, result)
     other -> {
       use #(callee_type, st) <- result.try(infer_expr(env, st, other))
-      unify(st, callee_type, Fn([callback_type], result))
+      unify(st, callee_type, ty.Fn([callback_type], result))
     }
   })
   Ok(#(result, st))
@@ -3526,8 +3545,8 @@ fn infer_use_call(
   st: State,
   callee: glance.Expression,
   arguments: List(glance.Field(glance.Expression)),
-  callback_type: Type,
-  result: Type,
+  callback_type: ty.Type,
+  result: ty.Type,
 ) -> Result(State, Error) {
   use #(callee_type, labels, st) <- result.try(infer_callee(env, st, callee))
   case list.all(arguments, is_unlabelled) {
@@ -3540,7 +3559,7 @@ fn infer_use_call(
       unify(
         st,
         callee_type,
-        Fn(list.append(arg_types, [callback_type]), result),
+        ty.Fn(list.append(arg_types, [callback_type]), result),
       )
     }
     False -> {
@@ -3567,7 +3586,7 @@ fn infer_use_call(
           result.replace_error(dict.get(placed, index), MissingArgument)
         }),
       )
-      unify(st, callee_type, Fn(arg_types, result))
+      unify(st, callee_type, ty.Fn(arg_types, result))
     }
   }
 }
@@ -3578,7 +3597,7 @@ fn infer_statement(
   env: Env,
   st: State,
   statement: glance.Statement,
-) -> Result(#(Type, Env, State), Error) {
+) -> Result(#(ty.Type, Env, State), Error) {
   case statement {
     glance.Expression(expr) -> {
       use #(t, st) <- result.try(infer_expr(env, st, expr))
@@ -3604,7 +3623,7 @@ fn infer_statement(
             list.fold(ann_names, #(dict.new(), [], st), fn(acc, nm) {
               let #(names, ids, st) = acc
               let #(id, st) = fresh_id(st)
-              #(dict.insert(names, nm, Var(id)), [id, ..ids], st)
+              #(dict.insert(names, nm, ty.Var(id)), [id, ..ids], st)
             })
           let #(seeds, st) = fresh_n(st, list.length(fparams))
           use #(value_type, st) <- result.try(infer_lambda(
@@ -3644,7 +3663,7 @@ fn infer_expr_assignment(
   pattern: glance.Pattern,
   annotation: Option(glance.Type),
   value: glance.Expression,
-) -> Result(#(Type, Env, State), Error) {
+) -> Result(#(ty.Type, Env, State), Error) {
   use #(value_type, st) <- result.try(infer_expr(env, st, value))
   use st <- result.try(case annotation {
     Some(ann) -> {
@@ -3685,7 +3704,7 @@ fn infer_case(
   st: State,
   subjects: List(glance.Expression),
   clauses: List(glance.Clause),
-) -> Result(#(Type, State), Error) {
+) -> Result(#(ty.Type, State), Error) {
   use #(subject_types, st) <- result.try(infer_each(env, st, subjects))
   let #(result, st) = fresh(st)
   use st <- result.try(
@@ -3701,8 +3720,8 @@ fn infer_clause(
   st: State,
   clause: glance.Clause,
   subjects: List(glance.Expression),
-  subject_types: List(Type),
-  result: Type,
+  subject_types: List(ty.Type),
+  result: ty.Type,
 ) -> Result(State, Error) {
   // Each clause may have several alternative pattern lists (`a | b ->`); each
   // binds the same variables and is checked against the subject types. Every
@@ -3738,7 +3757,7 @@ fn bind_alternative(
   st: State,
   patterns: List(glance.Pattern),
   subjects: List(glance.Expression),
-  subject_types: List(Type),
+  subject_types: List(ty.Type),
 ) -> Result(#(Env, State), Error) {
   list.try_fold(
     list.zip(patterns, list.zip(subjects, subject_types)),
@@ -3792,7 +3811,7 @@ fn infer_pattern(
   env: Env,
   st: State,
   pattern: glance.Pattern,
-  expected: Type,
+  expected: ty.Type,
 ) -> Result(#(Env, State), Error) {
   case pattern {
     glance.PatternInt(..) -> with_env(env, unify(st, expected, prelude_int()))
@@ -3803,7 +3822,7 @@ fn infer_pattern(
     glance.PatternDiscard(..) -> Ok(#(env, st))
 
     glance.PatternVariable(_, name) ->
-      Ok(#(bind_value(env, name, Scheme([], expected)), st))
+      Ok(#(bind_value(env, name, ty.Scheme([], expected)), st))
 
     glance.PatternTuple(_, elements) -> {
       let #(elem_types, st) =
@@ -3813,7 +3832,7 @@ fn infer_pattern(
           #([t, ..types_], st)
         })
       let elem_types = list.reverse(elem_types)
-      use st <- result.try(unify(st, expected, Tuple(elem_types)))
+      use st <- result.try(unify(st, expected, ty.Tuple(elem_types)))
       list.try_fold(list.zip(elements, elem_types), #(env, st), fn(acc, pair) {
         let #(env, st) = acc
         let #(pattern, t) = pair
@@ -3837,7 +3856,7 @@ fn infer_pattern(
     }
 
     glance.PatternAssignment(_, pattern, name) -> {
-      let env = bind_value(env, name, Scheme([], expected))
+      let env = bind_value(env, name, ty.Scheme([], expected))
       // `Ctor(..) as name` narrows `name` to that variant: record the variant's
       // fields so a later `name.field` reaches fields present only in it.
       let #(env, st) = case pattern {
@@ -3854,7 +3873,7 @@ fn infer_pattern(
       // String. The prefix binding is optional (`<> rest` with no `as`).
       let bind_name = fn(env, name) {
         case name {
-          glance.Named(n) -> bind_value(env, n, Scheme([], prelude_string()))
+          glance.Named(n) -> bind_value(env, n, ty.Scheme([], prelude_string()))
           glance.Discarded(_) -> env
         }
       }
@@ -3870,7 +3889,7 @@ fn infer_pattern(
       let #(ctor_type, st) = instantiate(st, scheme)
       // A constructor with fields is a function; one without is the value.
       let #(field_types, ret) = case ctor_type {
-        Fn(args, ret) -> #(args, ret)
+        ty.Fn(args, ret) -> #(args, ret)
         other -> #([], other)
       }
       use st <- result.try(unify(st, expected, ret))
@@ -3975,7 +3994,7 @@ fn constructor_scheme(
   env: Env,
   module: Option(String),
   constructor: String,
-) -> Result(Scheme, Error) {
+) -> Result(ty.Scheme, Error) {
   case module {
     Some(alias) ->
       case dict.get(env.modules, alias) {
@@ -3999,8 +4018,8 @@ fn constructor_scheme(
 // for string-literal segments, etc.).
 fn segment_value_type(
   options: List(glance.BitStringSegmentOption(t)),
-  default: Type,
-) -> Type {
+  default: ty.Type,
+) -> ty.Type {
   list.fold(options, default, fn(acc, option) {
     case option {
       glance.FloatOption -> prelude_float()
@@ -4101,7 +4120,7 @@ fn indices_loop(i: Int, acc: List(Int)) -> List(Int) {
 // unknown type variables become fresh variables. An unresolved unqualified
 // name is attributed to the prelude; an unresolved qualified name keeps its
 // written module alias.
-fn hydrate(env: Env, st: State, ast: glance.Type) -> #(Type, State) {
+fn hydrate(env: Env, st: State, ast: glance.Type) -> #(ty.Type, State) {
   hydrate_with(env, dict.new(), st, ast).0
 }
 
@@ -4113,8 +4132,8 @@ fn resolve_named_type(
   st: State,
   module: Option(String),
   name: String,
-  arg_types: List(Type),
-) -> #(Type, State) {
+  arg_types: List(ty.Type),
+) -> #(ty.Type, State) {
   case module {
     None -> resolve_unqualified_type(env, st, name, arg_types)
     Some(alias) -> resolve_qualified_type(env, st, alias, name, arg_types)
@@ -4125,8 +4144,8 @@ fn resolve_unqualified_type(
   env: Env,
   st: State,
   name: String,
-  arg_types: List(Type),
-) -> #(Type, State) {
+  arg_types: List(ty.Type),
+) -> #(ty.Type, State) {
   case dict.get(env.aliases, name) {
     // A local alias: expand its AST in this environment.
     Ok(#(params, aliased)) -> {
@@ -4140,14 +4159,18 @@ fn resolve_unqualified_type(
 
 // A non-local-alias unqualified name: an unqualified imported alias (already
 // resolved), else a named type at its origin module, else the prelude.
-fn resolve_named_origin(env: Env, name: String, arg_types: List(Type)) -> Type {
+fn resolve_named_origin(
+  env: Env,
+  name: String,
+  arg_types: List(ty.Type),
+) -> ty.Type {
   case dict.get(env.imported_aliases, name) {
     Ok(#(params, body)) -> instantiate_alias(params, body, arg_types)
     Error(_) ->
       case dict.get(env.local_types, name) {
         Ok(#(origin, origin_name, _arity)) ->
-          Named(origin, origin_name, arg_types)
-        Error(_) -> Named(prelude_module, name, arg_types)
+          ty.Named(origin, origin_name, arg_types, None)
+        Error(_) -> ty.Named(prelude_module, name, arg_types, None)
       }
   }
 }
@@ -4159,10 +4182,10 @@ fn resolve_qualified_type(
   st: State,
   alias: String,
   name: String,
-  arg_types: List(Type),
-) -> #(Type, State) {
+  arg_types: List(ty.Type),
+) -> #(ty.Type, State) {
   case dict.get(env.modules, alias) {
-    Error(_) -> #(Named(alias, name, arg_types), st)
+    Error(_) -> #(ty.Named(alias, name, arg_types, None), st)
     Ok(interface) ->
       case dict.get(interface.aliases, name) {
         Ok(#(params, body)) -> #(instantiate_alias(params, body, arg_types), st)
@@ -4171,7 +4194,7 @@ fn resolve_qualified_type(
             Ok(#(origin, _origin_name, _arity)) -> origin
             Error(_) -> alias
           }
-          #(Named(origin, name, arg_types), st)
+          #(ty.Named(origin, name, arg_types, None), st)
         }
       }
   }
@@ -4179,10 +4202,10 @@ fn resolve_qualified_type(
 
 fn hydrate_with(
   env: Env,
-  names: Dict(String, Type),
+  names: Dict(String, ty.Type),
   st: State,
   ast: glance.Type,
-) -> #(#(Type, State), Dict(String, Type)) {
+) -> #(#(ty.Type, State), Dict(String, ty.Type)) {
   case ast {
     glance.NamedType(_, name, module, parameters) -> {
       let #(arg_types, st, names) =
@@ -4203,7 +4226,7 @@ fn hydrate_with(
           let #(#(t, st), names) = hydrate_with(env, names, st, e)
           #([t, ..types_], st, names)
         })
-      #(#(Tuple(list.reverse(elem_types)), st), names)
+      #(#(ty.Tuple(list.reverse(elem_types)), st), names)
     }
 
     glance.FunctionType(_, parameters, return) -> {
@@ -4214,7 +4237,7 @@ fn hydrate_with(
           #([t, ..types_], st, names)
         })
       let #(#(ret, st), names) = hydrate_with(env, names, st, return)
-      #(#(Fn(list.reverse(param_types), ret), st), names)
+      #(#(ty.Fn(list.reverse(param_types), ret), st), names)
     }
 
     glance.VariableType(_, name) ->
@@ -4236,10 +4259,10 @@ fn hydrate_with(
 // Hydrate using (and threading) a fixed type-variable name map.
 fn hydrate_in(
   env: Env,
-  names: Dict(String, Type),
+  names: Dict(String, ty.Type),
   st: State,
   ast: glance.Type,
-) -> #(Type, State) {
+) -> #(ty.Type, State) {
   hydrate_with(env, names, st, ast).0
 }
 
@@ -4247,10 +4270,10 @@ fn hydrate_in(
 // one signature resolve to the same variable.
 fn hydrate_threaded(
   env: Env,
-  names: Dict(String, Type),
+  names: Dict(String, ty.Type),
   st: State,
   ast: glance.Type,
-) -> #(Type, State, Dict(String, Type)) {
+) -> #(ty.Type, State, Dict(String, ty.Type)) {
   let #(#(t, st), names) = hydrate_with(env, names, st, ast)
   #(t, st, names)
 }
@@ -4259,7 +4282,9 @@ fn hydrate_threaded(
 //
 // Assemble the final `AnnotatedModule` from the inferred environment and
 // state: each definition's generalized scheme and every recorded expression
-// type, zonked and sorted by span.
+// type, zonked and sorted by span. This section is the only place an
+// inference-side type becomes a public one, whether in a result or in an
+// `Error` that carries a type.
 
 fn render(module: glance.Module, env: Env, st: State) -> AnnotatedModule {
   let functions =
@@ -4273,7 +4298,7 @@ fn render(module: glance.Module, env: Env, st: State) -> AnnotatedModule {
   let expressions =
     list.map(list.reverse(st.annotations), fn(entry) {
       let #(span, type_) = entry
-      Annotation(span, zonk(st, type_))
+      Annotation(span, to_public(zonk(st, type_)))
     })
 
   AnnotatedModule(
@@ -4289,10 +4314,36 @@ fn collect_schemes(defs: List(Def), env: Env) -> List(#(String, Scheme)) {
   list.filter_map(defs, fn(def) {
     let name = def_name(def)
     case lookup(env, name) {
-      Ok(scheme) -> Ok(#(name, scheme))
+      Ok(scheme) -> Ok(#(name, scheme_to_public(scheme)))
       Error(_) -> Error(Nil)
     }
   })
+}
+
+// Publish an inference-side type as the public `Type`. The variant a value
+// was narrowed to is inference state, not part of the type consumers see.
+fn to_public(type_: ty.Type) -> Type {
+  case type_ {
+    ty.Named(module, name, args, _) ->
+      Named(module, name, list.map(args, to_public))
+    ty.Fn(args, ret) -> Fn(list.map(args, to_public), to_public(ret))
+    ty.Var(id) -> Var(id)
+    ty.Tuple(elements) -> Tuple(list.map(elements, to_public))
+  }
+}
+
+fn scheme_to_public(scheme: ty.Scheme) -> Scheme {
+  Scheme(scheme.vars, to_public(scheme.type_))
+}
+
+// The two errors that carry a type, published from their inference-side
+// operands.
+fn type_mismatch(left: ty.Type, right: ty.Type) -> Error {
+  TypeMismatch(to_public(left), to_public(right))
+}
+
+fn recursive_type(id: Int, type_: ty.Type) -> Error {
+  RecursiveType(id, to_public(type_))
 }
 
 fn sort_by_span(annotations: List(Annotation)) -> List(Annotation) {
@@ -4309,7 +4360,7 @@ fn sort_by_span(annotations: List(Annotation)) -> List(Annotation) {
 // Record an expression's type by span, recover an expression's span, and
 // index into a list.
 
-fn record(st: State, span: glance.Span, type_: Type) -> State {
+fn record(st: State, span: glance.Span, type_: ty.Type) -> State {
   State(..st, annotations: [#(span, type_), ..st.annotations])
 }
 
@@ -4354,40 +4405,40 @@ fn list_at(items: List(a), index: Int) -> Result(a, Nil) {
 // The prelude module name shared by all built-in types.
 const prelude_module = "gleam"
 
-fn prelude_bit_array() -> Type {
-  Named(prelude_module, "BitArray", [])
+fn prelude_bit_array() -> ty.Type {
+  ty.Named(prelude_module, "BitArray", [], None)
 }
 
-fn prelude_bool() -> Type {
-  Named(prelude_module, "Bool", [])
+fn prelude_bool() -> ty.Type {
+  ty.Named(prelude_module, "Bool", [], None)
 }
 
-fn prelude_float() -> Type {
-  Named(prelude_module, "Float", [])
+fn prelude_float() -> ty.Type {
+  ty.Named(prelude_module, "Float", [], None)
 }
 
-fn prelude_int() -> Type {
-  Named(prelude_module, "Int", [])
+fn prelude_int() -> ty.Type {
+  ty.Named(prelude_module, "Int", [], None)
 }
 
-fn prelude_list(element: Type) -> Type {
-  Named(prelude_module, "List", [element])
+fn prelude_list(element: ty.Type) -> ty.Type {
+  ty.Named(prelude_module, "List", [element], None)
 }
 
-fn prelude_nil() -> Type {
-  Named(prelude_module, "Nil", [])
+fn prelude_nil() -> ty.Type {
+  ty.Named(prelude_module, "Nil", [], None)
 }
 
-fn prelude_result(ok: Type, error: Type) -> Type {
-  Named(prelude_module, "Result", [ok, error])
+fn prelude_result(ok: ty.Type, error: ty.Type) -> ty.Type {
+  ty.Named(prelude_module, "Result", [ok, error], None)
 }
 
-fn prelude_string() -> Type {
-  Named(prelude_module, "String", [])
+fn prelude_string() -> ty.Type {
+  ty.Named(prelude_module, "String", [], None)
 }
 
-fn prelude_utf_codepoint() -> Type {
-  Named(prelude_module, "UtfCodepoint", [])
+fn prelude_utf_codepoint() -> ty.Type {
+  ty.Named(prelude_module, "UtfCodepoint", [], None)
 }
 
 // Type printer
