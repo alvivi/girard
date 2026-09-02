@@ -26,6 +26,7 @@ import girard/differential/manifest.{
 import girard/differential/runner
 import girard/differential/source
 import glance
+import gleam/bool
 import gleam/int
 import gleam/io
 import gleam/list
@@ -513,8 +514,6 @@ pub type Derived {
     module: glance.Module,
     target_import: Option(TargetImport),
     target_access: Span,
-    container: Span,
-    site: String,
     bindings: List(Binding),
     renamed_to: Option(String),
     renamed_spans: List(Span),
@@ -572,8 +571,6 @@ pub fn read_fixture(spec: Spec) -> Derived {
     module:,
     target_import:,
     target_access: Span(access.span.start, access.span.end),
-    container: Span(access.container.start, access.container.end),
-    site: access.site,
     bindings:,
     renamed_to:,
     renamed_spans:,
@@ -603,34 +600,25 @@ fn next_fresh(taken: List(String), modules: List(String), n: Int) -> String {
 
 /// The forced-field companion's source: the base with the target import's line
 /// removed, so the receiver's name cannot denote a module.
-pub fn forced_field_source(spec: Spec, derived: Derived) -> Option(String) {
-  use <- guard_none(derived.has_forced_field)
+pub fn forced_field_source(derived: Derived) -> Option(String) {
+  use <- bool.guard(!derived.has_forced_field, None)
   let assert Some(target) = derived.target_import
   let assert Ok(#(text, _start, _length)) =
     source.remove_import(derived.module, derived.text, target.module)
-  let _ = spec
   Some(text)
 }
 
 /// The forced-module companion's source: the base with every occurrence of the
 /// receiver's name replaced except inside the imports and except the container
 /// at the contested access, so the name denotes only the module.
-pub fn forced_module_source(spec: Spec, derived: Derived) -> Option(String) {
-  use <- guard_none(derived.has_forced_module)
+pub fn forced_module_source(derived: Derived) -> Option(String) {
+  use <- bool.guard(!derived.has_forced_module, None)
   let assert Some(replacement) = derived.renamed_to
   let spans =
     list.map(derived.renamed_spans, fn(span) {
       glance.Span(span.start, span.end)
     })
-  let _ = spec
   Some(source.apply_rename(derived.text, spans, replacement))
-}
-
-fn guard_none(condition: Bool, continue: fn() -> Option(a)) -> Option(a) {
-  case condition {
-    True -> continue()
-    False -> None
-  }
 }
 
 // The compiler input closure
@@ -683,17 +671,27 @@ pub fn template_files(sources: List(String)) -> List(String) {
   }
 }
 
-/// Every file in a row's compiler input closure, as repository-relative paths.
-pub fn input_files(spec: Spec, derived: Derived) -> List(String) {
+/// Every file in a row's compiler input closure, as repository-relative paths:
+/// the fixture and whichever companions it has, every support module they
+/// transitively import, and the template the row is actually built from.
+///
+/// The driver derives the two flags from a `Derived`, the test from a `Row`.
+/// Only the derivation differs, so the closure itself lives here once — the
+/// digest is meaningless unless both halves compute it identically.
+pub fn input_files(
+  fixture: String,
+  has_forced_field: Bool,
+  has_forced_module: Bool,
+) -> List(String) {
   let sources =
     [
-      Some(base_path(spec.fixture)),
-      case derived.has_forced_field {
-        True -> Some(forced_field_path(spec.fixture))
+      Some(base_path(fixture)),
+      case has_forced_field {
+        True -> Some(forced_field_path(fixture))
         False -> None
       },
-      case derived.has_forced_module {
-        True -> Some(forced_module_path(spec.fixture))
+      case has_forced_module {
+        True -> Some(forced_module_path(fixture))
         False -> None
       },
     ]
@@ -739,11 +737,11 @@ fn plan() -> Nil {
     let derived = read_fixture(spec)
     write_companion(
       forced_field_path(spec.fixture),
-      forced_field_source(spec, derived),
+      forced_field_source(derived),
     )
     write_companion(
       forced_module_path(spec.fixture),
-      forced_module_source(spec, derived),
+      forced_module_source(derived),
     )
 
     let sources = [
@@ -830,7 +828,11 @@ fn row(spec: Spec, staging: String) -> Row {
   let girard = runner.girard_outcome(derived.text, spec.fixture)
 
   let files =
-    input_files(spec, derived)
+    input_files(
+      spec.fixture,
+      derived.has_forced_field,
+      derived.has_forced_module,
+    )
     |> list.map(fn(path) {
       let assert Ok(bytes) = simplifile.read_bits(path)
       #(path, bytes)

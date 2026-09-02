@@ -7,8 +7,9 @@
 //// difference in the type and not in the spelling.
 
 import girard
+import girard/compiler_json
 import girard/differential/manifest.{type At, type Outcome, At, Outcome}
-import gleam/dynamic/decode.{type Decoder}
+import gleam/dynamic/decode
 import gleam/int
 import gleam/json
 import gleam/list
@@ -127,7 +128,7 @@ pub fn compiler_ok(
     interface,
     decode.at(
       ["modules", case_module, "functions", function, "return"],
-      type_decoder(),
+      compiler_json.type_decoder(),
     ),
   )
   |> result.replace_error(Nil)
@@ -196,32 +197,5 @@ fn parse_position(text: String) -> Result(At, Nil) {
 fn int_of(text: String) -> Result(Int, Nil) {
   int.parse(string.trim(text))
 }
-
 // Decoding the compiler's `package-interface` types into girard's own `Type`,
 // exactly as `test/oracle_test` does, so both sides render through one printer.
-
-fn type_decoder() -> Decoder(girard.Type) {
-  use kind <- decode.field("kind", decode.string)
-  case kind {
-    "named" -> {
-      use name <- decode.field("name", decode.string)
-      use module <- decode.field("module", decode.string)
-      use parameters <- decode.field("parameters", decode.list(type_decoder()))
-      decode.success(girard.Named(module, name, parameters))
-    }
-    "fn" -> {
-      use parameters <- decode.field("parameters", decode.list(type_decoder()))
-      use return <- decode.field("return", type_decoder())
-      decode.success(girard.Fn(parameters, return))
-    }
-    "tuple" -> {
-      use elements <- decode.field("elements", decode.list(type_decoder()))
-      decode.success(girard.Tuple(elements))
-    }
-    "variable" -> {
-      use id <- decode.field("id", decode.int)
-      decode.success(girard.Var(id))
-    }
-    other -> decode.failure(girard.Var(0), "Type(kind=" <> other <> ")")
-  }
-}

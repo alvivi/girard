@@ -11,7 +11,8 @@
 //// skipped, as are spans girard does not annotate.
 
 import argv
-import girard.{type Type, Fn, Named, Tuple, Var}
+import girard.{type Type}
+import girard/compiler_json
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode.{type Decoder}
 import gleam/int
@@ -206,34 +207,8 @@ fn compare(
 fn expression_decoder() -> Decoder(#(Int, Int, Type)) {
   use start <- decode.field("start", decode.int)
   use end <- decode.field("end", decode.int)
-  use type_ <- decode.field("type", type_decoder())
+  use type_ <- decode.field("type", compiler_json.type_decoder())
   decode.success(#(start, end, type_))
-}
-
-fn type_decoder() -> Decoder(Type) {
-  use kind <- decode.field("kind", decode.string)
-  case kind {
-    "named" -> {
-      use name <- decode.field("name", decode.string)
-      use module <- decode.field("module", decode.string)
-      use parameters <- decode.field("parameters", decode.list(type_decoder()))
-      decode.success(Named(module, name, parameters))
-    }
-    "fn" -> {
-      use parameters <- decode.field("parameters", decode.list(type_decoder()))
-      use return <- decode.field("return", type_decoder())
-      decode.success(Fn(parameters, return))
-    }
-    "tuple" -> {
-      use elements <- decode.field("elements", decode.list(type_decoder()))
-      decode.success(Tuple(elements))
-    }
-    "variable" -> {
-      use id <- decode.field("id", decode.int)
-      decode.success(Var(id))
-    }
-    other -> decode.failure(Var(0), "Type(kind=" <> other <> ")")
-  }
 }
 
 // Canonical type-variable spelling

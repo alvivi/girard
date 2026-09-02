@@ -145,8 +145,6 @@ pub const expect_field = "field"
 
 pub const expect_module = "module"
 
-pub const expect_ok = "ok"
-
 pub const expect_error = "error"
 
 pub const shared = "shared"
@@ -270,10 +268,6 @@ fn nested(value: Option(BitArray)) -> BitArray {
   }
 }
 
-fn concat(parts: List(BitArray)) -> BitArray {
-  list.fold(parts, <<>>, fn(acc, part) { <<acc:bits, part:bits>> })
-}
-
 fn sha256(bits: BitArray) -> BitArray {
   crypto.hash(crypto.Sha256, bits)
 }
@@ -286,7 +280,7 @@ pub fn hex(digest: BitArray) -> String {
 
 // `at`: line, column — as decimal strings.
 fn at_bits(at: At) -> BitArray {
-  concat([
+  bit_array.concat([
     entry("line", bit_array.from_string(int.to_string(at.line))),
     entry("column", bit_array.from_string(int.to_string(at.column))),
   ])
@@ -294,7 +288,7 @@ fn at_bits(at: At) -> BitArray {
 
 // An outcome: status, return, diagnostic, at, error_variant.
 fn outcome_bits(outcome: Outcome) -> BitArray {
-  concat([
+  bit_array.concat([
     entry("status", bit_array.from_string(outcome.status)),
     entry("return", text(outcome.return)),
     entry("diagnostic", text(outcome.diagnostic)),
@@ -320,7 +314,7 @@ pub fn evidence_digest(
   forced_field: Option(Outcome),
   forced_module: Option(Outcome),
 ) -> BitArray {
-  concat([
+  bit_array.concat([
     entry("compiler", outcome_bits(compiler)),
     entry("forced_field", nested(option.map(forced_field, outcome_bits))),
     entry("forced_module", nested(option.map(forced_module, outcome_bits))),
@@ -340,7 +334,7 @@ pub fn inputs_hash(
   files: List(#(String, BitArray)),
 ) -> String {
   let companions =
-    concat([
+    bit_array.concat([
       entry("forced_field", text(forced_field)),
       entry("forced_module", text(forced_module)),
     ])
@@ -348,8 +342,8 @@ pub fn inputs_hash(
     files
     |> list.sort(fn(a, b) { bytewise(a.0, b.0) })
     |> list.map(fn(file) { entry(file.0, file.1) })
-    |> concat
-  concat([
+    |> bit_array.concat
+  bit_array.concat([
     entry("gleam", bit_array.from_string(gleam)),
     entry("companions", companions),
     entry("files", files),
@@ -366,7 +360,7 @@ pub fn evidence_aggregate(entries: List(#(String, BitArray))) -> String {
   entries
   |> list.sort(fn(a, b) { bytewise(a.0, b.0) })
   |> list.map(fn(pair) { entry(pair.0, pair.1) })
-  |> concat
+  |> bit_array.concat
   |> sha256
   |> hex
 }
@@ -374,30 +368,7 @@ pub fn evidence_aggregate(entries: List(#(String, BitArray))) -> String {
 // Compare two strings by their bytes, so the sort does not depend on a locale
 // or on a collation the framing cannot reproduce.
 fn bytewise(a: String, b: String) -> order.Order {
-  compare_bytes(
-    bit_array.from_string(a) |> to_bytes,
-    bit_array.from_string(b) |> to_bytes,
-  )
-}
-
-fn to_bytes(bits: BitArray) -> List(Int) {
-  case bits {
-    <<byte, rest:bits>> -> [byte, ..to_bytes(rest)]
-    _ -> []
-  }
-}
-
-fn compare_bytes(a: List(Int), b: List(Int)) -> order.Order {
-  case a, b {
-    [], [] -> order.Eq
-    [], _ -> order.Lt
-    _, [] -> order.Gt
-    [x, ..xs], [y, ..ys] ->
-      case int.compare(x, y) {
-        order.Eq -> compare_bytes(xs, ys)
-        other -> other
-      }
-  }
+  bit_array.compare(bit_array.from_string(a), bit_array.from_string(b))
 }
 
 // Decoding
@@ -418,10 +389,6 @@ fn manifest_decoder() -> Decoder(Manifest) {
   decode.success(Manifest(gleam:, generated:, cases:))
 }
 
-fn optional(inner: Decoder(a)) -> Decoder(Option(a)) {
-  decode.optional(inner)
-}
-
 fn digest_decoder() -> Decoder(String) {
   use raw <- decode.then(decode.string)
   case is_digest(raw) {
@@ -430,9 +397,9 @@ fn digest_decoder() -> Decoder(String) {
   }
 }
 
-/// Whether a string is the one spelling a digest is ever stored in: exactly 64
-/// lowercase hex characters, no `sha256:` prefix and no other adornment.
-pub fn is_digest(raw: String) -> Bool {
+// Whether a string is the one spelling a digest is ever stored in: exactly 64
+// lowercase hex characters, no `sha256:` prefix and no other adornment.
+fn is_digest(raw: String) -> Bool {
   use <- bool.guard(string.length(raw) != 64, False)
   string.to_graphemes(raw)
   |> list.all(fn(c) { string.contains("0123456789abcdef", c) })
@@ -447,40 +414,58 @@ fn row_decoder() -> Decoder(Row) {
   use expect <- decode.field("expect", decode.string)
   use field_availability <- decode.field(
     "field_availability",
-    optional(decode.string),
+    decode.optional(decode.string),
   )
-  use narrowed_to <- decode.field("narrowed_to", optional(decode.string))
+  use narrowed_to <- decode.field("narrowed_to", decode.optional(decode.string))
   use module_availability <- decode.field(
     "module_availability",
-    optional(decode.string),
+    decode.optional(decode.string),
   )
-  use field_member <- decode.field("field_member", optional(decode.string))
-  use module_member <- decode.field("module_member", optional(decode.string))
-  use field_return <- decode.field("field_return", optional(decode.string))
-  use module_return <- decode.field("module_return", optional(decode.string))
+  use field_member <- decode.field(
+    "field_member",
+    decode.optional(decode.string),
+  )
+  use module_member <- decode.field(
+    "module_member",
+    decode.optional(decode.string),
+  )
+  use field_return <- decode.field(
+    "field_return",
+    decode.optional(decode.string),
+  )
+  use module_return <- decode.field(
+    "module_return",
+    decode.optional(decode.string),
+  )
   use field_candidates <- decode.field(
     "field_candidates",
-    optional(decode.list(candidate_decoder())),
+    decode.optional(decode.list(candidate_decoder())),
   )
   use missing_variants <- decode.field(
     "missing_variants",
-    optional(decode.list(decode.string)),
+    decode.optional(decode.list(decode.string)),
   )
-  use reason <- decode.field("reason", optional(decode.string))
-  use derivable <- decode.field("derivable", optional(decode.bool))
-  use forced_field <- decode.field("forced_field", optional(outcome_decoder()))
+  use reason <- decode.field("reason", decode.optional(decode.string))
+  use derivable <- decode.field("derivable", decode.optional(decode.bool))
+  use forced_field <- decode.field(
+    "forced_field",
+    decode.optional(outcome_decoder()),
+  )
   use forced_module <- decode.field(
     "forced_module",
-    optional(outcome_decoder()),
+    decode.optional(outcome_decoder()),
   )
-  use target_import <- decode.field("target_import", optional(import_decoder()))
+  use target_import <- decode.field(
+    "target_import",
+    decode.optional(import_decoder()),
+  )
   use label <- decode.field("label", decode.string)
   use target_bindings <- decode.field(
     "target_bindings",
     decode.list(binding_decoder()),
   )
   use target_access <- decode.field("target_access", span_decoder())
-  use renamed_to <- decode.field("renamed_to", optional(decode.string))
+  use renamed_to <- decode.field("renamed_to", decode.optional(decode.string))
   use renamed_spans <- decode.field(
     "renamed_spans",
     decode.list(pair_span_decoder()),
@@ -491,10 +476,10 @@ fn row_decoder() -> Decoder(Row) {
   use girard <- decode.field("girard", outcome_decoder())
   use expect_girard_error_variant <- decode.field(
     "expect_girard_error_variant",
-    optional(decode.string),
+    decode.optional(decode.string),
   )
   use divergent <- decode.field("divergent", decode.bool)
-  use owner <- decode.field("owner", optional(decode.string))
+  use owner <- decode.field("owner", decode.optional(decode.string))
   use why <- decode.field("why", decode.string)
   decode.success(Row(
     fixture:,
@@ -535,10 +520,13 @@ fn row_decoder() -> Decoder(Row) {
 
 fn outcome_decoder() -> Decoder(Outcome) {
   use status <- decode.field("status", decode.string)
-  use return <- decode.field("return", optional(decode.string))
-  use diagnostic <- decode.field("diagnostic", optional(decode.string))
-  use at <- decode.field("at", optional(at_decoder()))
-  use error_variant <- decode.field("error_variant", optional(decode.string))
+  use return <- decode.field("return", decode.optional(decode.string))
+  use diagnostic <- decode.field("diagnostic", decode.optional(decode.string))
+  use at <- decode.field("at", decode.optional(at_decoder()))
+  use error_variant <- decode.field(
+    "error_variant",
+    decode.optional(decode.string),
+  )
   decode.success(Outcome(status:, return:, diagnostic:, at:, error_variant:))
 }
 
@@ -572,7 +560,7 @@ fn binding_decoder() -> Decoder(Binding) {
 
 fn import_decoder() -> Decoder(TargetImport) {
   use module <- decode.field("module", decode.string)
-  use alias <- decode.field("alias", optional(decode.string))
+  use alias <- decode.field("alias", decode.optional(decode.string))
   decode.success(TargetImport(module:, alias:))
 }
 
@@ -785,13 +773,8 @@ fn bool_json(value: Bool) -> String {
   }
 }
 
+// Escaping is `gleam_json`'s, so a control character in a `why` or `diagnostic`
+// cannot be emitted raw and make the manifest unreadable on the way back.
 fn quote(value: String) -> String {
-  let escaped =
-    value
-    |> string.replace("\\", "\\\\")
-    |> string.replace("\"", "\\\"")
-    |> string.replace("\n", "\\n")
-    |> string.replace("\r", "\\r")
-    |> string.replace("\t", "\\t")
-  "\"" <> escaped <> "\""
+  json.to_string(json.string(value))
 }

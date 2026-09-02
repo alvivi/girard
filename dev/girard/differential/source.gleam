@@ -16,6 +16,7 @@
 //// outside the contested access — and its completeness is read off the
 //// companion by counting surviving tokens.
 
+import girard/differential/manifest
 import glance
 import gleam/bit_array
 import gleam/bool
@@ -71,7 +72,7 @@ pub fn tokens(source: String) -> List(#(token.Token, Int)) {
 
 /// Every identifier-token occurrence of `name`, as a byte range.
 pub fn name_spans(source: String, name: String) -> List(Span) {
-  let width = byte_size(name)
+  let width = string.byte_size(name)
   tokens(source)
   |> list.filter_map(fn(pair) {
     case pair.0 {
@@ -92,10 +93,6 @@ pub fn identifiers(source: String) -> List(String) {
       _ -> Error(Nil)
     }
   })
-}
-
-fn byte_size(text: String) -> Int {
-  bit_array.byte_size(bit_array.from_string(text))
 }
 
 // Imports
@@ -163,20 +160,14 @@ pub fn in_imports(imports: List(Span), span: Span) -> Bool {
 pub fn accesses(module: glance.Module) -> List(Access) {
   let from_functions =
     list.flat_map(module.functions, fn(definition) {
-      walk_statements(definition.definition.body, site_bare)
+      walk_statements(definition.definition.body, manifest.site_bare)
     })
   let from_constants =
     list.flat_map(module.constants, fn(definition) {
-      walk(definition.definition.value, site_bare)
+      walk(definition.definition.value, manifest.site_bare)
     })
   list.append(from_functions, from_constants)
 }
-
-const site_bare = "bare"
-
-const site_call = "call"
-
-const site_pipe = "pipe"
 
 // `site` is the position to attribute to `expression` if it is itself a field
 // access. Only a `Call` and a pipe override it for their own child.
@@ -195,56 +186,73 @@ fn walk(expression: glance.Expression, site: String) -> List(Access) {
         ]
         _ -> []
       }
-      list.append(here, walk(container, site_bare))
+      list.append(here, walk(container, manifest.site_bare))
     }
     glance.Call(_, function, arguments) ->
       list.append(
-        walk(function, site_call),
+        walk(function, manifest.site_call),
         list.flat_map(arguments, fn(field) {
-          walk(field_item(field), site_bare)
+          walk(field_item(field), manifest.site_bare)
         }),
       )
     glance.BinaryOperator(_, glance.Pipe, left, right) ->
-      list.append(walk(left, site_bare), walk(right, site_pipe))
+      list.append(
+        walk(left, manifest.site_bare),
+        walk(right, manifest.site_pipe),
+      )
     glance.BinaryOperator(_, _, left, right) ->
-      list.append(walk(left, site_bare), walk(right, site_bare))
+      list.append(
+        walk(left, manifest.site_bare),
+        walk(right, manifest.site_bare),
+      )
     glance.FnCapture(_, _, function, before, after) ->
       list.flatten([
-        walk(function, site_call),
-        list.flat_map(before, fn(field) { walk(field_item(field), site_bare) }),
-        list.flat_map(after, fn(field) { walk(field_item(field), site_bare) }),
+        walk(function, manifest.site_call),
+        list.flat_map(before, fn(field) {
+          walk(field_item(field), manifest.site_bare)
+        }),
+        list.flat_map(after, fn(field) {
+          walk(field_item(field), manifest.site_bare)
+        }),
       ])
-    glance.Block(_, statements) -> walk_statements(statements, site_bare)
-    glance.Fn(_, _, _, body) -> walk_statements(body, site_bare)
+    glance.Block(_, statements) ->
+      walk_statements(statements, manifest.site_bare)
+    glance.Fn(_, _, _, body) -> walk_statements(body, manifest.site_bare)
     glance.Case(_, subjects, clauses) ->
       list.append(
-        list.flat_map(subjects, fn(subject) { walk(subject, site_bare) }),
+        list.flat_map(subjects, fn(subject) {
+          walk(subject, manifest.site_bare)
+        }),
         list.flat_map(clauses, fn(clause) {
           let glance.Clause(_, guard, body) = clause
-          list.append(walk_option(guard), walk(body, site_bare))
+          list.append(walk_option(guard), walk(body, manifest.site_bare))
         }),
       )
     glance.Tuple(_, elements) ->
-      list.flat_map(elements, fn(element) { walk(element, site_bare) })
+      list.flat_map(elements, fn(element) { walk(element, manifest.site_bare) })
     glance.List(_, elements, rest) ->
       list.append(
-        list.flat_map(elements, fn(element) { walk(element, site_bare) }),
+        list.flat_map(elements, fn(element) {
+          walk(element, manifest.site_bare)
+        }),
         walk_option(rest),
       )
     glance.RecordUpdate(_, _, _, record, fields) ->
       list.append(
-        walk(record, site_bare),
+        walk(record, manifest.site_bare),
         list.flat_map(fields, fn(field) { walk_option(field.item) }),
       )
-    glance.TupleIndex(_, tuple, _) -> walk(tuple, site_bare)
-    glance.NegateInt(_, value) -> walk(value, site_bare)
-    glance.NegateBool(_, value) -> walk(value, site_bare)
+    glance.TupleIndex(_, tuple, _) -> walk(tuple, manifest.site_bare)
+    glance.NegateInt(_, value) -> walk(value, manifest.site_bare)
+    glance.NegateBool(_, value) -> walk(value, manifest.site_bare)
     glance.Panic(_, message) -> walk_option(message)
     glance.Todo(_, message) -> walk_option(message)
     glance.Echo(_, expression, message) ->
       list.append(walk_option(expression), walk_option(message))
     glance.BitString(_, segments) ->
-      list.flat_map(segments, fn(segment) { walk(segment.0, site_bare) })
+      list.flat_map(segments, fn(segment) {
+        walk(segment.0, manifest.site_bare)
+      })
     glance.Int(..)
     | glance.Float(..)
     | glance.String(..)
@@ -254,7 +262,7 @@ fn walk(expression: glance.Expression, site: String) -> List(Access) {
 
 fn walk_option(expression: Option(glance.Expression)) -> List(Access) {
   case expression {
-    Some(expression) -> walk(expression, site_bare)
+    Some(expression) -> walk(expression, manifest.site_bare)
     None -> []
   }
 }
@@ -266,10 +274,10 @@ fn walk_statements(
   list.flat_map(statements, fn(statement) {
     case statement {
       glance.Use(_, _, function) -> walk(function, site)
-      glance.Assignment(_, _, _, _, value) -> walk(value, site_bare)
+      glance.Assignment(_, _, _, _, value) -> walk(value, manifest.site_bare)
       glance.Assert(_, expression, message) ->
-        list.append(walk(expression, site_bare), walk_option(message))
-      glance.Expression(expression) -> walk(expression, site_bare)
+        list.append(walk(expression, manifest.site_bare), walk_option(message))
+      glance.Expression(expression) -> walk(expression, manifest.site_bare)
     }
   })
 }
@@ -306,104 +314,142 @@ pub fn declaration_spans(
     list.flat_map(headers, fn(start) { parameter_spans(tokens, start, name) })
   list.append(parameters, pattern_spans(module, tokens, name))
   |> list.sort(by_start)
-  |> dedupe
+  |> list.unique
 }
 
 fn by_start(a: Span, b: Span) -> order.Order {
   int.compare(a.start, b.start)
 }
 
-fn dedupe(spans: List(Span)) -> List(Span) {
-  case spans {
-    [a, b, ..rest] if a == b -> dedupe([b, ..rest])
-    [a, ..rest] -> [a, ..dedupe(rest)]
-    [] -> []
-  }
-}
-
 // Every anonymous function's location, so its parameter list can be scanned the
 // same way a top-level function's is.
 fn fn_locations(module: glance.Module) -> List(Int) {
   list.flat_map(module.functions, fn(definition) {
-    fn_locations_in_statements(definition.definition.body)
+    expressions_in(definition.definition.body)
+    |> list.filter_map(fn(expression) {
+      case expression {
+        glance.Fn(location, _, _, _) -> Ok(location.start)
+        _ -> Error(Nil)
+      }
+    })
   })
 }
 
-fn fn_locations_in_statements(statements: List(glance.Statement)) -> List(Int) {
-  list.flat_map(statements, fn(statement) {
-    case statement {
-      glance.Use(_, _, function) -> fn_locations_in(function)
-      glance.Assignment(_, _, _, _, value) -> fn_locations_in(value)
-      glance.Assert(_, expression, message) ->
-        list.append(fn_locations_in(expression), option_locations(message))
-      glance.Expression(expression) -> fn_locations_in(expression)
-    }
-  })
-}
+// The shape of a `glance.Expression`, enumerated once
+//
+// `fn_locations` and `patterns` below both need every node in a function body,
+// and differ only in what they keep. Written as two more full traversals they
+// were two more places a new glance variant has to be handled, and two more
+// places it can be forgotten silently — the collector still compiles and just
+// stops descending. So the shape lives here, and each collector is a filter
+// over it.
+//
+// `walk` is deliberately not written this way: it attributes a syntactic *site*
+// that depends on which arm reached the child, so its recursion carries context
+// these do not.
 
-fn option_locations(expression: Option(glance.Expression)) -> List(Int) {
+/// The expressions directly inside `expression`, excluding those reached
+/// through a block's or a function's statements.
+fn child_expressions(expression: glance.Expression) -> List(glance.Expression) {
   case expression {
-    Some(expression) -> fn_locations_in(expression)
-    None -> []
-  }
-}
-
-fn fn_locations_in(expression: glance.Expression) -> List(Int) {
-  case expression {
-    glance.Fn(location, _, _, body) -> [
-      location.start,
-      ..fn_locations_in_statements(body)
+    glance.Call(_, function, arguments) -> [
+      function,
+      ..list.map(arguments, field_item)
     ]
-    glance.Block(_, statements) -> fn_locations_in_statements(statements)
-    glance.Call(_, function, arguments) ->
-      list.append(
-        fn_locations_in(function),
-        list.flat_map(arguments, fn(field) {
-          fn_locations_in(field_item(field))
-        }),
-      )
-    glance.FnCapture(_, _, function, before, after) ->
-      list.flatten([
-        fn_locations_in(function),
-        list.flat_map(before, fn(field) { fn_locations_in(field_item(field)) }),
-        list.flat_map(after, fn(field) { fn_locations_in(field_item(field)) }),
-      ])
-    glance.BinaryOperator(_, _, left, right) ->
-      list.append(fn_locations_in(left), fn_locations_in(right))
+    glance.FnCapture(_, _, function, before, after) -> [
+      function,
+      ..list.map(list.append(before, after), field_item)
+    ]
+    glance.BinaryOperator(_, _, left, right) -> [left, right]
     glance.Case(_, subjects, clauses) ->
       list.append(
-        list.flat_map(subjects, fn_locations_in),
+        subjects,
         list.flat_map(clauses, fn(clause) {
           let glance.Clause(_, guard, body) = clause
-          list.append(option_locations(guard), fn_locations_in(body))
+          [body, ..option.values([guard])]
         }),
       )
-    glance.Tuple(_, elements) -> list.flat_map(elements, fn_locations_in)
+    glance.Tuple(_, elements) -> elements
     glance.List(_, elements, rest) ->
-      list.append(
-        list.flat_map(elements, fn_locations_in),
-        option_locations(rest),
-      )
-    glance.FieldAccess(_, container, _) -> fn_locations_in(container)
-    glance.TupleIndex(_, tuple, _) -> fn_locations_in(tuple)
-    glance.RecordUpdate(_, _, _, record, fields) ->
-      list.append(
-        fn_locations_in(record),
-        list.flat_map(fields, fn(field) { option_locations(field.item) }),
-      )
-    glance.NegateInt(_, value) | glance.NegateBool(_, value) ->
-      fn_locations_in(value)
+      list.append(elements, option.values([rest]))
+    glance.FieldAccess(_, container, _) -> [container]
+    glance.TupleIndex(_, tuple, _) -> [tuple]
+    glance.RecordUpdate(_, _, _, record, fields) -> [
+      record,
+      ..list.flat_map(fields, fn(field) { option.values([field.item]) })
+    ]
+    glance.NegateInt(_, value) | glance.NegateBool(_, value) -> [value]
     glance.Panic(_, message) | glance.Todo(_, message) ->
-      option_locations(message)
-    glance.Echo(_, expression, message) ->
-      list.append(option_locations(expression), option_locations(message))
+      option.values([message])
+    glance.Echo(_, expression, message) -> option.values([expression, message])
     glance.BitString(_, segments) ->
-      list.flat_map(segments, fn(segment) { fn_locations_in(segment.0) })
-    glance.Int(..)
+      list.map(segments, fn(segment) { segment.0 })
+    glance.Block(_, _)
+    | glance.Fn(_, _, _, _)
+    | glance.Int(..)
     | glance.Float(..)
     | glance.String(..)
     | glance.Variable(..) -> []
   }
+}
+
+/// The statements directly inside `expression`: a block's or a function's body.
+fn child_statements(expression: glance.Expression) -> List(glance.Statement) {
+  case expression {
+    glance.Block(_, statements) | glance.Fn(_, _, _, statements) -> statements
+    _ -> []
+  }
+}
+
+/// The expressions directly inside a statement.
+fn statement_expressions(
+  statement: glance.Statement,
+) -> List(glance.Expression) {
+  case statement {
+    glance.Use(_, _, function) -> [function]
+    glance.Assignment(_, _, _, _, value) -> [value]
+    glance.Assert(_, expression, message) -> [
+      expression,
+      ..option.values([message])
+    ]
+    glance.Expression(expression) -> [expression]
+  }
+}
+
+/// Every expression in `statements`, transitively.
+fn expressions_in(
+  statements: List(glance.Statement),
+) -> List(glance.Expression) {
+  list.flat_map(statements, fn(statement) {
+    list.flat_map(statement_expressions(statement), expressions_under)
+  })
+}
+
+fn expressions_under(expression: glance.Expression) -> List(glance.Expression) {
+  [
+    expression,
+    ..list.append(
+      list.flat_map(child_expressions(expression), expressions_under),
+      expressions_in(child_statements(expression)),
+    )
+  ]
+}
+
+/// Every statement in `statements`, transitively.
+fn statements_in(statements: List(glance.Statement)) -> List(glance.Statement) {
+  list.flat_map(statements, fn(statement) {
+    [
+      statement,
+      ..list.flat_map(statement_expressions(statement), statements_under)
+    ]
+  })
+}
+
+fn statements_under(expression: glance.Expression) -> List(glance.Statement) {
+  list.append(
+    list.flat_map(child_expressions(expression), statements_under),
+    statements_in(child_statements(expression)),
+  )
 }
 
 // A parameter list's names, at the top level of the list only: a name nested
@@ -454,7 +500,7 @@ fn scan_parameters(
             _ -> #(#(token_name(tok), offset), rest)
           }
           let found = case span.0 == name {
-            True -> [glance.Span(span.1, span.1 + byte_size(name))]
+            True -> [glance.Span(span.1, span.1 + string.byte_size(name))]
             False -> []
           }
           list.append(found, scan_parameters(rest, depth, False, name))
@@ -564,7 +610,7 @@ fn alias_span(
 fn after_as(tokens: List(#(token.Token, Int)), name: String) -> List(Span) {
   case tokens {
     [#(token.As, _), #(token.Name(found), offset), ..rest] if found == name -> [
-      glance.Span(offset, offset + byte_size(name)),
+      glance.Span(offset, offset + string.byte_size(name)),
       ..after_as(rest, name)
     ]
     [_, ..rest] -> after_as(rest, name)
@@ -572,101 +618,34 @@ fn after_as(tokens: List(#(token.Token, Int)), name: String) -> List(Span) {
   }
 }
 
-/// Every pattern in the module, in source order.
-pub fn patterns(module: glance.Module) -> List(glance.Pattern) {
+/// Every pattern in the module: a binding's, a `use`'s, and every `case`
+/// clause's. Order is irrelevant — the spans derived from these are sorted and
+/// deduped by the only caller.
+fn patterns(module: glance.Module) -> List(glance.Pattern) {
   list.flat_map(module.functions, fn(definition) {
-    patterns_in_statements(definition.definition.body)
-  })
-}
-
-fn patterns_in_statements(
-  statements: List(glance.Statement),
-) -> List(glance.Pattern) {
-  list.flat_map(statements, fn(statement) {
-    case statement {
-      glance.Use(_, use_patterns, function) ->
-        list.append(
-          list.map(use_patterns, fn(use_pattern) { use_pattern.pattern }),
-          patterns_in(function),
-        )
-      glance.Assignment(_, _, pattern, _, value) -> [
-        pattern,
-        ..patterns_in(value)
-      ]
-      glance.Assert(_, expression, _) -> patterns_in(expression)
-      glance.Expression(expression) -> patterns_in(expression)
-    }
-  })
-}
-
-fn patterns_in(expression: glance.Expression) -> List(glance.Pattern) {
-  case expression {
-    glance.Case(_, subjects, clauses) ->
-      list.append(
-        list.flat_map(subjects, patterns_in),
-        list.flat_map(clauses, fn(clause) {
-          let glance.Clause(clause_patterns, _, body) = clause
-          list.append(list.flatten(clause_patterns), patterns_in(body))
-        }),
-      )
-    glance.Block(_, statements) -> patterns_in_statements(statements)
-    glance.Fn(_, _, _, body) -> patterns_in_statements(body)
-    glance.Call(_, function, arguments) ->
-      list.append(
-        patterns_in(function),
-        list.flat_map(arguments, fn(field) { patterns_in(field_item(field)) }),
-      )
-    glance.FnCapture(_, _, function, before, after) ->
-      list.flatten([
-        patterns_in(function),
-        list.flat_map(before, fn(field) { patterns_in(field_item(field)) }),
-        list.flat_map(after, fn(field) { patterns_in(field_item(field)) }),
-      ])
-    glance.BinaryOperator(_, _, left, right) ->
-      list.append(patterns_in(left), patterns_in(right))
-    glance.Tuple(_, elements) -> list.flat_map(elements, patterns_in)
-    glance.List(_, elements, rest) ->
-      list.append(list.flat_map(elements, patterns_in), case rest {
-        Some(rest) -> patterns_in(rest)
-        None -> []
+    let body = definition.definition.body
+    let bound =
+      list.flat_map(statements_in(body), fn(statement) {
+        case statement {
+          glance.Use(_, use_patterns, _) ->
+            list.map(use_patterns, fn(use_pattern) { use_pattern.pattern })
+          glance.Assignment(_, _, pattern, _, _) -> [pattern]
+          glance.Assert(..) | glance.Expression(..) -> []
+        }
       })
-    glance.FieldAccess(_, container, _) -> patterns_in(container)
-    glance.TupleIndex(_, tuple, _) -> patterns_in(tuple)
-    glance.RecordUpdate(_, _, _, record, fields) ->
-      list.append(
-        patterns_in(record),
-        list.flat_map(fields, fn(field) {
-          case field.item {
-            Some(item) -> patterns_in(item)
-            None -> []
-          }
-        }),
-      )
-    glance.NegateInt(_, value) | glance.NegateBool(_, value) ->
-      patterns_in(value)
-    glance.Panic(_, message) | glance.Todo(_, message) ->
-      case message {
-        Some(message) -> patterns_in(message)
-        None -> []
-      }
-    glance.Echo(_, expression, message) ->
-      list.append(
+    let matched =
+      list.flat_map(expressions_in(body), fn(expression) {
         case expression {
-          Some(expression) -> patterns_in(expression)
-          None -> []
-        },
-        case message {
-          Some(message) -> patterns_in(message)
-          None -> []
-        },
-      )
-    glance.BitString(_, segments) ->
-      list.flat_map(segments, fn(segment) { patterns_in(segment.0) })
-    glance.Int(..)
-    | glance.Float(..)
-    | glance.String(..)
-    | glance.Variable(..) -> []
-  }
+          glance.Case(_, _, clauses) ->
+            list.flat_map(clauses, fn(clause) {
+              let glance.Clause(clause_patterns, _, _) = clause
+              list.flatten(clause_patterns)
+            })
+          _ -> []
+        }
+      })
+    list.append(bound, matched)
+  })
 }
 
 // The rewrite
@@ -777,7 +756,7 @@ pub fn offset_of(source: String, line: Int, column: Int) -> Int {
   let before =
     lines
     |> list.take(line - 1)
-    |> list.fold(0, fn(acc, text) { acc + byte_size(text) + 1 })
+    |> list.fold(0, fn(acc, text) { acc + string.byte_size(text) + 1 })
   before + column - 1
 }
 
@@ -983,15 +962,6 @@ fn function_type(function: glance.Function) -> Result(glance.Type, Nil) {
     |> list.try_map(fn(parameter) { option.to_result(parameter.type_, Nil) }),
   )
   Ok(glance.FunctionType(function.location, parameters, return))
-}
-
-/// The arity of a declared function type, for the one row whose member is
-/// generic and therefore checked by existence and arity alone.
-pub fn arity(type_: glance.Type) -> Result(Int, Nil) {
-  case type_ {
-    glance.FunctionType(_, parameters, _) -> Ok(list.length(parameters))
-    _ -> Error(Nil)
-  }
 }
 
 /// What a member is observed as at a given access: the member itself for a

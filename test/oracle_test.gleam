@@ -8,7 +8,8 @@
 //// comparison because the two implementations may number equivalent variables
 //// differently.
 
-import girard.{type Type, Fn, Named, Tuple, Var}
+import girard.{type Type, Fn}
+import girard/compiler_json
 import gleam/dict
 import gleam/dynamic/decode.{type Decoder}
 import gleam/int
@@ -128,7 +129,7 @@ fn check_expressions(name: String, annotated: girard.AnnotatedModule) -> Nil {
 fn expression_decoder() -> Decoder(#(Int, Int, Type)) {
   use start <- decode.field("start", decode.int)
   use end <- decode.field("end", decode.int)
-  use type_ <- decode.field("type", type_decoder())
+  use type_ <- decode.field("type", compiler_json.type_decoder())
   decode.success(#(start, end, type_))
 }
 
@@ -175,44 +176,18 @@ fn function_decoder() -> Decoder(Type) {
     "parameters",
     decode.list(parameter_type_decoder()),
   )
-  use return <- decode.field("return", type_decoder())
+  use return <- decode.field("return", compiler_json.type_decoder())
   decode.success(Fn(parameters, return))
 }
 
 fn parameter_type_decoder() -> Decoder(Type) {
-  use type_ <- decode.field("type", type_decoder())
+  use type_ <- decode.field("type", compiler_json.type_decoder())
   decode.success(type_)
 }
 
 fn constant_decoder() -> Decoder(Type) {
-  use type_ <- decode.field("type", type_decoder())
+  use type_ <- decode.field("type", compiler_json.type_decoder())
   decode.success(type_)
-}
-
-fn type_decoder() -> Decoder(Type) {
-  use kind <- decode.field("kind", decode.string)
-  case kind {
-    "named" -> {
-      use name <- decode.field("name", decode.string)
-      use module <- decode.field("module", decode.string)
-      use parameters <- decode.field("parameters", decode.list(type_decoder()))
-      decode.success(Named(module, name, parameters))
-    }
-    "fn" -> {
-      use parameters <- decode.field("parameters", decode.list(type_decoder()))
-      use return <- decode.field("return", type_decoder())
-      decode.success(Fn(parameters, return))
-    }
-    "tuple" -> {
-      use elements <- decode.field("elements", decode.list(type_decoder()))
-      decode.success(Tuple(elements))
-    }
-    "variable" -> {
-      use id <- decode.field("id", decode.int)
-      decode.success(Var(id))
-    }
-    other -> decode.failure(Var(0), "Type(kind=" <> other <> ")")
-  }
 }
 
 // Canonical type-variable spelling

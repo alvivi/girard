@@ -52,11 +52,6 @@ const expected_divergences = 11
 /// beside the data it protects is edited in the same keystroke.
 const evidence_aggregate = "381cc19d81342731e965d79587d92e480031d012784e41cf5d42dc13be45f6bd"
 
-/// The `gleam_stdlib` the one dependency-taking row is pinned to. girard
-/// resolves that row's import from `build/packages`, so a skew there would read
-/// as a resolution divergence rather than as the build difference it is.
-const pinned_stdlib = "1.0.3"
-
 // Assertion 1
 //
 // `expect` is what the compiler actually says. Without it a fixture that is
@@ -163,39 +158,40 @@ pub fn girard_answers_as_expected_test() {
 // ratchet that can be walked around: a flag left stale after a behaviour change
 // passes, and so does trading a fixed row for a newly broken one.
 
-pub fn divergence_is_recomputed_test() {
-  use row <- each_row()
-  let divergent = manifest.is_divergent(row, live_girard(row))
-  case divergent == row.divergent {
-    True -> Nil
-    False ->
-      fail(
-        row,
-        "is recorded divergent="
-          <> bool_text(row.divergent)
-          <> " but recomputes to "
-          <> bool_text(divergent),
-      )
-  }
-  case divergent, row.owner {
-    True, None -> fail(row, "diverges but names no owner")
-    False, Some(owner) ->
-      fail(row, "does not diverge but is owned by " <> owner)
-    _, _ -> Nil
-  }
-}
-
-pub fn divergence_count_is_the_ratchet_test() {
-  let count =
+// Both halves run off one girard pass over the corpus: the per-row recomputation
+// and the total are the same derivation read at two scopes, so running girard
+// twice for them could only ever produce the same answer more slowly.
+pub fn divergence_is_recomputed_and_counted_test() {
+  let divergences =
     load().cases
-    |> list.filter(fn(row) { manifest.is_divergent(row, live_girard(row)) })
+    |> list.filter(fn(row) {
+      let divergent = manifest.is_divergent(row, live_girard(row))
+      case divergent == row.divergent {
+        True -> Nil
+        False ->
+          fail(
+            row,
+            "is recorded divergent="
+              <> bool_text(row.divergent)
+              <> " but recomputes to "
+              <> bool_text(divergent),
+          )
+      }
+      case divergent, row.owner {
+        True, None -> fail(row, "diverges but names no owner")
+        False, Some(owner) ->
+          fail(row, "does not diverge but is owned by " <> owner)
+        _, _ -> Nil
+      }
+      divergent
+    })
     |> list.length
-  case count == expected_divergences {
+  case divergences == expected_divergences {
     True -> Nil
     False ->
       panic as {
         "the corpus now has "
-        <> int.to_string(count)
+        <> int.to_string(divergences)
         <> " divergences, not "
         <> int.to_string(expected_divergences)
         <> ". PR 2 and PR 4 lower this literal; nothing else may raise it"
@@ -381,7 +377,7 @@ fn check_field_side(fixture: Fixture) -> Nil {
             fixture,
             row.field_member,
             row.field_return,
-            list.first(rendered),
+            list.first(list.map(found, fn(pair) { pair.1 })),
           )
         }
       }
@@ -415,7 +411,7 @@ fn check_field_side(fixture: Fixture) -> Nil {
                 fixture,
                 row.field_member,
                 row.field_return,
-                Ok(source.render_type(member)),
+                Ok(member),
               )
           }
       }
@@ -630,7 +626,7 @@ fn check_module_side(fixture: Fixture) -> Nil {
             fixture,
             row.module_member,
             row.module_return,
-            Ok(source.render_type(member)),
+            Ok(member),
           )
       }
     }
@@ -672,10 +668,11 @@ fn check_member(
   fixture: Fixture,
   recorded: Option(String),
   recorded_return: Option(String),
-  declared: Result(String, Nil),
+  declared_type: Result(glance.Type, Nil),
 ) -> Nil {
   let row = fixture.row
-  let assert Ok(declared) = declared
+  let assert Ok(declared_type) = declared_type
+  let declared = source.render_type(declared_type)
   case recorded {
     Some(member) ->
       require(
@@ -692,7 +689,7 @@ fn check_member(
   case row.derivable {
     Some(False) -> Nil
     _ ->
-      case derive_return(declared, row.access) {
+      case source.observed_return(declared_type, row.access) {
         Error(_) ->
           fail(
             row,
@@ -713,41 +710,6 @@ fn check_member(
             recorded_return == Some(observed),
           )
       }
-  }
-}
-
-// The observable result of a rendered member, without reparsing it: a
-// projection observes the member itself, a call the text after its top-level
-// arrow.
-fn derive_return(member: String, access: String) -> Result(String, Nil) {
-  case access {
-    "projection" -> Ok(member)
-    _ ->
-      case string.starts_with(member, "fn(") {
-        False -> Error(Nil)
-        True -> after_parameters(string.drop_start(member, 3), 1, "")
-      }
-  }
-}
-
-fn after_parameters(
-  rest: String,
-  depth: Int,
-  seen: String,
-) -> Result(String, Nil) {
-  case string.pop_grapheme(rest) {
-    Error(_) -> Error(Nil)
-    Ok(#("(", tail)) -> after_parameters(tail, depth + 1, seen <> "(")
-    Ok(#(")", tail)) ->
-      case depth == 1 {
-        True ->
-          case string.starts_with(tail, " -> ") {
-            True -> Ok(string.drop_start(tail, 4))
-            False -> Error(Nil)
-          }
-        False -> after_parameters(tail, depth - 1, seen <> ")")
-      }
-    Ok(#(char, tail)) -> after_parameters(tail, depth, seen <> char)
   }
 }
 
@@ -1076,6 +1038,7 @@ fn check_rename(fixture: Fixture) -> Nil {
   })
 
   // The rewrite itself, byte for byte.
+  let companion = read_file(differential.forced_module_path(row.fixture))
   let expected =
     source.apply_rename(
       fixture.text,
@@ -1085,7 +1048,7 @@ fn check_rename(fixture: Fixture) -> Nil {
   require(
     row,
     "the forced-module companion is not the base with exactly those spans renamed",
-    read_file(differential.forced_module_path(row.fixture)) == expected,
+    companion == expected,
   )
 
   // Completeness is read off the companion rather than argued: the surviving
@@ -1093,11 +1056,7 @@ fn check_rename(fixture: Fixture) -> Nil {
   // row has one. A missed reference makes it one too many — and would not fail
   // the compile, since an in-scope receiver the compiler cannot use falls
   // through to the module export rather than erroring.
-  let survivors =
-    source.name_spans(
-      read_file(differential.forced_module_path(row.fixture)),
-      fixture.receiver,
-    )
+  let survivors = source.name_spans(companion, fixture.receiver)
   let expected_survivors = case row.target_import {
     Some(_) -> 2
     None -> 1
@@ -1158,17 +1117,15 @@ pub fn each_reading_is_reachable_test() {
     False -> {
       check_forced(
         fixture,
-        "forced-field",
+        ForcedField,
         row.forced_field,
-        differential.forced_field_path(row.fixture),
         must_compile(option.unwrap(row.field_availability, "")),
         row.field_return,
       )
       check_forced(
         fixture,
-        "forced-module",
+        ForcedModule,
         row.forced_module,
-        differential.forced_module_path(row.fixture),
         option.unwrap(row.module_availability, "") == manifest.available,
         row.module_return,
       )
@@ -1183,15 +1140,39 @@ fn must_compile(availability: String) -> Bool {
   availability == manifest.shared || availability == manifest.variant
 }
 
+// Which companion is under check. A value rather than the display name, because
+// the coordinate transform in `check_error_position` dispatches on it: keyed off
+// the message text, rewording the message would silently switch a forced-field
+// companion onto the forced-module transform, which still yields a plausible
+// offset and so fails or passes for reasons unrelated to the fixture.
+type Companion {
+  ForcedField
+  ForcedModule
+}
+
+fn companion_name(companion: Companion) -> String {
+  case companion {
+    ForcedField -> "forced-field"
+    ForcedModule -> "forced-module"
+  }
+}
+
+fn companion_source_path(companion: Companion, fixture: String) -> String {
+  case companion {
+    ForcedField -> differential.forced_field_path(fixture)
+    ForcedModule -> differential.forced_module_path(fixture)
+  }
+}
+
 fn check_forced(
   fixture: Fixture,
-  name: String,
+  companion: Companion,
   outcome: Option(Outcome),
-  path: String,
   compiles: Bool,
   expected_return: Option(String),
 ) -> Nil {
   let row = fixture.row
+  let name = companion_name(companion)
   case outcome {
     None -> Nil
     Some(outcome) ->
@@ -1225,7 +1206,7 @@ fn check_forced(
               <> option.unwrap(outcome.return, "?"),
             outcome.status == manifest.status_error,
           )
-          check_error_position(fixture, name, outcome, path)
+          check_error_position(fixture, companion, outcome)
         }
       }
   }
@@ -1243,22 +1224,21 @@ fn check_forced(
 // compiler's error rendering.
 fn check_error_position(
   fixture: Fixture,
-  name: String,
+  companion: Companion,
   outcome: Outcome,
-  path: String,
 ) -> Nil {
   let row = fixture.row
   let assert Some(at) = outcome.at
-  let companion = read_file(path)
-  let offset = source.offset_of(companion, at.line, at.column)
-  let target = case name {
-    "forced-field" -> {
+  let text = read_file(companion_source_path(companion, row.fixture))
+  let offset = source.offset_of(text, at.line, at.column)
+  let target = case companion {
+    ForcedField -> {
       let assert Some(import_) = row.target_import
       let assert Ok(#(_, _, removed)) =
         source.remove_import(fixture.module, fixture.text, import_.module)
       Span(row.target_access.start - removed, row.target_access.end - removed)
     }
-    _ -> {
+    ForcedModule -> {
       let assert Some(replacement) = row.renamed_to
       let delta =
         string.byte_size(replacement) - string.byte_size(fixture.receiver)
@@ -1271,7 +1251,7 @@ fn check_error_position(
   require(
     row,
     "the "
-      <> name
+      <> companion_name(companion)
       <> " companion failed at "
       <> int.to_string(at.line)
       <> ":"
@@ -1302,24 +1282,23 @@ fn shift(position: Int, spans: List(Span), delta: Int) -> Int {
 // assertion exists to catch.
 
 pub fn inputs_hash_covers_the_tree_test() {
+  let gleam = load().gleam
   use row <- each_row()
   let files =
-    input_files(row)
+    differential.input_files(
+      row.fixture,
+      option.is_some(row.forced_field),
+      option.is_some(row.forced_module),
+    )
     |> list.map(fn(path) {
       let assert Ok(bytes) = simplifile.read_bits(path)
       #(path, bytes)
     })
   let recomputed =
     manifest.inputs_hash(
-      load().gleam,
-      companion_path(
-        row.forced_field,
-        differential.forced_field_path(row.fixture),
-      ),
-      companion_path(
-        row.forced_module,
-        differential.forced_module_path(row.fixture),
-      ),
+      gleam,
+      companion_path(row.forced_field, ForcedField, row.fixture),
+      companion_path(row.forced_module, ForcedModule, row.fixture),
       files,
     )
   case recomputed == row.inputs_hash {
@@ -1382,24 +1361,29 @@ pub fn stdlib_pin_matches_test() {
   case
     string.contains(
       lock,
-      "gleam_stdlib = { version = \"" <> pinned_stdlib <> "\" }",
+      "gleam_stdlib = { version = \"" <> differential.stdlib_version <> "\" }",
     )
   {
     True -> Nil
     False ->
       panic as {
         "differential/pinned/manifest.toml no longer pins gleam_stdlib "
-        <> pinned_stdlib
+        <> differential.stdlib_version
       }
   }
   let assert Ok(installed) =
     simplifile.read("build/packages/gleam_stdlib/gleam.toml")
-  case string.contains(installed, "version = \"" <> pinned_stdlib <> "\"") {
+  case
+    string.contains(
+      installed,
+      "version = \"" <> differential.stdlib_version <> "\"",
+    )
+  {
     True -> Nil
     False ->
       panic as {
         "build/packages/gleam_stdlib is not "
-        <> pinned_stdlib
+        <> differential.stdlib_version
         <> ", which the `result_try` control is pinned to. girard would resolve a"
         <> " different stdlib than the compiler compiled against, and the skew"
         <> " would read as a resolution divergence"
@@ -1407,31 +1391,12 @@ pub fn stdlib_pin_matches_test() {
   }
 }
 
-// A row's compiler input closure: the fixture and whichever companions it has,
-// every support module they transitively import, and the template the row is
-// actually built from. Every part is a byte sequence committed in the tree, so
-// this runs with no compiler at all.
-fn input_files(row: Row) -> List(String) {
-  let sources =
-    [
-      Some(differential.base_path(row.fixture)),
-      option.map(row.forced_field, fn(_) {
-        differential.forced_field_path(row.fixture)
-      }),
-      option.map(row.forced_module, fn(_) {
-        differential.forced_module_path(row.fixture)
-      }),
-    ]
-    |> option.values
-  list.flatten([
-    sources,
-    differential.support_closure(sources),
-    differential.template_files(sources),
-  ])
-}
-
-fn companion_path(outcome: Option(Outcome), path: String) -> Option(String) {
-  option.map(outcome, fn(_) { path })
+fn companion_path(
+  outcome: Option(Outcome),
+  companion: Companion,
+  fixture: String,
+) -> Option(String) {
+  option.map(outcome, fn(_) { companion_source_path(companion, fixture) })
 }
 
 // Reading a case
