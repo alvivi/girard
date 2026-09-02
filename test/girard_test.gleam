@@ -1427,6 +1427,25 @@ pub fn agreeing_alternatives_narrow_test() {
   |> should.equal("fn(Logger) -> Nil")
 }
 
+pub fn mixed_spelling_alternatives_agree_test() {
+  // `Near(..) as io | kinds.Near(..) as io` names one variant two ways. The
+  // narrowing compares the constructor's resolved identity, not its spelling,
+  // so the alternatives agree and the field wins.
+  let kinds =
+    "pub type Remote {\n  Near(println: fn(String) -> Nil)\n  Far(n: Int)\n}"
+  let source =
+    "import io\n"
+    <> "import kinds.{type Remote, Far, Near}\n"
+    <> "pub fn run(r: Remote) {\n"
+    <> "  case r {\n"
+    <> "    Near(..) as io | kinds.Near(..) as io -> io.println(\"hi\")\n"
+    <> "    Far(..) -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature_with(source, [#("io", io_println), #("kinds", kinds)], "run")
+  |> should.equal("fn(Remote) -> Nil")
+}
+
 const io_labelled_println = "pub fn println(message message: String) -> Int { 1 }"
 
 pub fn narrowed_receiver_rejects_module_labels_test() {
@@ -1569,11 +1588,12 @@ pub fn unnarrowed_receiver_piped_call_reads_module_test() {
   |> should.equal("fn(Logger) -> Int")
 }
 
+const io_y_float = "pub const y: Float = 1.0"
+
 pub fn accessor_requires_same_position_test() {
   // Both variants declare `y: String`, but at different positions. The compiler
   // grants an accessor only when every variant has the label at the same index,
   // so `io.y` is not a field here and falls through to the module's `y`.
-  let io = "pub const y: Float = 1.0"
   let source =
     "import io\n"
     <> "pub type Rec {\n"
@@ -1581,7 +1601,7 @@ pub fn accessor_requires_same_position_test() {
     <> "  B(y: String)\n"
     <> "}\n"
     <> "pub fn f(io: Rec) { io.y }"
-  signature_with(source, [#("io", io)], "f")
+  signature_with(source, [#("io", io_y_float)], "f")
   |> should.equal("fn(Rec) -> Float")
 }
 
@@ -1604,7 +1624,6 @@ pub fn accessor_requires_same_type_test() {
 pub fn accessor_shared_at_same_position_test() {
   // The positive control: same label, index and type in every variant, so the
   // accessor is real and the field beats the same-named module export.
-  let io = "pub const y: Float = 1.0"
   let source =
     "import io\n"
     <> "pub type Rec {\n"
@@ -1612,7 +1631,7 @@ pub fn accessor_shared_at_same_position_test() {
     <> "  Q(y: String)\n"
     <> "}\n"
     <> "pub fn f(io: Rec) { io.y }"
-  signature_with(source, [#("io", io)], "f")
+  signature_with(source, [#("io", io_y_float)], "f")
   |> should.equal("fn(Rec) -> String")
 }
 
@@ -1681,9 +1700,7 @@ pub fn annotate_package_resolves_cross_module_imports_test() {
     #("app/a", "pub fn a() -> Int { 1 }"),
     #("app/b", "import app/a\n\npub fn b() { a.a() }"),
   ]
-  let table = dict.from_list(sources)
-  let resolver = fn(path) { dict.get(table, path) }
-  let options = girard.default_options() |> girard.with_resolver(resolver)
+  let options = options_with(sources)
 
   let assert Ok(b) =
     dict.get(girard.annotate_package(parse_package(sources), options), "app/b")

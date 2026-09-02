@@ -44,9 +44,9 @@ import simplifile
 
 // The ratchet
 //
-// PR 2 lowered the count to the rows PR 4 owns; PR 4 lowers it to zero.
-// Nobody can quietly widen it,
-// and nobody can edit a committed compiler result without moving the aggregate.
+// PR 2 lowered the count to the rows PR 4 owns; PR 4 lowers it to zero. Nobody
+// can quietly widen it, and nobody can edit a committed compiler result without
+// moving the aggregate.
 
 /// How many rows the compiler and girard currently disagree on. Recomputed from
 /// the committed compiler column and a live girard run, never counted off the

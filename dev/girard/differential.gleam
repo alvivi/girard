@@ -186,6 +186,10 @@ fn probe(
 // must not over-narrow it back into reach.
 const unreachable = ". The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and PR 4 must not over-narrow it back into reach"
 
+// The mechanism the rows PR 2 flipped share: the narrowing girard already
+// recorded is read in call position the way projection always read it.
+const field_first = "narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`"
+
 /// Every case, in the order they appear in the manifest.
 pub fn specs() -> List(Spec) {
   [
@@ -243,7 +247,8 @@ pub fn specs() -> List(Spec) {
     ),
     narrowed(
       "narrowed_case",
-      "narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`: a reachable variant field wins over the module export exactly as it does in projection",
+      field_first
+        <> ": a reachable variant field wins over the module export exactly as it does in projection",
     ),
     narrowed(
       "direct_construction",
@@ -337,7 +342,8 @@ pub fn specs() -> List(Spec) {
     ),
     narrowed(
       "narrowed_subject",
-      "the subject of the `case` is the receiver itself and no `as` rebinds it: narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`",
+      "the subject of the `case` is the receiver itself and no `as` rebinds it: "
+        <> field_first,
     ),
     Spec(
       ..narrowed(
@@ -348,7 +354,8 @@ pub fn specs() -> List(Spec) {
     ),
     narrowed(
       "let_assert",
-      "`let assert Loud(..) as io = l` narrows and binds in one pattern, the shortest path from a pattern to a narrowed receiver: narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`",
+      "`let assert Loud(..) as io = l` narrows and binds in one pattern, the shortest path from a pattern to a narrowed receiver: "
+        <> field_first,
     ),
     narrowed(
       "alternatives_agree",
@@ -435,14 +442,18 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..narrowed(
         "aliased_import",
-        "the collision is with an import alias rather than a module path's final segment: narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`. The row pins only the type answer for now - telling an alias from the canonical module path needs a resolution API girard does not yet expose, and would extend this row rather than add one",
+        "the collision is with an import alias rather than a module path's final segment: "
+          <> field_first
+          <> ". The row pins only the type answer for now - telling an alias from the canonical module path needs a resolution API girard does not yet expose, and would extend this row rather than add one",
       ),
       receiver: "printer",
     ),
     Spec(
       ..narrowed(
         "imported_narrowed",
-        "the narrowed type is declared in a second module, pinning that variant narrowing - and the field index the narrowed variant grants - agree across a module boundary: narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`, and the module boundary costs nothing",
+        "the narrowed type is declared in a second module, pinning that variant narrowing - and the field index the narrowed variant grants - agree across a module boundary: "
+          <> field_first
+          <> ", and the module boundary costs nothing",
       ),
       narrowed_to: Some("Near"),
     ),
