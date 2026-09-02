@@ -499,6 +499,11 @@ pub fn specs() -> List(Spec) {
         <> on_the_type,
     ),
     narrowed(
+      "capture_call",
+      "a capture is a lambda whose body is the call it wraps, so `Loud(_)` returns the constructor's own stamped type and calling it keeps the variant"
+        <> on_the_type,
+    ),
+    narrowed(
       "closure_returned",
       "a closure is not generalized, and a call's type is the callee's own return type, so `mk()` hands back the `Loud` the closure built"
         <> on_the_type,

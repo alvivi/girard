@@ -3279,7 +3279,9 @@ fn infer_capture(
   use arg_types <- result.try(order_fields(labels, fields, fn(_, _) { hole }))
   let #(result, st) = fresh(st)
   use st <- result.try(unify(st, fn_type, ty.Fn(arg_types, result)))
-  let captured = ty.Fn([hole], result)
+  // A capture is a lambda whose body is the call, so its return is the
+  // callee's own — `Loud(_)` returns a value known to be `Loud`.
+  let captured = ty.Fn([hole], call_return(st, fn_type, result))
   Ok(#(captured, record(st, span, captured)))
 }
 
