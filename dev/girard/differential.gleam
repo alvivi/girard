@@ -143,6 +143,24 @@ fn narrowed(fixture: String, why: String) -> Spec {
   )
 }
 
+// The same contest read as a projection of `n`, which only `Quiet` declares:
+// an un-narrowed receiver grants no accessor, so the module's `String` is the
+// only reading that type-checks.
+fn projected_n(fixture: String, why: String) -> Spec {
+  Spec(
+    ..logger(fixture, why),
+    label: "n",
+    access: manifest.access_projection,
+    syntax_site: manifest.site_bare,
+    module_member: Some("String"),
+    module_return: Some("String"),
+    field_candidates: Some([
+      Candidate(variant: "Quiet", index: 0, member: "Int", return: "Int"),
+    ]),
+    missing_variants: Some(["Loud"]),
+  )
+}
+
 // A probe: it asks only whether the program was accepted, so it contests no
 // branch and records no availability, member or return.
 fn probe(
@@ -222,21 +240,10 @@ pub fn specs() -> List(Spec) {
       "a value returned by an annotated helper carries no variant, so the receiver is un-narrowed exactly as in `plain_param`"
         <> unreachable,
     ),
-    Spec(
-      ..logger(
-        "projection_plain",
-        "the projection twin of `plain_param`: no accessor, so both sides read the module const"
-          <> unreachable,
-      ),
-      label: "n",
-      access: manifest.access_projection,
-      syntax_site: manifest.site_bare,
-      module_member: Some("String"),
-      module_return: Some("String"),
-      field_candidates: Some([
-        Candidate(variant: "Quiet", index: 0, member: "Int", return: "Int"),
-      ]),
-      missing_variants: Some(["Loud"]),
+    projected_n(
+      "projection_plain",
+      "the projection twin of `plain_param`: no accessor, so both sides read the module const"
+        <> unreachable,
     ),
     Spec(
       ..narrowed(
@@ -571,21 +578,10 @@ pub fn specs() -> List(Spec) {
       "an unannotated top-level function is generalized at the module boundary, which erases every variant in its type, so `make(f)` hands back a plain `Logger` where `factory_result`'s annotation does the same job explicitly"
         <> unreachable,
     ),
-    Spec(
-      ..logger(
-        "constant_receiver",
-        "a module constant is generalized the way a function is, so `const quiet = Quiet(0)` reaches the receiver un-narrowed. Live in projection position, so it is independent of call-position precedence"
-          <> unreachable,
-      ),
-      label: "n",
-      access: manifest.access_projection,
-      syntax_site: manifest.site_bare,
-      module_member: Some("String"),
-      module_return: Some("String"),
-      field_candidates: Some([
-        Candidate(variant: "Quiet", index: 0, member: "Int", return: "Int"),
-      ]),
-      missing_variants: Some(["Loud"]),
+    projected_n(
+      "constant_receiver",
+      "a module constant is generalized the way a function is, so `const quiet = Quiet(0)` reaches the receiver un-narrowed. Live in projection position, so it is independent of call-position precedence"
+        <> unreachable,
     ),
     logger(
       "pipe_into_constructor",
@@ -1074,9 +1070,9 @@ fn aggregate() -> Nil {
 
 // `answer` prints girard's reading of one file, with the corpus resolver. It is
 // how a divergence is diagnosed: run it on the forced-field companion, where
-// no colliding module is in scope, and girard's answer says whether the
-// narrowing is expressible through `env.variants` at all — an error there
-// means it is not, and only narrowing carried on the type would reach it.
+// no colliding module is in scope, and girard's answer says whether the field
+// is in reach at all — an error there means the receiver's type never carried
+// the variant, so the narrowing is lost upstream of the resolution.
 fn answer(path: String, function: String) -> Nil {
   let assert Ok(text) = simplifile.read(path)
   io.println(describe(runner.girard_outcome(text, function)))

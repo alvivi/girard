@@ -164,8 +164,8 @@ pointing at the driver rather than at a diff.
 `gleam run -m girard/differential answer <path> <function>` prints girard's
 reading of one file with the corpus resolver. Run it on a forced-field
 companion, where no colliding module is in scope, to diagnose a new divergence:
-girard erroring there means the narrowing is not expressible through
-`env.variants` at all, and only narrowing carried on the type would reach it.
+girard erroring there means the receiver's type never carried the variant, so
+the narrowing was lost upstream of the resolution rather than at it.
 Girard reading the field there while the base row still reads the module would
 mean call position and projection have drifted apart again, which the shared
 resolver closed and nothing should reopen.

@@ -2258,15 +2258,15 @@ fn register_custom_type(
   // label qualifies.) A value known to be one variant reads that variant's own
   // map instead, where every label it declares qualifies.
   let variant_fields = list.reverse(rev_variant_fields)
+  let shared = shared_accessors(variant_fields, param_ids, return_type)
   let accessors =
-    Accessors(
-      shared: shared_accessors(variant_fields, param_ids, return_type),
-      by_variant: list.map(variant_fields, variant_accessors(
-        _,
-        param_ids,
-        return_type,
-      )),
-    )
+    Accessors(shared:, by_variant: case variant_fields {
+      // Every label of a single-variant type is shared, so the two maps are
+      // the same one and the type keeps one copy.
+      [_] -> [shared]
+      _ ->
+        list.map(variant_fields, variant_accessors(_, param_ids, return_type))
+    })
   let env =
     Env(
       ..env,
@@ -2699,11 +2699,11 @@ fn infer_field_access(
   container: glance.Expression,
   label: String,
 ) -> Result(#(ty.Type, Access, State), Error) {
-  // Precompute a possible qualified module export; a record field takes
-  // precedence over it wherever one is reachable.
-  let module_access = case container {
-    glance.Variable(_, name) ->
-      case dict.get(env.modules, name) {
+  case container {
+    // Only a bare name can also denote a module, so only there is there a
+    // module export for a failing record access to fall through to.
+    glance.Variable(_, name) -> {
+      let module_access = case dict.get(env.modules, name) {
         Ok(interface) ->
           dict.get(interface.values, label)
           |> result.map(fn(scheme) {
@@ -2711,15 +2711,12 @@ fn infer_field_access(
           })
         Error(_) -> Error(Nil)
       }
-    _ -> Error(Nil)
-  }
-  case container {
-    glance.Variable(_, name) ->
       case dict.has_key(env.values, name) {
         True -> value_field(env, st, container, label, module_access)
         False -> module_or_record(env, st, container, label, module_access)
       }
-    _ -> module_or_record(env, st, container, label, module_access)
+    }
+    _ -> module_or_record(env, st, container, label, Error(Nil))
   }
 }
 
@@ -3738,17 +3735,20 @@ fn infer_clause(
       Ok(#([clause_env, ..envs], st))
     }),
   )
-  let names =
-    list.append(
-      list.filter_map(subjects, fn(subject) {
-        option.to_result(subject_of(subject), Nil)
-      }),
-      case clause.patterns {
+  // One alternative agrees with itself, so the names it binds need not even be
+  // collected — which is every clause that does not spell `|`.
+  let envs = case rev_envs {
+    [_] | [] -> list.reverse(rev_envs)
+    _ -> {
+      let bound = case clause.patterns {
         [first, ..] -> list.flat_map(first, reference.pattern_names)
         [] -> []
-      },
-    )
-  let envs = agree_variants(st, list.reverse(rev_envs), names)
+      }
+      let subjects =
+        option.values(list.map(subjects, subject_variable(_, bound)))
+      agree_variants(st, list.reverse(rev_envs), list.append(subjects, bound))
+    }
+  }
   list.try_fold(envs, st, fn(st, clause_env) {
     use st <- result.try(case clause.guard {
       Some(guard) -> check(clause_env, st, guard, prelude_bool())
@@ -3801,21 +3801,9 @@ fn agree_variants(
   names: List(String),
 ) -> List(Env) {
   list.fold(names, envs, fn(envs, name) {
-    let variants = list.map(envs, bound_variant(st, _, name))
-    case list.unique(variants) {
-      [_] -> envs
-      _ ->
-        list.map(envs, fn(env) {
-          case dict.get(env.values, name) {
-            Ok(ty.Scheme(vars, type_)) ->
-              bind_value(
-                env,
-                name,
-                ty.Scheme(vars, erase_variant(resolve(st, type_))),
-              )
-            Error(_) -> env
-          }
-        })
+    case list.unique(list.map(envs, bound_variant(st, _, name))) {
+      [_] | [] -> envs
+      _ -> list.map(envs, erase_binding(st, _, name))
     }
   })
 }
@@ -3827,6 +3815,16 @@ fn bound_variant(st: State, env: Env, name: String) -> Option(Int) {
   case dict.get(env.values, name) {
     Ok(scheme) -> variant_of(resolve(st, scheme.type_))
     Error(_) -> None
+  }
+}
+
+// Rebind `name` to its own type with the variant forgotten: the same binding,
+// less what the alternatives disagreed on.
+fn erase_binding(st: State, env: Env, name: String) -> Env {
+  case dict.get(env.values, name) {
+    Ok(ty.Scheme(vars, type_)) ->
+      bind_value(env, name, ty.Scheme(vars, erase_variant(resolve(st, type_))))
+    Error(_) -> env
   }
 }
 
