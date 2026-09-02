@@ -12,7 +12,7 @@
 import argv
 import girard/internal/reference
 import girard/internal/scc
-import girard/internal/type_ as ty
+import girard/internal/ty
 import glance
 import gleam/bool
 import gleam/dict.{type Dict}
