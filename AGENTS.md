@@ -52,6 +52,7 @@ API.
 | File | Responsibility |
 |---|---|
 | `src/girard.gleam` | The whole public API and inference engine, in labelled comment sections, public API first: source/AST/package entry points and CLI; the public `Type`, `Scheme`, and inference `Error` vocabulary; Hindley-Milner inference (state, substitutions, environments and schemes, unification, generalization/instantiation, expression/pattern/statement inference, type hydration, module interfaces); the built-in prelude type constructors; and the type printer |
+| `src/girard/internal/ty.gleam` | The inference-side `Type` and `Scheme`: the public vocabulary plus the narrowed-variant slot on `Named`, converted to the public types when a result or an error is published |
 | `src/girard/internal/scc.gleam` | Tarjan strongly-connected components for dependency-ordered inference |
 | `src/girard/internal/reference.gleam` | Lexically scoped reference collection for the top-level definition graph |
 
@@ -85,6 +86,9 @@ The real compiler mutates type variables in place through
 `Arc<RefCell<TypeVar>>`. Gleam-the-language is pure, so girard represents a type
 variable as `Var(id)` and carries a `Dict(Int, Type)` substitution in the
 threaded inference `State`. An absent id is unbound; a present id is bound.
+The substitution, the environment and module interfaces hold the inference-side
+`Type` from `girard/internal/ty`; the public `Type` is produced from it
+only where a result or an error is published.
 
 Generalization normally happens at module-level definition boundaries, so
 unannotated local `let` bindings remain monomorphic. The compiler-matching
