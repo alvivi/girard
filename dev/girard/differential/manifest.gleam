@@ -146,6 +146,13 @@ pub const expect_field = "field"
 
 pub const expect_module = "module"
 
+/// A probe contests no branch, so its `expect` is whether the program was
+/// accepted, compared against the compiler's `status` directly. Spelled
+/// separately from `status_ok` and `status_error` even though the two share
+/// their spellings: `kind` selects which of the two vocabularies `expect` is
+/// read against, and collapsing them would hide that.
+pub const expect_ok = "ok"
+
 pub const expect_error = "error"
 
 pub const shared = "shared"
@@ -412,6 +419,17 @@ fn one_of(field: String, vocabulary: List(String)) -> Decoder(String) {
   }
 }
 
+// Which vocabulary `expect` is read against — the one thing `kind` selects at
+// decode time. A resolution row names a branch; a probe names an acceptance,
+// which is why an `"ok"` expectation is legal on one and meaningless on the
+// other.
+fn expect_vocabulary(kind: String) -> List(String) {
+  case kind == kind_probe {
+    True -> [expect_ok, expect_error]
+    False -> [expect_field, expect_module]
+  }
+}
+
 fn digest_decoder() -> Decoder(String) {
   use raw <- decode.then(decode.string)
   case is_digest(raw) {
@@ -445,7 +463,7 @@ fn row_decoder() -> Decoder(Row) {
   )
   use expect <- decode.field(
     "expect",
-    one_of("expect", [expect_field, expect_module, expect_error]),
+    one_of("expect", expect_vocabulary(kind)),
   )
   use field_availability <- decode.field(
     "field_availability",

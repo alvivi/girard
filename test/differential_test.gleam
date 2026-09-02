@@ -71,6 +71,11 @@ pub fn manifest_vocabularies_are_closed_test() {
     #("syntax_site", "\"syntax_site\": \"bare\"", "\"syntax_site\": \"bear\""),
     #("expect", "\"expect\": \"module\"", "\"expect\": \"modul\""),
     #(
+      "expect on a resolution row",
+      "\"expect\": \"module\"",
+      "\"expect\": \"ok\"",
+    ),
+    #(
       "field_availability",
       "\"field_availability\": \"variant\"",
       "\"field_availability\": \"varient\"",
@@ -104,6 +109,27 @@ pub fn manifest_vocabularies_are_closed_test() {
         <> field
         <> " vocabulary is open"
       }
+  }
+}
+
+// A probe's `expect` is an acceptance, not a branch: `kind` selects which
+// vocabulary it is read against, so `"ok"` is legal on a probe and rejected on a
+// resolution row (the case above). The corpus holds only error probes today, so
+// nothing else exercises the legal `"ok"` spelling — without this, closing the
+// vocabulary would have quietly outlawed the first successful probe anyone adds.
+
+pub fn probe_may_expect_ok_test() {
+  let text = manifest_text()
+  let mutated =
+    string.replace(text, "\"expect\": \"error\"", "\"expect\": \"ok\"")
+  case mutated == text {
+    False -> Nil
+    True -> panic as "no probe expects an error, so this case tests nothing"
+  }
+  case manifest.decode(mutated) {
+    Ok(_) -> Nil
+    Error(_) ->
+      panic as "the decoder rejected `\"expect\": \"ok\"` on a probe, which the schema allows"
   }
 }
 
