@@ -29,6 +29,7 @@ support/             modules staged alongside a case, never compiled as fixtures
   differential/shadow.gleam   a second shadow, for the aliased-import case
   differential/kinds.gleam    a record type, for the cross-module and renamed-import cases
   differential/labelled.gleam a shadow with a labelled export, for the labelled probe
+  differential/box.gleam      a generic wrapper, for the erase-through-a-type-variable case
 cases/<case>/base.gleam           the fixture
 cases/<case>/forced_field.gleam   companion: no colliding module in scope
 cases/<case>/forced_module.gleam  companion: the receiver binding renamed away
@@ -112,12 +113,17 @@ depth.
   has to touch two files in one diff.
 
 **The suite is green and the divergences are data.** A recorded disagreement is
-the expected answer today. The three that remain share one mechanism: a
-narrowing is keyed by the pattern-bound name in `env.variants`, so re-binding
-the value under another name loses it where the compiler, carrying the inferred
-variant on the type, keeps it. The change that carries the variant on the type
-must edit the manifest, flipping `divergent` from `true` to `false` line by line
-and lowering the count literal in `test/differential_test.gleam`.
+the expected answer today. The thirteen that remain share one root: girard
+tracks a narrowing by the *name* it was bound under, in `env.variants`, and
+re-derives it from the shape of the expression the value came from. So it is
+lost wherever the value is re-bound under another name, arrives by a shape
+girard does not recognise, or passes through a fresh type variable girard mints
+where the compiler keeps the callee's own type — and it is wrongly kept where a
+sibling pattern rebinds the name. The compiler carries the inferred variant on
+the value's own type, where none of that applies. The change that carries the
+variant on the type must edit the manifest, flipping `divergent` from `true` to
+`false` line by line and lowering the count literal in
+`test/differential_test.gleam`.
 
 ## Regenerating
 

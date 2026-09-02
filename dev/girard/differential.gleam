@@ -190,6 +190,13 @@ const unreachable = ". The field branch is genuinely out of reach here, which th
 // inferred variant on the value's type, where a re-binding keeps it.
 const rebinding = "the narrowing is lost at the re-binding because `env.variants` follows the name, not the value; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
 
+// What the keep rows added for the type-carried variant share: the compiler
+// carries the inferred variant on the value's type, so a value that reaches the
+// receiver already known to be `Loud` keeps that knowledge whatever route it
+// took there. girard re-recognises the *shape* a narrowing arrived in instead,
+// so each divergent row names the shape it cannot see.
+const not_a_shape = ". girard recognises the shapes a narrowing can arrive in rather than carrying it on the value's type, so it does not see this one; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
+
 // The mechanism the rows that flipped from divergent share: the narrowing
 // girard already recorded is read in call position the way projection always
 // read it.
@@ -485,6 +492,141 @@ pub fn specs() -> List(Spec) {
       field_candidates: None,
       missing_variants: None,
       reason: None,
+    ),
+    // Where the compiler keeps a narrowing
+    //
+    // Each row hands the receiver a value that is already known to be `Loud`,
+    // by a route that never passes through a type variable.
+    narrowed(
+      "tuple_pattern",
+      "a tuple pattern is structural, so `let #(io, _) = #(Loud(f), 1)` binds `io` to the first element's own type, variant and all"
+        <> not_a_shape,
+    ),
+    narrowed(
+      "closure_returned",
+      "a closure is not generalized, and a call's type is the callee's own return type, so `mk()` hands back the `Loud` the closure built"
+        <> not_a_shape,
+    ),
+    narrowed(
+      "constructor_in_variable",
+      "`let mk = Loud` binds the constructor itself, so calling it returns the type `Loud(f)` would have had"
+        <> not_a_shape,
+    ),
+    narrowed(
+      "pipe_into_constructor_call",
+      "a call-form pipe is a call: `f |> Loud()` is `Loud(f)`, whose type is the constructor's own"
+        <> not_a_shape,
+    ),
+    narrowed(
+      "saturated_pipe_closure",
+      "a saturated pipe applies the piped value to the call's result, and that application is structural too, so `f |> mk()` is `mk()(f)` and keeps the variant"
+        <> not_a_shape,
+    ),
+    narrowed(
+      "record_update_result",
+      "a record update's result is the named constructor's instantiated return, so `Loud(..l, println: f)` is known to be `Loud`"
+        <> not_a_shape,
+    ),
+    narrowed(
+      "as_passes_subject",
+      "an assignment pattern hands the subject variable on to the pattern inside it, so `Loud(..) as l` narrows the subject `io` as well as binding `l`"
+        <> not_a_shape,
+    ),
+    narrowed(
+      "echo_subject",
+      "`echo` is transparent to the subject rule, so `case echo io` narrows `io` exactly as `case io` does"
+        <> not_a_shape,
+    ),
+    narrowed(
+      "echo_let_assert",
+      "the same transparency on the `let assert` path, where the subject is the assigned value rather than a `case` subject"
+        <> not_a_shape,
+    ),
+    narrowed(
+      "annotated_let",
+      "an annotation is unified against the value's type rather than substituted for it, so `let io: Logger = Loud(f)` keeps the constructed variant. girard agrees today because `constructor_call` reads the value's syntax, which the annotation leaves alone",
+    ),
+    narrowed(
+      "let_assert_as",
+      "the `as` name takes the constructor pattern's own type, which carries the variant. The subject here is a call rather than a bare variable, so no subject narrowing is available and the `as` binding is the only route to the field - which is what separates this row from `let_assert`",
+    ),
+    narrowed(
+      "unannotated_param_subject",
+      "an unannotated parameter is bound first and narrowed second, so `let assert Loud(..) = io` reaches the field on the parameter itself: the row that guards binding a parameter's type against erasing what the pattern then narrows",
+    ),
+    narrowed(
+      "subject_alternatives_agree",
+      "both alternatives narrow the subject to `Loud`, so the agreement rule keeps it: the subject-variable twin of `alternatives_agree`, which narrows through `as` bindings instead",
+    ),
+    narrowed(
+      "subject_rebound_in_pattern",
+      "`Loud(..) as io` on the subject `io` rebinds the subject, so the subject is not narrowed - and need not be, because the `as` binding takes the constructor's own type. The row that keeps the rule about a rebound subject from also suppressing the `as` binding's own variant",
+    ),
+    // Where the compiler drops a narrowing
+    //
+    // Each row puts the constructed value somewhere the compiler forgets which
+    // variant it was: a type variable, a generalized definition, or two
+    // alternatives that disagree. They pin the erase, and a wrong erase fails
+    // in the silent direction.
+    logger(
+      "unannotated_helper",
+      "an unannotated top-level function is generalized at the module boundary, which erases every variant in its type, so `make(f)` hands back a plain `Logger` where `factory_result`'s annotation does the same job explicitly"
+        <> unreachable,
+    ),
+    Spec(
+      ..logger(
+        "constant_receiver",
+        "a module constant is generalized the way a function is, so `const quiet = Quiet(0)` reaches the receiver un-narrowed. Live in projection position, so it is independent of call-position precedence"
+          <> unreachable,
+      ),
+      label: "n",
+      access: manifest.access_projection,
+      syntax_site: manifest.site_bare,
+      module_member: Some("String"),
+      module_return: Some("String"),
+      field_candidates: Some([
+        Candidate(variant: "Quiet", index: 0, member: "Int", return: "Int"),
+      ]),
+      missing_variants: Some(["Loud"]),
+    ),
+    logger(
+      "pipe_into_constructor",
+      "a bare-function pipe applies through a fresh type variable, and binding a variable erases the variant: `f |> Loud` is where the pipe rows part from `pipe_into_constructor_call`"
+        <> unreachable,
+    ),
+    logger(
+      "case_result",
+      "a `case` result is a fresh type variable every arm is bound into, so a `case` returning `Loud(f)` from every arm still yields an un-narrowed `Logger`"
+        <> unreachable,
+    ),
+    logger(
+      "subject_alternatives_disagree",
+      "the alternatives narrow the subject to `Loud` and to `Quiet`, so it is narrowed to nothing under both: the subject-variable twin of `alternatives_disagree`"
+        <> unreachable,
+    ),
+    logger(
+      "list_pattern",
+      "a list literal's elements are bound into the list's element variable, which erases the variant before the pattern binds `io`"
+        <> unreachable,
+    ),
+    logger(
+      "generic_constructor_arg",
+      "a constructed value put into `Box(a)` is bound into a type variable and comes back out of the pattern un-narrowed: the erase reaches through a constructor's argument as `through_generic` shows it reaching through a function's"
+        <> unreachable,
+    ),
+    logger(
+      "use_bound",
+      "a `use` callback's parameter is a fresh type variable the caller binds, so a value the caller constructs arrives un-narrowed"
+        <> unreachable,
+    ),
+    logger(
+      "subject_rebound_by_sibling",
+      "a subject the multi-pattern itself rebinds is not narrowed: `io` in the first column binds `left`'s value, and the compiler lets that binding win. girard narrows by name and stamps the sibling's binding instead, over-narrowing where the compiler does not; narrowing carried on the type, which can ask up front which names the whole multi-pattern binds, is the change that removes this divergence. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves",
+    ),
+    logger(
+      "subject_narrowed_then_rebound",
+      "the other order of `subject_rebound_by_sibling`: the subject is narrowed by the first column and rebound by the second, and the pattern's binding still wins. girard agrees today only because `bind_value` clears the name's entry as it binds"
+        <> unreachable,
     ),
     probe(
       "unbound_no_module",
