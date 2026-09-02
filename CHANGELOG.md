@@ -9,32 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A call on a receiver a pattern has narrowed to a variant — `case l {
-  Loud(..) as io -> io.println("hi") }` — now calls the variant's field when
-  a module of the same name also exports that label. Previously the module
-  export won in call position, so the call was typed as the module function
-  where the compiler types it as the field. Projections already read the
-  field; calls and projections now resolve alike.
-- Alternative patterns that narrow a variable to different variants —
-  `Loud(..) as io | Quiet(..) as io` — no longer narrow it at all, as in the
-  compiler. Previously the clause body read the first alternative's variant
-  under one alternative and the second's under the other.
-- Alternative patterns that name one variant two ways — a renamed unqualified
-  import and its qualified spelling, `Close(..) as io | kinds.Near(..) as io`
-  under `import kinds.{Near as Close}` — keep the narrowing, as in the
-  compiler. A narrowing is identified by the constructor's name in its
-  declaring module, so the local spelling no longer makes the alternatives
-  disagree.
-- A label is a shared field accessor only when every variant declares it at
-  the same position with the same type. Previously position was ignored, so
-  `A(x: Int, y: String)` / `B(y: String)` exposed `y` as an accessor where the
-  compiler does not.
-- A labelled argument to a call on a record field is now an error, as in
-  the compiler, where a function-typed field accepts no labels. Previously
-  the labels of an unrelated callable with the same name — a same-named
-  module's export, or failing that a top-level function or constructor —
-  were used to reorder the arguments even though the call did not go to it.
-
+- Calling a field on a value a pattern has narrowed — `Loud(..) as io ->
+  io.println("hi")` — now calls the field even when a module named `io` is
+  in scope. Previously the module function won, unlike the compiler.
+  Reading and calling a field now resolve the same way.
+- `Loud(..) as io | Quiet(..) as io` no longer narrows `io` to either
+  variant, matching the compiler.
+- `Close(..) as io | kinds.Near(..) as io`, with `Near` imported as `Close`,
+  keeps its narrowing: the two spellings are recognised as one constructor.
+- A field is only accessible on the whole type when every variant declares it
+  at the same position with the same type. `y` in `A(x: Int, y: String)` /
+  `B(y: String)` is no longer an accessor, matching the compiler.
+- Passing a labelled argument to a function stored in a record field is now an
+  error, as in the compiler. Previously the labels of an unrelated function
+  with the same name were used to reorder the arguments.
 - Expressions inside a `panic as` / `todo as` message are now annotated.
   Previously nothing in the message got a type — `name` in
   `panic as { "no such user: " <> name }` had no annotation at all. The message
