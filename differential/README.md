@@ -100,7 +100,8 @@ depth.
   both are `ok` and decode to different branches, or when either decodes to a
   third answer nobody predicted.
 - **`owner`** is `PR2` or `PR4` — the change that must remove that divergence.
-  Present exactly when `divergent` is true.
+  Present exactly when `divergent` is true, and rejected by the decoder if it is
+  anything else, so a divergence cannot be parked under an owner nobody holds.
 - **`why`** is a hand-written one-liner naming the mechanism. It is what makes
   the manifest a document rather than a blob.
 - **`inputs_hash` and `evidence_hash`** answer two different questions: what was

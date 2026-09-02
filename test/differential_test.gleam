@@ -13,6 +13,11 @@
 //// divergence count are pinned as literals *in this file* — so the manifest and
 //// the test have to change together, in one diff.
 ////
+//// All seven read the manifest through `manifest.decode`, which is where the
+//// enumerated fields are checked against their vocabularies — a typo in `kind`
+//// or `owner` is invisible to every assertion below, so the rejection itself is
+//// tested first.
+////
 //// The seven assertions:
 ////
 //// 1. `expect` is what the compiler actually says.
@@ -51,6 +56,56 @@ const expected_divergences = 11
 /// name. Pinned here rather than only in the manifest, because a hash stored
 /// beside the data it protects is edited in the same keystroke.
 const evidence_aggregate = "381cc19d81342731e965d79587d92e480031d012784e41cf5d42dc13be45f6bd"
+
+// The vocabularies are closed
+//
+// Nothing below can catch a misspelled enumerated value: every non-`probe` kind
+// reads as a resolution row, and the ratchet asks only that a divergence names
+// *some* owner, so `"resoluton"` and `"PR99"` would both show green. The
+// decoder rejects them instead, and this is the test that it does.
+
+pub fn manifest_vocabularies_are_closed_test() {
+  use #(field, from, to) <- list.each([
+    #("kind", "\"kind\": \"resolution\"", "\"kind\": \"resoluton\""),
+    #("access", "\"access\": \"projection\"", "\"access\": \"projecton\""),
+    #("syntax_site", "\"syntax_site\": \"bare\"", "\"syntax_site\": \"bear\""),
+    #("expect", "\"expect\": \"module\"", "\"expect\": \"modul\""),
+    #(
+      "field_availability",
+      "\"field_availability\": \"variant\"",
+      "\"field_availability\": \"varient\"",
+    ),
+    #(
+      "module_availability",
+      "\"module_availability\": \"available\"",
+      "\"module_availability\": \"availible\"",
+    ),
+    #("reason", "\"reason\": \"partial\"", "\"reason\": \"partal\""),
+    #("owner", "\"owner\": \"PR2\"", "\"owner\": \"PR99\""),
+  ])
+  let text = manifest_text()
+  let mutated = string.replace(text, from, to)
+  case mutated == text {
+    False -> Nil
+    True ->
+      panic as {
+        "the manifest no longer spells `"
+        <> from
+        <> "`, so this case tests nothing"
+      }
+  }
+  case manifest.decode(mutated) {
+    Error(_) -> Nil
+    Ok(_) ->
+      panic as {
+        "the decoder accepted `"
+        <> to
+        <> "`: the "
+        <> field
+        <> " vocabulary is open"
+      }
+  }
+}
 
 // Assertion 1
 //
@@ -1417,12 +1472,16 @@ type Fixture {
 }
 
 fn load() -> Manifest {
-  let assert Ok(text) = simplifile.read("differential/expected.json")
-  case manifest.decode(text) {
+  case manifest.decode(manifest_text()) {
     Ok(loaded) -> loaded
     Error(_) ->
-      panic as "differential/expected.json is not a well-formed manifest — every field must be present, with absence spelled `null`"
+      panic as "differential/expected.json is not a well-formed manifest — every field must be present, with absence spelled `null`, and every enumerated field within its vocabulary"
   }
+}
+
+fn manifest_text() -> String {
+  let assert Ok(text) = simplifile.read("differential/expected.json")
+  text
 }
 
 fn each_row(continue: fn(Row) -> Nil) -> Nil {

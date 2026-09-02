@@ -246,21 +246,21 @@ pub fn specs() -> List(Spec) {
         "narrowed_case",
         "infer_callee takes the module export unless field_is_callable, which needs a shared accessor; println is on one variant of two",
       ),
-      owner: Some("PR2"),
+      owner: Some(manifest.owner_pr2),
     ),
     Spec(
       ..narrowed(
         "direct_construction",
         "girard already records construction narrowing - `infer_expr_assignment` calls `record_variant` on the constructed variant - so the sole cause is `infer_callee` precedence, and the change that fixes `narrowed_case` fixes this row",
       ),
-      owner: Some("PR2"),
+      owner: Some(manifest.owner_pr2),
     ),
     Spec(
       ..narrowed(
         "alias_let",
         "narrowing survives `let io = l` after `let assert Loud(..) = l` in the compiler; girard cannot express that, because `env.variants` is keyed by the pattern-bound name",
       ),
-      owner: Some("PR4"),
+      owner: Some(manifest.owner_pr4),
     ),
     Spec(
       ..narrowed(
@@ -270,7 +270,7 @@ pub fn specs() -> List(Spec) {
       module_availability: Some(manifest.undeclared),
       module_member: None,
       module_return: None,
-      owner: Some("PR4"),
+      owner: Some(manifest.owner_pr4),
     ),
     Spec(
       ..logger(
@@ -288,7 +288,7 @@ pub fn specs() -> List(Spec) {
       ]),
       missing_variants: Some([]),
       reason: Some(manifest.reason_index),
-      owner: Some("PR2"),
+      owner: Some(manifest.owner_pr2),
     ),
     Spec(
       ..logger(
@@ -347,28 +347,28 @@ pub fn specs() -> List(Spec) {
         "narrowed_subject",
         "the subject of the `case` is the receiver itself and no `as` rebinds it. Measured: with the module out of scope girard reads the field, so `env.variants` already expresses this narrowing and only `infer_callee` precedence loses it",
       ),
-      owner: Some("PR2"),
+      owner: Some(manifest.owner_pr2),
     ),
     Spec(
       ..narrowed(
         "alias_block",
         "the narrowed value leaves a block through its final expression. Measured: with the module out of scope girard errors, so `env.variants` cannot express it - `let io = { .. l }` binds a variable to a variable and no constructor call is in reach, exactly as in `alias_let`",
       ),
-      owner: Some("PR4"),
+      owner: Some(manifest.owner_pr4),
     ),
     Spec(
       ..narrowed(
         "let_assert",
         "`let assert Loud(..) as io = l` narrows and binds in one pattern, the shortest path from a pattern to a narrowed receiver. Measured: girard reads the field with the module out of scope, so this is call-position precedence alone",
       ),
-      owner: Some("PR2"),
+      owner: Some(manifest.owner_pr2),
     ),
     Spec(
       ..narrowed(
         "alternatives_agree",
         "both alternatives of the pattern are `Loud`, so the narrowing is to a single variant and the field stays in reach through an alternative pattern. Measured: girard reads the field with the module out of scope, so this is call-position precedence alone",
       ),
-      owner: Some("PR2"),
+      owner: Some(manifest.owner_pr2),
     ),
     logger(
       "closure_param",
@@ -454,7 +454,7 @@ pub fn specs() -> List(Spec) {
         "the collision is with an import alias rather than a module path's final segment. Measured: girard reads the field with the module out of scope, so this is call-position precedence alone. The row pins only the type answer for now - telling an alias from the canonical module path needs a resolution API girard does not yet expose, and would extend this row rather than add one",
       ),
       receiver: "printer",
-      owner: Some("PR2"),
+      owner: Some(manifest.owner_pr2),
     ),
     Spec(
       ..narrowed(
@@ -462,7 +462,7 @@ pub fn specs() -> List(Spec) {
         "the narrowed type is declared in a second module, pinning that variant narrowing - and the field index the narrowed variant grants - agree across a module boundary. Measured: girard reads the field with the module out of scope, so the module boundary costs nothing and this is call-position precedence alone",
       ),
       narrowed_to: Some("Near"),
-      owner: Some("PR2"),
+      owner: Some(manifest.owner_pr2),
     ),
     Spec(
       ..narrowed(

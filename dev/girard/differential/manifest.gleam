@@ -31,8 +31,9 @@ import gleam/string
 // Schema
 //
 // The row and its nested objects. The vocabularies (`kind`, `access`,
-// `syntax_site`, `expect`, the availabilities and `reason`) are plain strings
-// with the constants below; a decoder rejects anything outside them.
+// `syntax_site`, `expect`, the availabilities, `reason` and `owner`) are plain
+// strings with the constants below; `row_decoder` rejects anything outside
+// them, so no reader downstream has to.
 
 /// A line/column position in a compiler diagnostic.
 pub type At {
@@ -168,6 +169,14 @@ pub const reason_type = "type"
 pub const status_ok = "ok"
 
 pub const status_error = "error"
+
+/// The two owners a divergence can be assigned to: the change that must remove
+/// it. Constants rather than literals because the ratchet in
+/// `test/differential_test` is stated in terms of *these two* PRs — an owner
+/// outside them is a divergence nobody has taken.
+pub const owner_pr2 = "PR2"
+
+pub const owner_pr4 = "PR4"
 
 /// The third decoded answer: an `ok` return matching neither the module's nor
 /// any candidate's. Always a divergence, and a broken fixture far more often
@@ -389,6 +398,20 @@ fn manifest_decoder() -> Decoder(Manifest) {
   decode.success(Manifest(gleam:, generated:, cases:))
 }
 
+// One member of a closed vocabulary. Without this the enumerated fields are
+// unrestricted strings, and a typo in one sails through the whole suite: every
+// non-`probe` kind reads as a resolution row, and the ratchet asks only that a
+// divergence names *some* owner, so `"resoluton"` and `"PR99"` would both show
+// green.
+fn one_of(field: String, vocabulary: List(String)) -> Decoder(String) {
+  use raw <- decode.then(decode.string)
+  case list.contains(vocabulary, raw) {
+    True -> decode.success(raw)
+    False ->
+      decode.failure("", field <> ", one of " <> string.join(vocabulary, " | "))
+  }
+}
+
 fn digest_decoder() -> Decoder(String) {
   use raw <- decode.then(decode.string)
   case is_digest(raw) {
@@ -408,18 +431,38 @@ fn is_digest(raw: String) -> Bool {
 fn row_decoder() -> Decoder(Row) {
   use fixture <- decode.field("fixture", decode.string)
   use function <- decode.field("function", decode.string)
-  use kind <- decode.field("kind", decode.string)
-  use access <- decode.field("access", decode.string)
-  use syntax_site <- decode.field("syntax_site", decode.string)
-  use expect <- decode.field("expect", decode.string)
+  use kind <- decode.field(
+    "kind",
+    one_of("kind", [kind_resolution, kind_probe]),
+  )
+  use access <- decode.field(
+    "access",
+    one_of("access", [access_call, access_projection]),
+  )
+  use syntax_site <- decode.field(
+    "syntax_site",
+    one_of("syntax_site", [site_call, site_pipe, site_bare]),
+  )
+  use expect <- decode.field(
+    "expect",
+    one_of("expect", [expect_field, expect_module, expect_error]),
+  )
   use field_availability <- decode.field(
     "field_availability",
-    decode.optional(decode.string),
+    decode.optional(
+      one_of("field_availability", [
+        shared,
+        variant,
+        unavailable,
+        undeclared,
+        unknown_receiver,
+      ]),
+    ),
   )
   use narrowed_to <- decode.field("narrowed_to", decode.optional(decode.string))
   use module_availability <- decode.field(
     "module_availability",
-    decode.optional(decode.string),
+    decode.optional(one_of("module_availability", [available, undeclared])),
   )
   use field_member <- decode.field(
     "field_member",
@@ -445,7 +488,12 @@ fn row_decoder() -> Decoder(Row) {
     "missing_variants",
     decode.optional(decode.list(decode.string)),
   )
-  use reason <- decode.field("reason", decode.optional(decode.string))
+  use reason <- decode.field(
+    "reason",
+    decode.optional(
+      one_of("reason", [reason_partial, reason_index, reason_type]),
+    ),
+  )
   use derivable <- decode.field("derivable", decode.optional(decode.bool))
   use forced_field <- decode.field(
     "forced_field",
@@ -479,7 +527,10 @@ fn row_decoder() -> Decoder(Row) {
     decode.optional(decode.string),
   )
   use divergent <- decode.field("divergent", decode.bool)
-  use owner <- decode.field("owner", decode.optional(decode.string))
+  use owner <- decode.field(
+    "owner",
+    decode.optional(one_of("owner", [owner_pr2, owner_pr4])),
+  )
   use why <- decode.field("why", decode.string)
   decode.success(Row(
     fixture:,
