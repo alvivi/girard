@@ -190,6 +190,11 @@ const unreachable = ". The field branch is genuinely out of reach here, which th
 // inferred variant on the value's type, where a re-binding keeps it.
 const rebinding = "the narrowing is lost at the re-binding because `env.variants` follows the name, not the value; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
 
+// What the rows that flip when a field access selects by variant share: the
+// constructed value reaches the receiver carrying the variant it was built
+// with, and the accessor lookup reads it off the type.
+const on_the_type = ". girard agrees because the value's type carries the variant it was constructed with, and a field access selects that variant's own accessors"
+
 // What the keep rows added for the type-carried variant share: the compiler
 // carries the inferred variant on the value's type, so a value that reaches the
 // receiver already known to be `Loud` keeps that knowledge whatever route it
@@ -500,32 +505,32 @@ pub fn specs() -> List(Spec) {
     narrowed(
       "tuple_pattern",
       "a tuple pattern is structural, so `let #(io, _) = #(Loud(f), 1)` binds `io` to the first element's own type, variant and all"
-        <> not_a_shape,
+        <> on_the_type,
     ),
     narrowed(
       "closure_returned",
       "a closure is not generalized, and a call's type is the callee's own return type, so `mk()` hands back the `Loud` the closure built"
-        <> not_a_shape,
+        <> on_the_type,
     ),
     narrowed(
       "constructor_in_variable",
       "`let mk = Loud` binds the constructor itself, so calling it returns the type `Loud(f)` would have had"
-        <> not_a_shape,
+        <> on_the_type,
     ),
     narrowed(
       "pipe_into_constructor_call",
       "a call-form pipe is a call: `f |> Loud()` is `Loud(f)`, whose type is the constructor's own"
-        <> not_a_shape,
+        <> on_the_type,
     ),
     narrowed(
       "saturated_pipe_closure",
       "a saturated pipe applies the piped value to the call's result, and that application is structural too, so `f |> mk()` is `mk()(f)` and keeps the variant"
-        <> not_a_shape,
+        <> on_the_type,
     ),
     narrowed(
       "record_update_result",
       "a record update's result is the named constructor's instantiated return, so `Loud(..l, println: f)` is known to be `Loud`"
-        <> not_a_shape,
+        <> on_the_type,
     ),
     narrowed(
       "as_passes_subject",

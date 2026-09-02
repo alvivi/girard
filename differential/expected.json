@@ -1153,10 +1153,10 @@
       "inputs_hash": "40c8fce403b6c80e864b0d60f8fdbb619032d9d74d057e7929d45895b818c20e",
       "evidence_hash": "7b7f82211262bc90a2e2c959f42d0e4275fbfabcb08b19aee4723d2de74d200e",
       "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
-      "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
-      "divergent": true,
-      "why": "a tuple pattern is structural, so `let #(io, _) = #(Loud(f), 1)` binds `io` to the first element's own type, variant and all. girard recognises the shapes a narrowing can arrive in rather than carrying it on the value's type, so it does not see this one; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
+      "divergent": false,
+      "why": "a tuple pattern is structural, so `let #(io, _) = #(Loud(f), 1)` binds `io` to the first element's own type, variant and all. girard agrees because the value's type carries the variant it was constructed with, and a field access selects that variant's own accessors"
     },
     {
       "fixture": "closure_returned",
@@ -1187,10 +1187,10 @@
       "inputs_hash": "03739f4d880a783a0380ed9035b767e53db37f5f2cfc2a64f004296af6255b7e",
       "evidence_hash": "7b7f82211262bc90a2e2c959f42d0e4275fbfabcb08b19aee4723d2de74d200e",
       "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
-      "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
-      "divergent": true,
-      "why": "a closure is not generalized, and a call's type is the callee's own return type, so `mk()` hands back the `Loud` the closure built. girard recognises the shapes a narrowing can arrive in rather than carrying it on the value's type, so it does not see this one; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
+      "divergent": false,
+      "why": "a closure is not generalized, and a call's type is the callee's own return type, so `mk()` hands back the `Loud` the closure built. girard agrees because the value's type carries the variant it was constructed with, and a field access selects that variant's own accessors"
     },
     {
       "fixture": "constructor_in_variable",
@@ -1221,10 +1221,10 @@
       "inputs_hash": "20de79d3fed92f259761834fb059770956c827acbc00854f7ebe8e4d33b12812",
       "evidence_hash": "7b7f82211262bc90a2e2c959f42d0e4275fbfabcb08b19aee4723d2de74d200e",
       "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
-      "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
-      "divergent": true,
-      "why": "`let mk = Loud` binds the constructor itself, so calling it returns the type `Loud(f)` would have had. girard recognises the shapes a narrowing can arrive in rather than carrying it on the value's type, so it does not see this one; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
+      "divergent": false,
+      "why": "`let mk = Loud` binds the constructor itself, so calling it returns the type `Loud(f)` would have had. girard agrees because the value's type carries the variant it was constructed with, and a field access selects that variant's own accessors"
     },
     {
       "fixture": "pipe_into_constructor_call",
@@ -1255,10 +1255,10 @@
       "inputs_hash": "93033b70146bd3a902e9a532333f21ef51a218bd4b16c70f71bf1854c9ef37aa",
       "evidence_hash": "7b7f82211262bc90a2e2c959f42d0e4275fbfabcb08b19aee4723d2de74d200e",
       "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
-      "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
-      "divergent": true,
-      "why": "a call-form pipe is a call: `f |> Loud()` is `Loud(f)`, whose type is the constructor's own. girard recognises the shapes a narrowing can arrive in rather than carrying it on the value's type, so it does not see this one; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
+      "divergent": false,
+      "why": "a call-form pipe is a call: `f |> Loud()` is `Loud(f)`, whose type is the constructor's own. girard agrees because the value's type carries the variant it was constructed with, and a field access selects that variant's own accessors"
     },
     {
       "fixture": "saturated_pipe_closure",
@@ -1289,10 +1289,10 @@
       "inputs_hash": "1396027b721a6a622530d5414f53b4c549768ba9339ad5960f3ade9db80b8133",
       "evidence_hash": "7b7f82211262bc90a2e2c959f42d0e4275fbfabcb08b19aee4723d2de74d200e",
       "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
-      "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
-      "divergent": true,
-      "why": "a saturated pipe applies the piped value to the call's result, and that application is structural too, so `f |> mk()` is `mk()(f)` and keeps the variant. girard recognises the shapes a narrowing can arrive in rather than carrying it on the value's type, so it does not see this one; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
+      "divergent": false,
+      "why": "a saturated pipe applies the piped value to the call's result, and that application is structural too, so `f |> mk()` is `mk()(f)` and keeps the variant. girard agrees because the value's type carries the variant it was constructed with, and a field access selects that variant's own accessors"
     },
     {
       "fixture": "record_update_result",
@@ -1323,10 +1323,10 @@
       "inputs_hash": "db8b7689435bf2cacbab62da661af03d7d0e8256e1fcdfaeeb650a5316787fb3",
       "evidence_hash": "7b7f82211262bc90a2e2c959f42d0e4275fbfabcb08b19aee4723d2de74d200e",
       "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
-      "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
-      "divergent": true,
-      "why": "a record update's result is the named constructor's instantiated return, so `Loud(..l, println: f)` is known to be `Loud`. girard recognises the shapes a narrowing can arrive in rather than carrying it on the value's type, so it does not see this one; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
+      "divergent": false,
+      "why": "a record update's result is the named constructor's instantiated return, so `Loud(..l, println: f)` is known to be `Loud`. girard agrees because the value's type carries the variant it was constructed with, and a field access selects that variant's own accessors"
     },
     {
       "fixture": "as_passes_subject",

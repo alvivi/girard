@@ -571,6 +571,18 @@ type Pending {
   PendingIndex(container: ty.Type, index: Int, result: ty.Type)
 }
 
+// A record type's field accessors: the labels every variant declares
+// compatibly, and each variant's own, in declaration order. Each map is
+// `label -> fn(record) -> field`, generalized over the type's parameters. A
+// value known to be one variant reads that variant's map, so it reaches
+// fields the other variants do not declare.
+type Accessors {
+  Accessors(
+    shared: Dict(String, ty.Scheme),
+    by_variant: List(Dict(String, ty.Scheme)),
+  )
+}
+
 type Env {
   Env(
     // Value bindings in scope: locals, parameters, top-level functions and
@@ -592,9 +604,8 @@ type Env {
     // type with the alias's parameters as variables (param ids + body), so
     // they need no re-hydration in this module's environment.
     imported_aliases: Dict(String, #(List(Int), ty.Type)),
-    // Record field accessors: type name -> label -> a scheme for
-    // `fn(record) -> field`, generalized over the type's parameters.
-    accessors: Dict(String, Dict(String, ty.Scheme)),
+    // Record field accessors, by the name of the type they belong to.
+    accessors: Dict(String, Accessors),
     // In-scope type names -> (origin module, origin name, arity). Covers types
     // defined in the current module and types brought in by unqualified
     // imports. Used during hydration to resolve a bare type name to its module
@@ -652,7 +663,7 @@ type ModuleInterface {
     // Public type aliases, resolved to a type with the alias's parameters as
     // variables (param ids + body).
     aliases: Dict(String, #(List(Int), ty.Type)),
-    accessors: Dict(String, Dict(String, ty.Scheme)),
+    accessors: Dict(String, Accessors),
     field_maps: Dict(String, List(Option(String))),
     // The modules this one imports, so a type it exposes from another module
     // (e.g. a `glance.Span` field) keeps its accessors reachable transitively.
@@ -2268,11 +2279,20 @@ fn register_custom_type(
       },
     )
 
-  // A label is accessible iff every variant declares it at the same position
-  // with the same type. (Single-variant records are the degenerate case where
-  // every label qualifies.)
+  // A label is shared iff every variant declares it at the same position with
+  // the same type. (Single-variant records are the degenerate case where every
+  // label qualifies.) A value known to be one variant reads that variant's own
+  // map instead, where every label it declares qualifies.
+  let variant_fields = list.reverse(rev_variant_fields)
   let accessors =
-    shared_accessors(list.reverse(rev_variant_fields), param_ids, return_type)
+    Accessors(
+      shared: shared_accessors(variant_fields, param_ids, return_type),
+      by_variant: list.map(variant_fields, variant_accessors(
+        _,
+        param_ids,
+        return_type,
+      )),
+    )
   let env =
     Env(
       ..env,
@@ -2310,6 +2330,29 @@ fn shared_accessors(
   }
 }
 
+// Accessor schemes for one variant's own labelled fields. This is the
+// compiler's `custom_type_accessors`: a value known to be this variant reads
+// every label the variant declares, shared with the others or not. The
+// argument type is the *unstamped* return type, so a stamped record still
+// unifies with it.
+fn variant_accessors(
+  fields: List(#(Option(String), ty.Type)),
+  param_ids: List(Int),
+  return_type: ty.Type,
+) -> Dict(String, ty.Scheme) {
+  list.fold(fields, dict.new(), fn(accessors, field) {
+    case field {
+      #(Some(label), field_type) ->
+        dict.insert(
+          accessors,
+          label,
+          ty.Scheme(param_ids, ty.Fn([return_type], field_type)),
+        )
+      #(None, _) -> accessors
+    }
+  })
+}
+
 // Look up the accessor scheme for `label` on a (resolved) record type. The
 // accessors live with whichever module defined the type — the current module,
 // or an imported one identified by the type's origin module.
@@ -2319,11 +2362,11 @@ fn accessor(
   label: String,
 ) -> Result(ty.Scheme, Error) {
   case record {
-    ty.Named(module, name, _, _) -> {
+    ty.Named(module, name, _, variant) -> {
       let accessors = accessors_of_module(env, module)
       case dict.get(accessors, name) {
-        Ok(labels) ->
-          case dict.get(labels, label) {
+        Ok(found) ->
+          case dict.get(accessors_for_variant(found, variant), label) {
             Ok(scheme) -> Ok(scheme)
             Error(_) -> Error(NoSuchField(name, label))
           }
@@ -2334,10 +2377,24 @@ fn accessor(
   }
 }
 
-fn accessors_of_module(
-  env: Env,
-  module: String,
-) -> Dict(String, Dict(String, ty.Scheme)) {
+// The accessors a record grants: the known variant's own where the value is
+// known to be one, else the labels every variant shares. A variant's map is
+// the whole answer, not an addition to the shared one, so a value known to be
+// a variant that does not declare the label has no accessor for it. An index
+// out of range falls back to the shared map, as the compiler's
+// `accessors_for_variant` does.
+fn accessors_for_variant(
+  accessors: Accessors,
+  variant: Option(Int),
+) -> Dict(String, ty.Scheme) {
+  case variant {
+    Some(index) ->
+      result.unwrap(list_at(accessors.by_variant, index), accessors.shared)
+    None -> accessors.shared
+  }
+}
+
+fn accessors_of_module(env: Env, module: String) -> Dict(String, Accessors) {
   // A type can surface from a module the current one never imports directly (a
   // helper returning another module's record), and an alias collision can evict
   // that module from the alias-keyed `modules` map — so resolve by origin name

@@ -113,17 +113,15 @@ depth.
   has to touch two files in one diff.
 
 **The suite is green and the divergences are data.** A recorded disagreement is
-the expected answer today. The thirteen that remain share one root: girard
-tracks a narrowing by the *name* it was bound under, in `env.variants`, and
-re-derives it from the shape of the expression the value came from. So it is
-lost wherever the value is re-bound under another name, arrives by a shape
-girard does not recognise, or passes through a fresh type variable girard mints
-where the compiler keeps the callee's own type — and it is wrongly kept where a
-sibling pattern rebinds the name. The compiler carries the inferred variant on
-the value's own type, where none of that applies. The change that carries the
-variant on the type must edit the manifest, flipping `divergent` from `true` to
-`false` line by line and lowering the count literal in
-`test/differential_test.gleam`.
+the expected answer today. The seven that remain share one root: girard tracks
+a narrowing by the *name* it was bound under, in `env.variants`, and re-derives
+it from the shape of the pattern or subject the value came from. So it is lost
+wherever the value is re-bound under another name or narrowed by a shape girard
+does not match — an `as` pattern, an `echo`ed subject — and it is wrongly kept
+where a sibling pattern rebinds the name. The compiler narrows the subject
+variable's own type instead. The change that narrows by type rather than by
+name must edit the manifest, flipping `divergent` from `true` to `false` line
+by line and lowering the count literal in `test/differential_test.gleam`.
 
 ## Regenerating
 
