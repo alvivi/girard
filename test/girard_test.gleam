@@ -1275,6 +1275,53 @@ pub fn signature_scheme_exposes_quantified_vars_test() {
   mono.vars |> should.equal([])
 }
 
+pub fn accessor_requires_same_position_test() {
+  // Both variants declare `y: String`, but at different positions. The compiler
+  // grants an accessor only when every variant has the label at the same index,
+  // so `io.y` is not a field here and falls through to the module's `y`.
+  let io = "pub const y: Float = 1.0"
+  let source =
+    "import io\n"
+    <> "pub type Rec {\n"
+    <> "  A(x: Int, y: String)\n"
+    <> "  B(y: String)\n"
+    <> "}\n"
+    <> "pub fn f(io: Rec) { io.y }"
+  signature_with(source, [#("io", io)], "f")
+  |> should.equal("fn(Rec) -> Float")
+}
+
+pub fn accessor_requires_same_type_test() {
+  // Same label at the same index, but different types: still no accessor, so
+  // the module export wins. Pins that comparing positions did not drop the
+  // type check.
+  let io = "pub fn f(message: String) -> Int { 1 }"
+  let source =
+    "import io\n"
+    <> "pub type Rec {\n"
+    <> "  E(f: fn(String) -> Nil)\n"
+    <> "  G(f: fn(Int) -> Nil)\n"
+    <> "}\n"
+    <> "pub fn f(io: Rec) { io.f }"
+  signature_with(source, [#("io", io)], "f")
+  |> should.equal("fn(Rec) -> fn(String) -> Int")
+}
+
+pub fn accessor_shared_at_same_position_test() {
+  // The positive control: same label, index and type in every variant, so the
+  // accessor is real and the field beats the same-named module export.
+  let io = "pub const y: Float = 1.0"
+  let source =
+    "import io\n"
+    <> "pub type Rec {\n"
+    <> "  P(y: String)\n"
+    <> "  Q(y: String)\n"
+    <> "}\n"
+    <> "pub fn f(io: Rec) { io.y }"
+  signature_with(source, [#("io", io)], "f")
+  |> should.equal("fn(Rec) -> String")
+}
+
 // Package annotation
 //
 // Annotating every module of a package in one pass, including the best-effort

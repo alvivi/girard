@@ -2139,46 +2139,42 @@ fn register_custom_type(
   let names = dict.from_list(list.zip(custom_type.parameters, param_vars))
   let return_type = Named(env.current_module, custom_type.name, param_vars)
 
-  // Build constructors, collecting each variant's labelled-field types so we
-  // can later expose accessors for labels shared across all variants.
-  let #(env, st, rev_variant_labels) =
+  // Build constructors, keeping each variant's fields in declaration order
+  // (label and type per position) so we can later expose accessors for labels
+  // shared across all variants.
+  let #(env, st, rev_variant_fields) =
     list.fold(custom_type.variants, #(env, st, []), fn(acc, variant) {
-      let #(env, st, variant_labels) = acc
-      let #(rev_field_types, labelled, st) =
-        list.fold(variant.fields, #([], dict.new(), st), fn(acc, field) {
-          let #(types_, labelled, st) = acc
+      let #(env, st, variant_fields) = acc
+      let #(rev_fields, st) =
+        list.fold(variant.fields, #([], st), fn(acc, field) {
+          let #(fields, st) = acc
           let #(t, st) = hydrate_in(env, names, st, variant_field_type(field))
-          let labelled = case field {
-            glance.LabelledVariantField(_, label) ->
-              dict.insert(labelled, label, t)
-            glance.UnlabelledVariantField(..) -> labelled
+          let label = case field {
+            glance.LabelledVariantField(_, label) -> Some(label)
+            glance.UnlabelledVariantField(..) -> None
           }
-          #([t, ..types_], labelled, st)
+          #([#(label, t), ..fields], st)
         })
-      let field_types = list.reverse(rev_field_types)
-      let ctor_type = case field_types {
+      let fields = list.reverse(rev_fields)
+      let ctor_type = case fields {
         [] -> return_type
-        _ -> Fn(field_types, return_type)
+        _ -> Fn(list.map(fields, fn(field) { field.1 }), return_type)
       }
       let env =
         register_field_map(
           env,
           variant.name,
-          list.map(variant.fields, fn(f) {
-            case f {
-              glance.LabelledVariantField(_, label) -> Some(label)
-              glance.UnlabelledVariantField(..) -> None
-            }
-          }),
+          list.map(fields, fn(field) { field.0 }),
         )
       let env = bind_value(env, variant.name, Scheme(param_ids, ctor_type))
-      #(env, st, [labelled, ..variant_labels])
+      #(env, st, [fields, ..variant_fields])
     })
 
-  // A label is accessible iff it appears in every variant with the same type.
-  // (Single-variant records are the degenerate case where every label qualifies.)
+  // A label is accessible iff every variant declares it at the same position
+  // with the same type. (Single-variant records are the degenerate case where
+  // every label qualifies.)
   let accessors =
-    shared_accessors(list.reverse(rev_variant_labels), param_ids, return_type)
+    shared_accessors(list.reverse(rev_variant_fields), param_ids, return_type)
   let env =
     Env(
       ..env,
@@ -2187,29 +2183,37 @@ fn register_custom_type(
   #(env, st)
 }
 
-// Accessor schemes for the labels present in every variant with a consistent
-// type, given each variant's `label -> field type` map.
+// Accessor schemes for the labels every variant declares at the same position
+// with the same type, given each variant's fields in declaration order. This
+// is the compiler's `get_compatible_record_fields`: it walks the first
+// variant's labelled fields by index and keeps a label only when every other
+// variant has that label, with that type, at that index.
 fn shared_accessors(
-  variants: List(Dict(String, Type)),
+  variants: List(List(#(Option(String), Type))),
   param_ids: List(Int),
   return_type: Type,
 ) -> Dict(String, Scheme) {
   case variants {
     [] -> dict.new()
     [first, ..rest] ->
-      dict.fold(first, dict.new(), fn(accessors, label, field_type) {
-        let shared =
-          list.all(rest, fn(variant) {
-            dict.get(variant, label) == Ok(field_type)
-          })
-        case shared {
-          True ->
-            dict.insert(
-              accessors,
-              label,
-              Scheme(param_ids, Fn([return_type], field_type)),
-            )
-          False -> accessors
+      list.index_fold(first, dict.new(), fn(accessors, field, index) {
+        case field {
+          #(None, _) -> accessors
+          #(Some(label), field_type) -> {
+            let shared =
+              list.all(rest, fn(variant) {
+                list_at(variant, index) == Ok(#(Some(label), field_type))
+              })
+            case shared {
+              True ->
+                dict.insert(
+                  accessors,
+                  label,
+                  Scheme(param_ids, Fn([return_type], field_type)),
+                )
+              False -> accessors
+            }
+          }
         }
       })
   }

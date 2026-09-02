@@ -275,7 +275,7 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..logger(
         "accessor_index",
-        "both variants declare `y` at one type but different positions, so the compiler grants no accessor and reads the module while girard's over-permissive `shared_accessors` reads the field. Live in projection position today, without the call-position flip",
+        "both variants declare `y` at one type but different positions, so no accessor exists and both sides read the module: `shared_accessors` compares position as well as label and type, as the compiler's `get_compatible_record_fields` does. Live in projection position, so it is independent of call-position precedence",
       ),
       label: "y",
       access: manifest.access_projection,
@@ -288,7 +288,6 @@ pub fn specs() -> List(Spec) {
       ]),
       missing_variants: Some([]),
       reason: Some(manifest.reason_index),
-      owner: Some(manifest.owner_pr2),
     ),
     Spec(
       ..logger(

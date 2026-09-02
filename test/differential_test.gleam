@@ -50,7 +50,7 @@ import simplifile
 /// How many rows the compiler and girard currently disagree on. Recomputed from
 /// the committed compiler column and a live girard run, never counted off the
 /// stored flags.
-const expected_divergences = 11
+const expected_divergences = 10
 
 /// The digest over every row's recomputed evidence digest, keyed by fixture
 /// name. Pinned here rather than only in the manifest, because a hash stored

@@ -1,6 +1,6 @@
 {
   "gleam": "1.18.0",
-  "generated": "2026-09-01",
+  "generated": "2026-09-02",
   "cases": [
     {
       "fixture": "greet",
@@ -346,11 +346,11 @@
       "inputs_hash": "e2db5d1cb1e3cc9ba5463f88c6e0595108710de25387d2265bcb3b4df2c13de1",
       "evidence_hash": "c470f6ca2f1c1fe7cad10b3ec1db2862468931b40b2d9e855a4edc706d28e450",
       "compiler": { "status": "ok", "return": "Float", "diagnostic": null, "at": null, "error_variant": null },
-      "girard": { "status": "ok", "return": "String", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Float", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
-      "divergent": true,
-      "owner": "PR2",
-      "why": "both variants declare `y` at one type but different positions, so the compiler grants no accessor and reads the module while girard's over-permissive `shared_accessors` reads the field. Live in projection position today, without the call-position flip"
+      "divergent": false,
+      "owner": null,
+      "why": "both variants declare `y` at one type but different positions, so no accessor exists and both sides read the module: `shared_accessors` compares position as well as label and type, as the compiler's `get_compatible_record_fields` does. Live in projection position, so it is independent of call-position precedence"
     },
     {
       "fixture": "accessor_type",
