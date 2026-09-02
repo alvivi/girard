@@ -61,8 +61,8 @@ pub const stdlib_version = "1.0.3"
 // The case table
 //
 // Hand-authored: `expect` is what the compiler is expected to answer, and does
-// not change as girard's resolution is corrected; `owner` assigns each
-// divergence to the change that must remove it; `why` names the mechanism.
+// not change as girard's resolution is corrected; `why` names the mechanism,
+// and for a divergence, the change that must remove it.
 
 /// One case's hand-authored claims.
 pub type Spec {
@@ -86,7 +86,6 @@ pub type Spec {
     reason: Option(String),
     derivable: Option(Bool),
     expect_girard_error_variant: Option(String),
-    owner: Option(String),
     why: String,
   )
 }
@@ -124,7 +123,6 @@ fn logger(fixture: String, why: String) -> Spec {
     reason: Some(manifest.reason_partial),
     derivable: Some(True),
     expect_girard_error_variant: None,
-    owner: None,
     why:,
   )
 }
@@ -174,7 +172,6 @@ fn probe(
     reason: None,
     derivable: None,
     expect_girard_error_variant: Some(variant),
-    owner: None,
     why:,
   )
 }
@@ -182,12 +179,20 @@ fn probe(
 // Every row whose field branch is out of reach passes today for a reason worth
 // stating in the manifest: girard under-narrows, and these rows want the
 // module. What keeps that from being an accident is the forced-field companion,
-// which must fail to compile - so the field really is unreachable, and PR 4
-// must not over-narrow it back into reach.
-const unreachable = ". The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and PR 4 must not over-narrow it back into reach"
+// which must fail to compile - so the field really is unreachable, and
+// narrowing that follows the value rather than the name must not over-narrow
+// it back into reach.
+const unreachable = ". The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and narrowing that follows the value rather than the name must not over-narrow it back into reach"
 
-// The mechanism the rows PR 2 flipped share: the narrowing girard already
-// recorded is read in call position the way projection always read it.
+// What the remaining divergences share, and the change that removes them: a
+// narrowing is keyed by the pattern-bound name in `env.variants`, so it is
+// lost when the value is re-bound under another name. The compiler carries the
+// inferred variant on the value's type, where a re-binding keeps it.
+const rebinding = "the narrowing is lost at the re-binding because `env.variants` follows the name, not the value; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
+
+// The mechanism the rows that flipped from divergent share: the narrowing
+// girard already recorded is read in call position the way projection always
+// read it.
 const field_first = "narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`"
 
 /// Every case, in the order they appear in the manifest.
@@ -254,12 +259,10 @@ pub fn specs() -> List(Spec) {
       "direct_construction",
       "construction narrowing - `infer_expr_assignment` calls `record_variant` on the constructed variant - read field-first in call position since `infer_callee` resolves through `infer_field_access`",
     ),
-    Spec(
-      ..narrowed(
-        "alias_let",
-        "narrowing survives `let io = l` after `let assert Loud(..) = l` in the compiler; girard cannot express that, because `env.variants` is keyed by the pattern-bound name",
-      ),
-      owner: Some(manifest.owner_pr4),
+    narrowed(
+      "alias_let",
+      "narrowing survives `let io = l` after `let assert Loud(..) = l` in the compiler; girard cannot express that, because `env.variants` is keyed by the pattern-bound name: "
+        <> rebinding,
     ),
     Spec(
       ..narrowed(
@@ -269,7 +272,6 @@ pub fn specs() -> List(Spec) {
       module_availability: Some(manifest.undeclared),
       module_member: None,
       module_return: None,
-      owner: Some(manifest.owner_pr4),
     ),
     Spec(
       ..logger(
@@ -291,7 +293,7 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..logger(
         "accessor_type",
-        "the regression guard for the accessor fix: same label and index, different types, so no accessor exists and the module must win - and must keep winning after PR 2",
+        "the regression guard for the accessor fix: same label and index, different types, so no accessor exists and the module must win - and must keep winning now that a reachable field beats the module",
       ),
       label: "f",
       access: manifest.access_projection,
@@ -317,7 +319,7 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..logger(
         "accessor_shared",
-        "the positive control for the accessor fix: same label, index and type, so the accessor is real and the field must win - PR 2 must not be written as `never share anything`",
+        "the positive control for the accessor fix: same label, index and type, so the accessor is real and the field must win - the positional rule must not be written as `never share anything`",
       ),
       label: "y",
       access: manifest.access_projection,
@@ -345,12 +347,10 @@ pub fn specs() -> List(Spec) {
       "the subject of the `case` is the receiver itself and no `as` rebinds it: "
         <> field_first,
     ),
-    Spec(
-      ..narrowed(
-        "alias_block",
-        "the narrowed value leaves a block through its final expression. Measured: with the module out of scope girard errors, so `env.variants` cannot express it - `let io = { .. l }` binds a variable to a variable and no constructor call is in reach, exactly as in `alias_let`",
-      ),
-      owner: Some(manifest.owner_pr4),
+    narrowed(
+      "alias_block",
+      "the narrowed value leaves a block through its final expression. Measured: with the module out of scope girard errors, so `env.variants` cannot express it - `let io = { .. l }` binds a variable to a variable and no constructor call is in reach, exactly as in `alias_let`: "
+        <> rebinding,
     ),
     narrowed(
       "let_assert",
@@ -363,7 +363,7 @@ pub fn specs() -> List(Spec) {
     ),
     logger(
       "closure_param",
-      "the closure's parameter is a fresh, annotated binding, so the narrowing outside it does not reach the receiver: passes today for the right reason, and PR 4 must not make it over-narrow",
+      "the closure's parameter is a fresh, annotated binding, so the narrowing outside it does not reach the receiver: passes today for the right reason, and narrowing that follows the value must not make it over-narrow",
     ),
     logger(
       "factory_result",
@@ -896,14 +896,9 @@ fn row(spec: Spec, staging: String) -> Row {
       girard:,
       expect_girard_error_variant: spec.expect_girard_error_variant,
       divergent: False,
-      owner: None,
       why: spec.why,
     )
-  let divergent = manifest.is_divergent(draft, girard)
-  Row(..draft, divergent:, owner: case divergent {
-    True -> spec.owner
-    False -> None
-  })
+  Row(..draft, divergent: manifest.is_divergent(draft, girard))
 }
 
 fn outcome(
@@ -937,10 +932,10 @@ fn aggregate() -> Nil {
 }
 
 // `answer` prints girard's reading of one file, with the corpus resolver. It is
-// how a row's `owner` is decided: run it on the forced-field companion, where
+// how a divergence is diagnosed: run it on the forced-field companion, where
 // no colliding module is in scope, and girard's answer says whether the
-// narrowing is expressible today — a PR 2 row, fixed by call-position
-// precedence alone — or not — a PR 4 row.
+// narrowing is expressible through `env.variants` at all — an error there
+// means it is not, and only narrowing carried on the type would reach it.
 fn answer(path: String, function: String) -> Nil {
   let assert Ok(text) = simplifile.read(path)
   io.println(describe(runner.girard_outcome(text, function)))
@@ -966,9 +961,7 @@ fn report(rows: List(Row)) -> Nil {
     io.println(
       "  "
       <> row.fixture
-      <> " ["
-      <> option.unwrap(row.owner, "UNOWNED")
-      <> "] compiler="
+      <> " compiler="
       <> describe(row.compiler)
       <> " girard="
       <> describe(row.girard),

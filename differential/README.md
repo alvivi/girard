@@ -100,13 +100,9 @@ depth.
   disagrees. The compiler and girard disagree when their statuses differ, when
   both are `ok` and decode to different branches, or when either decodes to a
   third answer nobody predicted.
-- **`owner`** is `PR2` or `PR4` — the change that must remove that divergence.
-  Present exactly when `divergent` is true, and rejected by the decoder if it is
-  anything else, so a divergence cannot be parked under an owner nobody holds.
-  `PR2` has landed and owns no row any more; it stays in the vocabulary so a
-  row cannot be handed back to it by a typo either.
-- **`why`** is a hand-written one-liner naming the mechanism. It is what makes
-  the manifest a document rather than a blob.
+- **`why`** is a hand-written one-liner naming the mechanism and, for a
+  divergence, the change that must remove it. It is what makes the manifest a
+  document rather than a blob.
 - **`inputs_hash` and `evidence_hash`** answer two different questions: what was
   compiled, and what came out. CI re-runs only girard, so editing a fixture would
   otherwise invalidate the committed compiler evidence while every other
@@ -116,11 +112,12 @@ depth.
   has to touch two files in one diff.
 
 **The suite is green and the divergences are data.** A recorded disagreement is
-the expected answer today. PR 2 — field-first resolution in call position,
-positional shared accessors, and a callee's field map following the branch it
-resolved to — flipped its eight rows; the three that remain are PR 4's, and it
-must edit the manifest the same way, flipping `divergent` from `true` to `false`
-line by line and lowering the count literal in `test/differential_test.gleam`.
+the expected answer today. The three that remain share one mechanism: a
+narrowing is keyed by the pattern-bound name in `env.variants`, so re-binding
+the value under another name loses it where the compiler, carrying the inferred
+variant on the type, keeps it. The change that carries the variant on the type
+must edit the manifest, flipping `divergent` from `true` to `false` line by line
+and lowering the count literal in `test/differential_test.gleam`.
 
 ## Regenerating
 
@@ -157,12 +154,12 @@ pointing at the driver rather than at a diff.
 
 `gleam run -m girard/differential answer <path> <function>` prints girard's
 reading of one file with the corpus resolver. Run it on a forced-field
-companion, where no colliding module is in scope, to decide whether a new
-divergence is PR 4's: girard erroring there means the narrowing is not yet
-expressible through `env.variants`, which is what PR 4 replaces. Girard reading
-the field there while the base row still reads the module would mean call
-position and projection have drifted apart again, which PR 2 closed and nothing
-should reopen.
+companion, where no colliding module is in scope, to diagnose a new divergence:
+girard erroring there means the narrowing is not expressible through
+`env.variants` at all, and only narrowing carried on the type would reach it.
+Girard reading the field there while the base row still reads the module would
+mean call position and projection have drifted apart again, which the shared
+resolver closed and nothing should reopen.
 
 ## Not covered
 

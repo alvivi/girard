@@ -4,9 +4,9 @@
 //// (`scripts/gen-differential.sh`) wrote with a pinned gleam 1.18.0.
 ////
 //// **The suite is green and the divergences are data.** The manifest records
-//// each disagreement as *expected*, with the change that must remove it in
-//// `owner`; PR 2 and PR 4 have to edit the manifest to land, and the flip is a
-//// reviewable diff. What stops the ratchet being walked around is that nothing
+//// each disagreement as *expected*, with the mechanism and the change that must
+//// remove it in `why`; that change has to edit the manifest to land, and the
+//// flip is a reviewable diff. What stops the ratchet being walked around is that nothing
 //// here trusts a stored value it could have recomputed: `divergent` is derived
 //// from the committed compiler column and a live girard run, both digests are
 //// recomputed from the tree and the outcome objects, and the aggregate and the
@@ -15,8 +15,8 @@
 ////
 //// All seven read the manifest through `manifest.decode`, which is where the
 //// enumerated fields are checked against their vocabularies — a typo in `kind`
-//// or `owner` is invisible to every assertion below, so the rejection itself is
-//// tested first.
+//// or `reason` is invisible to every assertion below, so the rejection itself
+//// is tested first.
 ////
 //// The seven assertions:
 ////
@@ -44,9 +44,9 @@ import simplifile
 
 // The ratchet
 //
-// PR 2 lowered the count to the rows PR 4 owns; PR 4 lowers it to zero. Nobody
-// can quietly widen it, and nobody can edit a committed compiler result without
-// moving the aggregate.
+// A change that removes a divergence lowers the count; nothing else may touch
+// it. Nobody can quietly widen it, and nobody can edit a committed compiler
+// result without moving the aggregate.
 
 /// How many rows the compiler and girard currently disagree on. Recomputed from
 /// the committed compiler column and a live girard run, never counted off the
@@ -61,9 +61,9 @@ const evidence_aggregate = "89994a4a088e89fd351a19612d65d4ba5510d00b4a0e85fcfc49
 // The vocabularies are closed
 //
 // Nothing below can catch a misspelled enumerated value: every non-`probe` kind
-// reads as a resolution row, and the ratchet asks only that a divergence names
-// *some* owner, so `"resoluton"` and `"PR99"` would both show green. The
-// decoder rejects them instead, and this is the test that it does.
+// reads as a resolution row, and a misspelled `reason` is just a divergence
+// with a different story, so `"resoluton"` and `"partal"` would both show
+// green. The decoder rejects them instead, and this is the test that it does.
 
 pub fn manifest_vocabularies_are_closed_test() {
   use #(field, from, to) <- list.each([
@@ -87,7 +87,6 @@ pub fn manifest_vocabularies_are_closed_test() {
       "\"module_availability\": \"availible\"",
     ),
     #("reason", "\"reason\": \"partial\"", "\"reason\": \"partal\""),
-    #("owner", "\"owner\": \"PR4\"", "\"owner\": \"PR99\""),
   ])
   let text = manifest_text()
   let mutated = string.replace(text, from, to)
@@ -259,12 +258,6 @@ pub fn divergence_is_recomputed_and_counted_test() {
               <> bool_text(divergent),
           )
       }
-      case divergent, row.owner {
-        True, None -> fail(row, "diverges but names no owner")
-        False, Some(owner) ->
-          fail(row, "does not diverge but is owned by " <> owner)
-        _, _ -> Nil
-      }
       divergent
     })
     |> list.length
@@ -276,7 +269,7 @@ pub fn divergence_is_recomputed_and_counted_test() {
         <> int.to_string(divergences)
         <> " divergences, not "
         <> int.to_string(expected_divergences)
-        <> ". PR 4 lowers this literal; nothing else may raise it"
+        <> ". The change that removes a divergence lowers this literal; nothing else may raise it"
       }
   }
 }
