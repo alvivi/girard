@@ -44,18 +44,19 @@ import simplifile
 
 // The ratchet
 //
-// PR 2 lowers the count, PR 4 lowers it to zero. Nobody can quietly widen it,
+// PR 2 lowered the count to the rows PR 4 owns; PR 4 lowers it to zero.
+// Nobody can quietly widen it,
 // and nobody can edit a committed compiler result without moving the aggregate.
 
 /// How many rows the compiler and girard currently disagree on. Recomputed from
 /// the committed compiler column and a live girard run, never counted off the
 /// stored flags.
-const expected_divergences = 10
+const expected_divergences = 3
 
 /// The digest over every row's recomputed evidence digest, keyed by fixture
 /// name. Pinned here rather than only in the manifest, because a hash stored
 /// beside the data it protects is edited in the same keystroke.
-const evidence_aggregate = "381cc19d81342731e965d79587d92e480031d012784e41cf5d42dc13be45f6bd"
+const evidence_aggregate = "20a463f85ff99cc7eb1120c514d74a29caf299044f745ccf84bf5aa7eb793ea4"
 
 // The vocabularies are closed
 //
@@ -86,7 +87,7 @@ pub fn manifest_vocabularies_are_closed_test() {
       "\"module_availability\": \"availible\"",
     ),
     #("reason", "\"reason\": \"partial\"", "\"reason\": \"partal\""),
-    #("owner", "\"owner\": \"PR2\"", "\"owner\": \"PR99\""),
+    #("owner", "\"owner\": \"PR4\"", "\"owner\": \"PR99\""),
   ])
   let text = manifest_text()
   let mutated = string.replace(text, from, to)
@@ -275,7 +276,7 @@ pub fn divergence_is_recomputed_and_counted_test() {
         <> int.to_string(divergences)
         <> " divergences, not "
         <> int.to_string(expected_divergences)
-        <> ". PR 2 and PR 4 lower this literal; nothing else may raise it"
+        <> ". PR 4 lowers this literal; nothing else may raise it"
       }
   }
 }

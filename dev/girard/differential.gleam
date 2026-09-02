@@ -230,7 +230,7 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..narrowed(
         "projection_narrowed",
-        "already agrees: the non-call path consults `env.variants` first, so `Ctor(..) as v` narrowing reaches projections today. Its call-position twin `narrowed_case` diverges - one pattern, two paths, opposite answers",
+        "the projection path consults `env.variants` first, so `Ctor(..) as v` narrowing reaches projections; its call-position twin `narrowed_case` now resolves through the same path and agrees too",
       ),
       label: "n",
       access: manifest.access_projection,
@@ -241,19 +241,13 @@ pub fn specs() -> List(Spec) {
       module_member: Some("String"),
       module_return: Some("String"),
     ),
-    Spec(
-      ..narrowed(
-        "narrowed_case",
-        "infer_callee takes the module export unless field_is_callable, which needs a shared accessor; println is on one variant of two",
-      ),
-      owner: Some(manifest.owner_pr2),
+    narrowed(
+      "narrowed_case",
+      "narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`: a reachable variant field wins over the module export exactly as it does in projection",
     ),
-    Spec(
-      ..narrowed(
-        "direct_construction",
-        "girard already records construction narrowing - `infer_expr_assignment` calls `record_variant` on the constructed variant - so the sole cause is `infer_callee` precedence, and the change that fixes `narrowed_case` fixes this row",
-      ),
-      owner: Some(manifest.owner_pr2),
+    narrowed(
+      "direct_construction",
+      "construction narrowing - `infer_expr_assignment` calls `record_variant` on the constructed variant - read field-first in call position since `infer_callee` resolves through `infer_field_access`",
     ),
     Spec(
       ..narrowed(
@@ -341,12 +335,9 @@ pub fn specs() -> List(Spec) {
       field_availability: Some(manifest.shared),
       narrowed_to: None,
     ),
-    Spec(
-      ..narrowed(
-        "narrowed_subject",
-        "the subject of the `case` is the receiver itself and no `as` rebinds it. Measured: with the module out of scope girard reads the field, so `env.variants` already expresses this narrowing and only `infer_callee` precedence loses it",
-      ),
-      owner: Some(manifest.owner_pr2),
+    narrowed(
+      "narrowed_subject",
+      "the subject of the `case` is the receiver itself and no `as` rebinds it: narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`",
     ),
     Spec(
       ..narrowed(
@@ -355,19 +346,13 @@ pub fn specs() -> List(Spec) {
       ),
       owner: Some(manifest.owner_pr4),
     ),
-    Spec(
-      ..narrowed(
-        "let_assert",
-        "`let assert Loud(..) as io = l` narrows and binds in one pattern, the shortest path from a pattern to a narrowed receiver. Measured: girard reads the field with the module out of scope, so this is call-position precedence alone",
-      ),
-      owner: Some(manifest.owner_pr2),
+    narrowed(
+      "let_assert",
+      "`let assert Loud(..) as io = l` narrows and binds in one pattern, the shortest path from a pattern to a narrowed receiver: narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`",
     ),
-    Spec(
-      ..narrowed(
-        "alternatives_agree",
-        "both alternatives of the pattern are `Loud`, so the narrowing is to a single variant and the field stays in reach through an alternative pattern. Measured: girard reads the field with the module out of scope, so this is call-position precedence alone",
-      ),
-      owner: Some(manifest.owner_pr2),
+    narrowed(
+      "alternatives_agree",
+      "both alternatives of the pattern are `Loud`, so the narrowing is to a single variant and the field stays in reach through an alternative pattern: `agree_variants` keeps a narrowing every alternative records the same constructor for, and it is read field-first in call position since `infer_callee` resolves through `infer_field_access`",
     ),
     logger(
       "closure_param",
@@ -380,7 +365,7 @@ pub fn specs() -> List(Spec) {
     ),
     logger(
       "alternatives_disagree",
-      "the alternatives are `Loud` and `Quiet`, so no single variant is narrowed to and the field is out of reach: the row that stops PR 2 from narrowing to the first alternative"
+      "the alternatives are `Loud` and `Quiet`, so no single variant is narrowed to and the field is out of reach: `agree_variants` drops a narrowing the alternatives disagree on before the body is checked under each of them, so neither alternative reads the first one's field"
         <> unreachable,
     ),
     logger(
@@ -406,7 +391,7 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..narrowed(
         "pipe_narrowed",
-        "a bare pipe target is inferred through `infer_expr` into the field-preferring `infer_field_access`, where a call goes through the module-preferring `infer_callee` - opposite precedences, so this row may agree where its call twin diverges",
+        "a bare pipe target is inferred through `infer_expr` into `infer_field_access`, the one resolver a call also reaches through `infer_callee`, so a pipe target and a call read the same field",
       ),
       syntax_site: manifest.site_pipe,
     ),
@@ -421,7 +406,7 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..narrowed(
         "use_guard",
-        "a `use` target is the callee of a `Call` in glance, so the same call-position derivation applies. The shadow module's `guard` is deliberately monomorphic, unlike `gleam/bool.guard`, which is what keeps this row derivable",
+        "a `use` target is the callee of a `Call` in glance, resolved through `infer_callee` like any call, so the same field-first derivation applies. The shadow module's `guard` is deliberately monomorphic, unlike `gleam/bool.guard`, which is what keeps this row derivable",
       ),
       label: "guard",
       narrowed_to: Some("Wrapped"),
@@ -450,18 +435,16 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..narrowed(
         "aliased_import",
-        "the collision is with an import alias rather than a module path's final segment. Measured: girard reads the field with the module out of scope, so this is call-position precedence alone. The row pins only the type answer for now - telling an alias from the canonical module path needs a resolution API girard does not yet expose, and would extend this row rather than add one",
+        "the collision is with an import alias rather than a module path's final segment: narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`. The row pins only the type answer for now - telling an alias from the canonical module path needs a resolution API girard does not yet expose, and would extend this row rather than add one",
       ),
       receiver: "printer",
-      owner: Some(manifest.owner_pr2),
     ),
     Spec(
       ..narrowed(
         "imported_narrowed",
-        "the narrowed type is declared in a second module, pinning that variant narrowing - and the field index the narrowed variant grants - agree across a module boundary. Measured: girard reads the field with the module out of scope, so the module boundary costs nothing and this is call-position precedence alone",
+        "the narrowed type is declared in a second module, pinning that variant narrowing - and the field index the narrowed variant grants - agree across a module boundary: narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`, and the module boundary costs nothing",
       ),
       narrowed_to: Some("Near"),
-      owner: Some(manifest.owner_pr2),
     ),
     Spec(
       ..narrowed(
@@ -497,6 +480,13 @@ pub fn specs() -> List(Spec) {
       "nosuch",
       "NotARecord",
       "an unbound receiver whose name is a module in scope that does not export the label: the module branch is unavailable too, so the fallback has nothing to fall through to and both sides reject it",
+    ),
+    probe(
+      "narrowed_labelled",
+      "io",
+      "println",
+      "AmbiguousCall",
+      "a record-selected callee has no field map, so a same-named module's labels must not apply: the narrowed receiver reads the field, and `message:` is then an unexpected labelled argument on both sides - girard at AmbiguousCall where the compiler reports `Unexpected labelled argument`",
     ),
   ]
 }

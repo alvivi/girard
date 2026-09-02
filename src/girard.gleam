@@ -605,11 +605,11 @@ type Env {
     // reorder labelled and shorthand arguments at call/pattern sites.
     field_maps: Dict(String, List(Option(String))),
     // Variables that a pattern has narrowed to a specific constructor variant
-    // (e.g. `Element(..) as e`), mapping the variable to that variant's
+    // (e.g. `Element(..) as e`), mapping the variable to that variant and its
     // `label -> field type` for the bound value. This lets `e.field` reach a
     // field present in only some variants, mirroring the compiler's inferred
     // variant narrowing. Field types are tied to the variable's own type.
-    variants: Dict(String, Dict(String, Type)),
+    variants: Dict(String, Narrowed),
     // The name of the module currently being inferred. Local types are minted
     // with this module so they stay distinct from imported types.
     current_module: String,
@@ -2465,8 +2465,15 @@ fn infer_expr_inner(
         None -> Ok(#(prelude_nil(), st))
       }
 
-    glance.FieldAccess(_, container, label) ->
-      infer_field_access(env, st, container, label)
+    glance.FieldAccess(_, container, label) -> {
+      use #(type_, _, st) <- result.try(infer_field_access(
+        env,
+        st,
+        container,
+        label,
+      ))
+      Ok(#(type_, st))
+    }
 
     glance.RecordUpdate(_, module, constructor, record, fields) ->
       infer_record_update(env, st, module, constructor, record, fields)
@@ -2536,39 +2543,49 @@ fn infer_bit_segment(
   })
 }
 
+// Which branch a `name.label` access took. A call reads it to pick the
+// callee's field map, which is a property of the branch, not of the alias.
+type Access {
+  // A record field: the compiler's `RecordAccess`, which has no field map.
+  Field
+  // The export `label` of the module bound to `alias`.
+  Export(alias: String)
+}
+
+// The one resolver for `name.label`, in projection and in call position
+// alike. The compiler's rule: a valid record access wins unconditionally, a
+// failing one falls through to a same-named module export, and the record
+// error is reported only when neither exists. A variable narrowed to a
+// variant by a pattern (`Ctor(..) as v`) resolves `v.field` from that
+// variant's recorded fields, reaching fields not shared by every variant.
 fn infer_field_access(
   env: Env,
   st: State,
   container: glance.Expression,
   label: String,
-) -> Result(#(Type, State), Error) {
-  // Resolve the same `name.label` syntax in this order: a field recorded by
-  // variant narrowing; a field on a bound record value; a same-named module
-  // export; then a field on any other record expression. `infer_callee` refines
-  // this order when the access is immediately called.
-  // A variable narrowed to a variant by a pattern (`Ctor(..) as v`) resolves
-  // `v.field` from that variant's recorded fields, reaching fields not shared
-  // by every variant.
+) -> Result(#(Type, Access, State), Error) {
   let variant_field = case container {
     glance.Variable(_, name) ->
       case dict.get(env.variants, name) {
-        Ok(fields) -> dict.get(fields, label)
+        Ok(narrowed) -> dict.get(narrowed.fields, label)
         Error(_) -> Error(Nil)
       }
     _ -> Error(Nil)
   }
-  // Precompute a possible qualified module export; a bound record field may
-  // still take precedence over it.
+  // Precompute a possible qualified module export; a record field takes
+  // precedence over it wherever one is reachable.
   let module_access = case container {
     glance.Variable(_, name) ->
       case dict.get(env.modules, name) {
-        Ok(interface) -> dict.get(interface.values, label)
+        Ok(interface) ->
+          dict.get(interface.values, label)
+          |> result.map(fn(scheme) { #(name, scheme) })
         Error(_) -> Error(Nil)
       }
     _ -> Error(Nil)
   }
   case variant_field {
-    Ok(field) -> Ok(#(field, st))
+    Ok(field) -> Ok(#(field, Field, st))
     Error(_) ->
       case container {
         glance.Variable(_, name) ->
@@ -2581,6 +2598,31 @@ fn infer_field_access(
   }
 }
 
+// Instantiate a module export: the branch a record access fell through to.
+fn module_export(
+  st: State,
+  export: #(String, Scheme),
+) -> Result(#(Type, Access, State), Error) {
+  let #(alias, scheme) = export
+  let #(type_, st) = instantiate(st, scheme)
+  Ok(#(type_, Export(alias), st))
+}
+
+// Defer `container.label` until inference fixes the container's type.
+fn pending_field(
+  st: State,
+  container_type: Type,
+  label: String,
+) -> Result(#(Type, Access, State), Error) {
+  let #(field, st) = fresh(st)
+  let st =
+    State(..st, pending: [
+      PendingField(container_type, label, field),
+      ..st.pending
+    ])
+  Ok(#(field, Field, st))
+}
+
 // Field access where the container names a bound value: prefer a record field
 // when the value's type has it, else a same-named module export.
 fn value_field(
@@ -2588,17 +2630,20 @@ fn value_field(
   st: State,
   container: glance.Expression,
   label: String,
-  module_access: Result(Scheme, Nil),
-) -> Result(#(Type, State), Error) {
+  module_access: Result(#(String, Scheme), Nil),
+) -> Result(#(Type, Access, State), Error) {
   use #(container_type, st) <- result.try(infer_expr(env, st, container))
   case resolve(st, container_type) {
     Named(_, _, _) as record ->
       case accessor(env, record, label) {
-        Ok(_) -> field_type(env, st, record, label)
+        Ok(_) -> {
+          use #(field, st) <- result.try(field_type(env, st, record, label))
+          Ok(#(field, Field, st))
+        }
         // Not a field of this record; a same-named module may export it.
         Error(field_error) ->
           case module_access {
-            Ok(scheme) -> Ok(instantiate(st, scheme))
+            Ok(export) -> module_export(st, export)
             Error(_) -> Error(field_error)
           }
       }
@@ -2606,20 +2651,12 @@ fn value_field(
     // otherwise defer until inference fixes the type.
     Var(_) ->
       case module_access {
-        Ok(scheme) -> Ok(instantiate(st, scheme))
-        Error(_) -> {
-          let #(field, st) = fresh(st)
-          let st =
-            State(..st, pending: [
-              PendingField(container_type, label, field),
-              ..st.pending
-            ])
-          Ok(#(field, st))
-        }
+        Ok(export) -> module_export(st, export)
+        Error(_) -> pending_field(st, container_type, label)
       }
     _ ->
       case module_access {
-        Ok(scheme) -> Ok(instantiate(st, scheme))
+        Ok(export) -> module_export(st, export)
         Error(_) -> Error(NotARecord)
       }
   }
@@ -2632,26 +2669,18 @@ fn module_or_record(
   st: State,
   container: glance.Expression,
   label: String,
-  module_access: Result(Scheme, Nil),
-) -> Result(#(Type, State), Error) {
+  module_access: Result(#(String, Scheme), Nil),
+) -> Result(#(Type, Access, State), Error) {
   case module_access {
-    Ok(scheme) -> Ok(instantiate(st, scheme))
+    Ok(export) -> module_export(st, export)
     Error(_) -> {
       use #(container_type, st) <- result.try(infer_expr(env, st, container))
       case resolve(st, container_type) {
         Named(_, _, _) as record -> {
           use #(field, st) <- result.try(field_type(env, st, record, label))
-          Ok(#(field, st))
+          Ok(#(field, Field, st))
         }
-        Var(_) -> {
-          let #(field, st) = fresh(st)
-          let st =
-            State(..st, pending: [
-              PendingField(container_type, label, field),
-              ..st.pending
-            ])
-          Ok(#(field, st))
-        }
+        Var(_) -> pending_field(st, container_type, label)
         _ -> Error(NotARecord)
       }
     }
@@ -2803,6 +2832,13 @@ fn is_upper(name: String) -> Bool {
   }
 }
 
+// A variable narrowed to one constructor variant: the constructor as written
+// in the pattern, and that variant's `label -> field type` for the bound
+// value.
+type Narrowed {
+  Narrowed(constructor: #(Option(String), String), fields: Dict(String, Type))
+}
+
 // Record, for a variable bound by `Ctor(..) as name`, that variant's labelled
 // fields with types tied to `value_type` (the variable's own type). Later
 // `name.field` reads from this even when the field is absent from other
@@ -2836,10 +2872,10 @@ fn record_variant(
     Ok(#(fields, st))
   }
   case recorded {
-    Ok(#(fields, st)) -> #(
-      Env(..env, variants: dict.insert(env.variants, name, fields)),
-      st,
-    )
+    Ok(#(fields, st)) -> {
+      let narrowed = Narrowed(constructor: #(module, constructor), fields:)
+      #(Env(..env, variants: dict.insert(env.variants, name, narrowed)), st)
+    }
     Error(_) -> #(env, st)
   }
 }
@@ -2939,62 +2975,51 @@ fn infer_lambda(
   Ok(#(Fn(param_types, body_type), st))
 }
 
-// Infer the callee of a call. In call position a same-named module export
-// wins over a non-callable record field of a shadowing value. A callable field
-// still wins; outside call position ordinary field access wins. Both cases
-// delegate to `infer_field_access` when the module export is not selected.
+// Infer the callee of a call, returning its type and its field map when one
+// is known. A `name.label` callee resolves exactly as a projection does,
+// through `infer_field_access`, and its field map follows the branch that
+// won: a module export's own map, or none at all for a record field — the
+// compiler's `RecordAccess` has no field map, so a call on a field accepts no
+// labelled arguments even when a same-named module exports a labelled
+// function under that label. A bare name takes the map registered for it.
 fn infer_callee(
   env: Env,
   st: State,
   function: glance.Expression,
-) -> Result(#(Type, State), Error) {
+) -> Result(#(Type, Result(List(Option(String)), Nil), State), Error) {
   case function {
-    glance.FieldAccess(_, glance.Variable(_, name), label) -> {
-      let module_export = case dict.get(env.modules, name) {
-        Ok(interface) -> dict.get(interface.values, label)
-        Error(_) -> Error(Nil)
+    glance.FieldAccess(_, glance.Variable(_, _) as container, label) -> {
+      use #(type_, access, st) <- result.try(infer_field_access(
+        env,
+        st,
+        container,
+        label,
+      ))
+      let labels = case access {
+        Export(alias) -> module_field_map(env, alias, label)
+        Field -> Error(Nil)
       }
-      // A callable field on the local value takes precedence; otherwise use the
-      // module export when present.
-      case module_export, field_is_callable(env, st, name, label) {
-        Ok(scheme), False -> {
-          let #(type_, st) = instantiate(st, scheme)
-          Ok(#(type_, record(st, span(function), type_)))
-        }
-        _, _ -> infer_expr(env, st, function)
-      }
+      Ok(#(type_, labels, record(st, span(function), type_)))
     }
-    _ -> infer_expr(env, st, function)
-  }
-}
-
-// Whether `name` is a local value whose `label` field is a function type — the
-// signal that `name.label(..)` calls that field rather than a same-named
-// module export. Inspects only the field's shape; any state changes from
-// instantiation are discarded.
-fn field_is_callable(env: Env, st: State, name: String, label: String) -> Bool {
-  case dict.get(env.values, name) {
-    Error(_) -> False
-    Ok(scheme) -> {
-      let #(value_type, st) = instantiate(st, scheme)
-      case resolve(st, value_type) {
-        Named(_, _, _) as record -> field_label_is_fn(env, st, record, label)
-        _ -> False
-      }
+    glance.Variable(_, name) -> {
+      use #(type_, st) <- result.try(infer_expr(env, st, function))
+      Ok(#(type_, dict.get(env.field_maps, name), st))
+    }
+    _ -> {
+      use #(type_, st) <- result.try(infer_expr(env, st, function))
+      Ok(#(type_, Error(Nil), st))
     }
   }
 }
 
-// Whether `record`'s `label` field resolves to a function type.
-fn field_label_is_fn(env: Env, st: State, record: Type, label: String) -> Bool {
-  case field_type(env, st, record, label) {
-    Error(_) -> False
-    Ok(#(field, st)) ->
-      case resolve(st, field) {
-        Fn(_, _) -> True
-        _ -> False
-      }
-  }
+// The field map of the export `label` of the module bound to `alias`.
+fn module_field_map(
+  env: Env,
+  alias: String,
+  label: String,
+) -> Result(List(Option(String)), Nil) {
+  use interface <- result.try(dict.get(env.modules, alias))
+  dict.get(interface.field_maps, label)
 }
 
 fn infer_call(
@@ -3004,9 +3029,9 @@ fn infer_call(
   function: glance.Expression,
   arguments: List(glance.Field(glance.Expression)),
 ) -> Result(#(Type, State), Error) {
-  use #(fn_type, st) <- result.try(infer_callee(env, st, function))
+  use #(fn_type, labels, st) <- result.try(infer_callee(env, st, function))
   use ordered <- result.try(
-    order_fields(env, function, arguments, fn(label, location) {
+    order_fields(labels, arguments, fn(label, location) {
       glance.Variable(location, label)
     }),
   )
@@ -3046,8 +3071,7 @@ fn field_item(field: glance.Field(glance.Expression)) -> glance.Expression {
 // using the callee's field map. If every argument is positional we don't need
 // the field map (this also covers calls to anonymous functions).
 fn order_fields(
-  env: Env,
-  callee: glance.Expression,
+  labels: Result(List(Option(String)), Nil),
   fields: List(glance.Field(t)),
   shorthand: fn(String, glance.Span) -> t,
 ) -> Result(List(t), Error) {
@@ -3062,26 +3086,9 @@ fn order_fields(
       }),
     )
   })
-  case callee_labels(env, callee) {
+  case labels {
     Ok(labels) -> reorder(fields, labels, shorthand)
     Error(_) -> Error(AmbiguousCall)
-  }
-}
-
-// The field map (per-position labels) of a call's callee, if known.
-fn callee_labels(
-  env: Env,
-  callee: glance.Expression,
-) -> Result(List(Option(String)), Nil) {
-  case callee {
-    glance.Variable(_, name) -> dict.get(env.field_maps, name)
-    // Qualified call `module.fn`: take the field map from the module.
-    glance.FieldAccess(_, glance.Variable(_, alias), name) ->
-      case dict.get(env.modules, alias) {
-        Ok(interface) -> dict.get(interface.field_maps, name)
-        Error(_) -> dict.get(env.field_maps, name)
-      }
-    _ -> Error(Nil)
   }
 }
 
@@ -3203,7 +3210,7 @@ fn infer_capture(
   // each argument to its declared slot, so a labelled hole lands in the right
   // parameter even when it is written out of order.
   let #(hole, st) = fresh(st)
-  use #(fn_type, st) <- result.try(infer_expr(env, st, function))
+  use #(fn_type, labels, st) <- result.try(infer_callee(env, st, function))
   use #(before_typed, st) <- result.try(infer_fields_typed(env, st, before))
   use #(after_typed, st) <- result.try(infer_fields_typed(env, st, after))
   let hole_field = case label {
@@ -3212,9 +3219,7 @@ fn infer_capture(
   }
   let fields = list.flatten([before_typed, [hole_field], after_typed])
   // Fields are already typed, so the shorthand materializer is never invoked.
-  use arg_types <- result.try(
-    order_fields(env, function, fields, fn(_, _) { hole }),
-  )
+  use arg_types <- result.try(order_fields(labels, fields, fn(_, _) { hole }))
   let #(result, st) = fresh(st)
   use st <- result.try(unify(st, fn_type, Fn(arg_types, result)))
   let captured = Fn([hole], result)
@@ -3490,7 +3495,7 @@ fn infer_use_call(
   callback_type: Type,
   result: Type,
 ) -> Result(State, Error) {
-  use #(callee_type, st) <- result.try(infer_expr(env, st, callee))
+  use #(callee_type, field_map, st) <- result.try(infer_callee(env, st, callee))
   case list.all(arguments, is_unlabelled) {
     True -> {
       use #(arg_types, st) <- result.try(infer_each(
@@ -3505,10 +3510,7 @@ fn infer_use_call(
       )
     }
     False -> {
-      use labels <- result.try(result.replace_error(
-        callee_labels(env, callee),
-        AmbiguousCall,
-      ))
+      use labels <- result.try(result.replace_error(field_map, AmbiguousCall))
       let index_of = label_indices(labels)
       // Infer the explicit arguments, splitting labelled (placed by index) from
       // positional (which, with the trailing callback, fill the free slots).
@@ -3669,49 +3671,101 @@ fn infer_clause(
   result: Type,
 ) -> Result(State, Error) {
   // Each clause may have several alternative pattern lists (`a | b ->`); each
-  // binds the same variables and is checked against the subject types.
-  list.try_fold(clause.patterns, st, fn(st, patterns) {
-    use #(clause_env, st) <- result.try(
-      list.try_fold(
-        list.zip(patterns, list.zip(subjects, subject_types)),
-        #(env, st),
-        fn(acc, pair) {
-          let #(env, st) = acc
-          let #(pattern, #(subject, subject_type)) = pair
-          use #(env, st) <- result.try(infer_pattern(
-            env,
-            st,
-            pattern,
-            subject_type,
-          ))
-          // When a clause matches a bare subject variable against a variant
-          // pattern, that variable is narrowed to the variant within the clause
-          // (the compiler's inferred-variant narrowing), so its non-shared
-          // fields become accessible.
-          case subject, pattern {
-            glance.Variable(_, name),
-              glance.PatternVariant(_, module, constructor, _, _)
-            ->
-              Ok(record_variant(
-                env,
-                st,
-                module,
-                constructor,
-                subject_type,
-                name,
-              ))
-            _, _ -> Ok(#(env, st))
-          }
-        },
-      ),
-    )
-    use st <- result.try(case clause.guard {
-      Some(guard) -> check(clause_env, st, guard, prelude_bool())
-      None -> Ok(st)
-    })
-    use #(body_type, st) <- result.try(infer_expr(clause_env, st, clause.body))
-    unify(st, body_type, result)
-  })
+  // binds the same variables and is checked against the subject types. Every
+  // alternative is bound first, so the narrowings they disagree on can be
+  // dropped before the guard and body are checked under each of them.
+  use #(rev_envs, st) <- result.try(
+    list.try_fold(clause.patterns, #([], st), fn(acc, patterns) {
+      let #(envs, st) = acc
+      use #(clause_env, st) <- result.try(bind_alternative(
+        env,
+        st,
+        patterns,
+        subjects,
+        subject_types,
+      ))
+      Ok(#([clause_env, ..envs], st))
+    }),
+  )
+  use st <- result.try(
+    list.try_fold(
+      agree_variants(list.reverse(rev_envs)),
+      st,
+      fn(st, clause_env) {
+        use st <- result.try(case clause.guard {
+          Some(guard) -> check(clause_env, st, guard, prelude_bool())
+          None -> Ok(st)
+        })
+        use #(body_type, st) <- result.try(infer_expr(
+          clause_env,
+          st,
+          clause.body,
+        ))
+        unify(st, body_type, result)
+      },
+    ),
+  )
+  Ok(st)
+}
+
+// Bind one alternative's patterns against the subjects, narrowing any bare
+// subject variable a variant pattern matches.
+fn bind_alternative(
+  env: Env,
+  st: State,
+  patterns: List(glance.Pattern),
+  subjects: List(glance.Expression),
+  subject_types: List(Type),
+) -> Result(#(Env, State), Error) {
+  list.try_fold(
+    list.zip(patterns, list.zip(subjects, subject_types)),
+    #(env, st),
+    fn(acc, pair) {
+      let #(env, st) = acc
+      let #(pattern, #(subject, subject_type)) = pair
+      use #(env, st) <- result.try(infer_pattern(env, st, pattern, subject_type))
+      // When a clause matches a bare subject variable against a variant
+      // pattern, that variable is narrowed to the variant within the clause
+      // (the compiler's inferred-variant narrowing), so its non-shared
+      // fields become accessible.
+      case subject, pattern {
+        glance.Variable(_, name),
+          glance.PatternVariant(_, module, constructor, _, _)
+        -> Ok(record_variant(env, st, module, constructor, subject_type, name))
+        _, _ -> Ok(#(env, st))
+      }
+    },
+  )
+}
+
+// Alternative patterns bind the same names, and the compiler keeps a
+// variable's inferred variant only when every alternative infers the same
+// one: `Loud(..) as io | Quiet(..) as io` narrows `io` to nothing. Keep a
+// narrowing only where every alternative records the same constructor for
+// the name, so the body reads the others un-narrowed under each alternative.
+fn agree_variants(envs: List(Env)) -> List(Env) {
+  case envs {
+    [] | [_] -> envs
+    [first, ..] -> {
+      let agreed =
+        dict.filter(first.variants, fn(name, narrowed) {
+          list.all(envs, fn(env) {
+            case dict.get(env.variants, name) {
+              Ok(other) -> other.constructor == narrowed.constructor
+              Error(_) -> False
+            }
+          })
+        })
+      list.map(envs, fn(env) {
+        Env(
+          ..env,
+          variants: dict.filter(env.variants, fn(name, _) {
+            dict.has_key(agreed, name)
+          }),
+        )
+      })
+    }
+  }
 }
 
 // Patterns
