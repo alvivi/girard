@@ -459,6 +459,14 @@ pub fn specs() -> List(Spec) {
     ),
     Spec(
       ..narrowed(
+        "renamed_alternatives",
+        "the alternatives name one variant two ways - a renamed unqualified import `Near as Close` and the qualified `kinds.Near` - so the narrowing survives `agree_variants`, which compares the constructor's identity in its declaring module rather than its spelling, as the compiler compares variant indices: "
+          <> field_first,
+      ),
+      narrowed_to: Some("Near"),
+    ),
+    Spec(
+      ..narrowed(
         "field_by_elimination",
         "no colliding module is in scope at all, so the field wins by elimination: the control that shows the module branch, not the field one, is what the other rows contest",
       ),

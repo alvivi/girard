@@ -1446,6 +1446,26 @@ pub fn mixed_spelling_alternatives_agree_test() {
   |> should.equal("fn(Remote) -> Nil")
 }
 
+pub fn renamed_import_alternatives_agree_test() {
+  // `Close(..) as io | kinds.Near(..) as io` names one variant under a renamed
+  // unqualified import and its qualified spelling. The identity compared is
+  // the constructor's name in its declaring module, so `Close` and
+  // `kinds.Near` agree and the narrowed field wins over the `io` module.
+  let kinds =
+    "pub type Remote {\n  Near(println: fn(String) -> Nil)\n  Far(n: Int)\n}"
+  let source =
+    "import io\n"
+    <> "import kinds.{type Remote, Far, Near as Close}\n"
+    <> "pub fn run(r: Remote) {\n"
+    <> "  case r {\n"
+    <> "    Close(..) as io | kinds.Near(..) as io -> io.println(\"hi\")\n"
+    <> "    Far(..) -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature_with(source, [#("io", io_println), #("kinds", kinds)], "run")
+  |> should.equal("fn(Remote) -> Nil")
+}
+
 const io_labelled_println = "pub fn println(message message: String) -> Int { 1 }"
 
 pub fn narrowed_receiver_rejects_module_labels_test() {

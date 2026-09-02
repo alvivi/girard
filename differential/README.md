@@ -27,7 +27,7 @@ pinned/              template + committed lock for the one case using stdlib
 support/             modules staged alongside a case, never compiled as fixtures
   differential/io.gleam       the shadow module
   differential/shadow.gleam   a second shadow, for the aliased-import case
-  differential/kinds.gleam    a record type, for the cross-module narrowing case
+  differential/kinds.gleam    a record type, for the cross-module and renamed-import cases
   differential/labelled.gleam a shadow with a labelled export, for the labelled probe
 cases/<case>/base.gleam           the fixture
 cases/<case>/forced_field.gleam   companion: no colliding module in scope

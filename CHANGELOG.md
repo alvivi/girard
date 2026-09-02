@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Loud(..) as io | Quiet(..) as io` — no longer narrow it at all, as in the
   compiler. Previously the clause body read the first alternative's variant
   under one alternative and the second's under the other.
+- Alternative patterns that name one variant two ways — a renamed unqualified
+  import and its qualified spelling, `Close(..) as io | kinds.Near(..) as io`
+  under `import kinds.{Near as Close}` — keep the narrowing, as in the
+  compiler. A narrowing is identified by the constructor's name in its
+  declaring module, so the local spelling no longer makes the alternatives
+  disagree.
 - A label is a shared field accessor only when every variant declares it at
   the same position with the same type. Previously position was ignored, so
   `A(x: Int, y: String)` / `B(y: String)` exposed `y` as an accessor where the

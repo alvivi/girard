@@ -604,6 +604,13 @@ type Env {
     // label of each positional parameter (`None` where unlabelled). Used to
     // reorder labelled and shorthand arguments at call/pattern sites.
     field_maps: Dict(String, List(Option(String))),
+    // In-scope unqualified constructor names -> (origin module, name there).
+    // Covers constructors of types defined in the current module and
+    // constructors brought in by unqualified imports. A renamed import
+    // (`import kinds.{Near as Close}`) is in scope as `Close` but is the same
+    // variant as `kinds.Near`; narrowings compare this identity, not the
+    // spelling.
+    constructors: Dict(String, #(String, String)),
     // Variables that a pattern has narrowed to a specific constructor variant
     // (e.g. `Element(..) as e`), mapping the variable to that variant and its
     // `label -> field type` for the bound value. This lets `e.field` reach a
@@ -679,6 +686,7 @@ fn new_env() -> Env {
     accessors: dict.new(),
     local_types: dict.new(),
     field_maps: dict.new(),
+    constructors: dict.new(),
     variants: dict.new(),
     current_module: "",
     modules: dict.new(),
@@ -1487,6 +1495,19 @@ fn import_value(
     Ok(scheme) -> bind_value(env, local, scheme)
     Error(_) -> env
   }
+  // A constructor keeps the identity it has in its declaring module, whatever
+  // it is called here.
+  let env = case is_upper(original) {
+    True ->
+      Env(
+        ..env,
+        constructors: dict.insert(env.constructors, local, #(
+          interface.name,
+          original,
+        )),
+      )
+    False -> env
+  }
   case dict.get(interface.field_maps, original) {
     Ok(field_map) ->
       Env(..env, field_maps: dict.insert(env.field_maps, local, field_map))
@@ -2163,6 +2184,14 @@ fn register_custom_type(
       }
       let env = register_field_map(env, variant.name, labels)
       let env = bind_value(env, variant.name, Scheme(param_ids, ctor_type))
+      let env =
+        Env(
+          ..env,
+          constructors: dict.insert(env.constructors, variant.name, #(
+            env.current_module,
+            variant.name,
+          )),
+        )
       #(env, st, [fields, ..variant_fields])
     })
 
@@ -2829,9 +2858,9 @@ fn is_upper(name: String) -> Bool {
 }
 
 // A variable narrowed to one constructor variant: the constructor, identified
-// by the module that declares its type and its name so a qualified and an
-// unqualified spelling agree, and that variant's `label -> field type` for
-// the bound value.
+// by the module that declares its type and its name there so a qualified, an
+// unqualified and a renamed spelling agree, and that variant's
+// `label -> field type` for the bound value.
 type Narrowed {
   Narrowed(constructor: #(String, String), fields: Dict(String, Type))
 }
@@ -2859,6 +2888,18 @@ fn record_variant(
       Named(origin, _, _) -> Ok(origin)
       _ -> Error(NotARecord)
     })
+    // A qualified `alias.Ctor` is spelled as its module declares it; an
+    // unqualified name may be a renamed import, so read the identity it was
+    // bound with — the compiler compares variant indices, which no spelling
+    // moves.
+    let identity = case module {
+      Some(_) -> #(origin, constructor)
+      None ->
+        result.unwrap(dict.get(env.constructors, constructor), #(
+          origin,
+          constructor,
+        ))
+    }
     // Tie this fresh instance to the variable's actual type so the recorded
     // field types resolve correctly later.
     use st <- result.try(unify(st, value_type, ret))
@@ -2870,7 +2911,7 @@ fn record_variant(
           None -> acc
         }
       })
-    Ok(#(Narrowed(constructor: #(origin, constructor), fields:), st))
+    Ok(#(Narrowed(constructor: identity, fields:), st))
   }
   case recorded {
     Ok(#(narrowed, st)) -> #(
