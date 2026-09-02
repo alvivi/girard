@@ -5,8 +5,12 @@
 //// it. Inference needs one more thing than consumers do — the variant a
 //// value has been narrowed to, as the compiler carries on its own named
 //// types — so it works on the `Type` defined here and converts to the public
-//// one where a result is published. `variant` is always `None` today; it is
-//// the slot that narrowing will fill.
+//// one where a result is published. A constructor's return type carries the
+//// variant it builds, and a pattern that matches a bare subject variable
+//// rebinds that variable, in its own scope, to a copy carrying the variant it
+//// matched. Binding a type variable to a type erases it, and so does
+//// generalizing a top-level definition, so it never survives a generic
+//// function or a module boundary except on a constructor.
 
 import gleam/option.{type Option}
 

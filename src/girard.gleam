@@ -778,22 +778,28 @@ fn mark_live(env: Env, names: List(String)) -> Env {
 // named schemes, with `Ok`'s and `Error`'s type variables minted from `st`.
 // One table serves both the initial environment and the `gleam` interface.
 fn prelude_values(st: State) -> #(List(#(String, ty.Scheme)), State) {
-  // Ok(a) -> Result(a, e)
+  // Ok(a) -> Result(a, e), the prelude's first variant.
   let #(ok_a, st) = fresh_id(st)
   let #(ok_e, st) = fresh_id(st)
   let ok =
     ty.Scheme(
       [ok_a, ok_e],
-      ty.Fn([ty.Var(ok_a)], prelude_result(ty.Var(ok_a), ty.Var(ok_e))),
+      ty.Fn(
+        [ty.Var(ok_a)],
+        stamp(st, prelude_result(ty.Var(ok_a), ty.Var(ok_e)), 0),
+      ),
     )
 
-  // Error(e) -> Result(a, e)
+  // Error(e) -> Result(a, e), the second.
   let #(err_a, st) = fresh_id(st)
   let #(err_e, st) = fresh_id(st)
   let error =
     ty.Scheme(
       [err_a, err_e],
-      ty.Fn([ty.Var(err_e)], prelude_result(ty.Var(err_a), ty.Var(err_e))),
+      ty.Fn(
+        [ty.Var(err_e)],
+        stamp(st, prelude_result(ty.Var(err_a), ty.Var(err_e)), 1),
+      ),
     )
 
   let values = [
@@ -1743,6 +1749,54 @@ fn scheme_free_vars(
   }
 }
 
+// Inferred variants
+//
+// The variant a value is known to have been built with, carried on the
+// inference-side `Named`. A constructor's return type is stamped with its
+// index; binding a type variable to a type erases the variant of what it is
+// bound to, and generalizing a top-level definition erases every variant in
+// its type. The compiler's `set_custom_type_variant` and
+// `generalise_custom_type_variant`.
+
+// Mark a type as known to be its `variant`th constructor. Named types only,
+// through a bound variable; functions and tuples carry no variant, so they are
+// returned as they are.
+fn stamp(st: State, type_: ty.Type, variant: Int) -> ty.Type {
+  case resolve(st, type_) {
+    ty.Named(module, name, args, _) ->
+      ty.Named(module, name, args, Some(variant))
+    other -> other
+  }
+}
+
+// Forget which variant a value was built with, as happens when it is bound to
+// a type variable. It reaches through functions and tuples but *not* into a
+// named type's arguments: a `List(Loud)` still knows its elements are `Loud`.
+// No substitution walk is needed — the type arrives resolved, and anything
+// reachable through a bound variable below it was itself erased when that
+// variable was bound.
+fn erase_variant(type_: ty.Type) -> ty.Type {
+  case type_ {
+    ty.Named(module, name, args, _) -> ty.Named(module, name, args, None)
+    ty.Fn(args, ret) -> ty.Fn(list.map(args, erase_variant), erase_variant(ret))
+    ty.Tuple(elements) -> ty.Tuple(list.map(elements, erase_variant))
+    ty.Var(_) -> type_
+  }
+}
+
+// Erase every variant at every depth, arguments included. This is the erase a
+// top-level definition's generalization performs, where `erase_variant`'s
+// shallower reach is the one a variable binding performs.
+fn erase_all(type_: ty.Type) -> ty.Type {
+  case type_ {
+    ty.Named(module, name, args, _) ->
+      ty.Named(module, name, list.map(args, erase_all), None)
+    ty.Fn(args, ret) -> ty.Fn(list.map(args, erase_all), erase_all(ret))
+    ty.Tuple(elements) -> ty.Tuple(list.map(elements, erase_all))
+    ty.Var(_) -> type_
+  }
+}
+
 // Unification
 //
 // Unify two types, binding flexible variables and rejecting rigid ones, with
@@ -1805,7 +1859,9 @@ fn bind_var(st: State, id: Int, type_: ty.Type) -> Result(State, Error) {
   use <- bool.lazy_guard(when: occurs(st, id, type_), return: fn() {
     Error(recursive_type(id, type_))
   })
-  Ok(State(..st, subst: dict.insert(st.subst, id, type_)))
+  // A value bound to a type variable is no longer known to be any one variant:
+  // this is the compiler's erase, in the one place a variable is ever bound.
+  Ok(State(..st, subst: dict.insert(st.subst, id, erase_variant(type_))))
 }
 
 fn occurs(st: State, id: Int, type_: ty.Type) -> Bool {
@@ -1819,7 +1875,9 @@ fn occurs(st: State, id: Int, type_: ty.Type) -> Bool {
 // scheme back to a monotype with fresh variables.
 
 fn generalize(st: State, env: Env, type_: ty.Type) -> ty.Scheme {
-  let zonked = zonk(st, type_)
+  // A generalized definition is used at types its body never saw, so nothing
+  // it returns is known to be one variant any more.
+  let zonked = erase_all(zonk(st, type_))
   let env_vars = env_free_vars(st, env)
   let quantified =
     list.filter(free_vars(st, zonked), fn(id) { !list.contains(env_vars, id) })
@@ -2172,36 +2230,43 @@ fn register_custom_type(
   // (label and type per position) so we can later expose accessors for labels
   // shared across all variants.
   let #(env, st, rev_variant_fields) =
-    list.fold(custom_type.variants, #(env, st, []), fn(acc, variant) {
-      let #(env, st, variant_fields) = acc
-      let #(rev_fields, st) =
-        list.fold(variant.fields, #([], st), fn(acc, field) {
-          let #(fields, st) = acc
-          let #(t, st) = hydrate_in(env, names, st, variant_field_type(field))
-          let label = case field {
-            glance.LabelledVariantField(_, label) -> Some(label)
-            glance.UnlabelledVariantField(..) -> None
-          }
-          #([#(label, t), ..fields], st)
-        })
-      let fields = list.reverse(rev_fields)
-      let #(labels, field_types) = list.unzip(fields)
-      let ctor_type = case field_types {
-        [] -> return_type
-        _ -> ty.Fn(field_types, return_type)
-      }
-      let env = register_field_map(env, variant.name, labels)
-      let env = bind_value(env, variant.name, ty.Scheme(param_ids, ctor_type))
-      let env =
-        Env(
-          ..env,
-          constructors: dict.insert(env.constructors, variant.name, #(
-            env.current_module,
-            variant.name,
-          )),
-        )
-      #(env, st, [fields, ..variant_fields])
-    })
+    list.index_fold(
+      custom_type.variants,
+      #(env, st, []),
+      fn(acc, variant, index) {
+        let #(env, st, variant_fields) = acc
+        let #(rev_fields, st) =
+          list.fold(variant.fields, #([], st), fn(acc, field) {
+            let #(fields, st) = acc
+            let #(t, st) = hydrate_in(env, names, st, variant_field_type(field))
+            let label = case field {
+              glance.LabelledVariantField(_, label) -> Some(label)
+              glance.UnlabelledVariantField(..) -> None
+            }
+            #([#(label, t), ..fields], st)
+          })
+        let fields = list.reverse(rev_fields)
+        let #(labels, field_types) = list.unzip(fields)
+        // A constructor's return type is known to be that constructor, so
+        // construction narrows with nothing else having to notice.
+        let built = stamp(st, return_type, index)
+        let ctor_type = case field_types {
+          [] -> built
+          _ -> ty.Fn(field_types, built)
+        }
+        let env = register_field_map(env, variant.name, labels)
+        let env = bind_value(env, variant.name, ty.Scheme(param_ids, ctor_type))
+        let env =
+          Env(
+            ..env,
+            constructors: dict.insert(env.constructors, variant.name, #(
+              env.current_module,
+              variant.name,
+            )),
+          )
+        #(env, st, [fields, ..variant_fields])
+      },
+    )
 
   // A label is accessible iff every variant declares it at the same position
   // with the same type. (Single-variant records are the degenerate case where
@@ -3099,7 +3164,20 @@ fn infer_call(
       check(env, st, pair.0, pair.1)
     }),
   )
-  Ok(#(result, record(st, span, result)))
+  // The call's type is the callee's own return type, not the hole unified
+  // against it: the two are the same type, but only the callee's carries the
+  // variant a constructor's return was built with.
+  let return = call_return(st, fn_type, result)
+  Ok(#(return, record(st, span, return)))
+}
+
+// A call's result: the callee's own return where the callee is known to be a
+// function, else the hole the call was unified against.
+fn call_return(st: State, callee: ty.Type, hole: ty.Type) -> ty.Type {
+  case resolve(st, callee) {
+    ty.Fn(_, return) -> return
+    _ -> hole
+  }
 }
 
 fn fresh_n(st: State, n: Int) -> #(List(ty.Type), State) {
@@ -3400,7 +3478,8 @@ fn infer_pipe(
           use #(lt, st) <- result.try(infer_expr(env, st, left))
           let #(result, st) = fresh(st)
           use st <- result.try(unify(st, call_type, ty.Fn([lt], result)))
-          Ok(#(result, record(st, span, result)))
+          let return = call_return(st, call_type, result)
+          Ok(#(return, record(st, span, return)))
         }
         False ->
           infer_call(env, st, call_span, function, [
@@ -3822,14 +3901,14 @@ fn infer_pattern(
       Ok(#(bind_value(env, name, ty.Scheme([], expected)), st))
 
     glance.PatternTuple(_, elements) -> {
-      let #(elem_types, st) =
-        list.fold(elements, #([], st), fn(acc, _) {
-          let #(types_, st) = acc
-          let #(t, st) = fresh(st)
-          #([t, ..types_], st)
-        })
-      let elem_types = list.reverse(elem_types)
-      use st <- result.try(unify(st, expected, ty.Tuple(elem_types)))
+      // Destructure a tuple the expected type already is, element by element,
+      // rather than through fresh element variables: a variable binding erases
+      // what the element was built with, and the compiler destructures.
+      use #(elem_types, st) <- result.try(tuple_elements(
+        st,
+        expected,
+        list.length(elements),
+      ))
       list.try_fold(list.zip(elements, elem_types), #(env, st), fn(acc, pair) {
         let #(env, st) = acc
         let #(pattern, t) = pair
@@ -3914,6 +3993,34 @@ fn infer_pattern(
         let #(env, st) = acc
         infer_bit_pattern_segment(env, st, segment)
       })
+    }
+  }
+}
+
+// A tuple pattern's element types: the expected type's own elements where it
+// already is a tuple of the right width, else fresh variables unified against
+// it. Destructuring is what keeps an element's variant, which binding it to a
+// fresh variable would erase; the fresh-variable path is also where an arity
+// mismatch is still reported.
+fn tuple_elements(
+  st: State,
+  expected: ty.Type,
+  arity: Int,
+) -> Result(#(List(ty.Type), State), Error) {
+  let destructured = case resolve(st, expected) {
+    ty.Tuple(elements) ->
+      case list.length(elements) == arity {
+        True -> Ok(elements)
+        False -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+  case destructured {
+    Ok(elements) -> Ok(#(elements, st))
+    Error(_) -> {
+      let #(elem_types, st) = fresh_n(st, arity)
+      use st <- result.try(unify(st, expected, ty.Tuple(elem_types)))
+      Ok(#(elem_types, st))
     }
   }
 }
