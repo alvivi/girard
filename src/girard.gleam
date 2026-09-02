@@ -774,61 +774,58 @@ fn mark_live(env: Env, names: List(String)) -> Env {
   Env(..env, live: set.from_list(names))
 }
 
-// The initial environment and state, seeded with the prelude value
-// constructors (`True`, `False`, `Nil`, `Ok`, `Error`).
-fn prelude() -> #(Env, State) {
-  let st = new_state()
-  let env =
-    new_env()
-    |> bind_value("True", ty.Scheme([], prelude_bool()))
-    |> bind_value("False", ty.Scheme([], prelude_bool()))
-    |> bind_value("Nil", ty.Scheme([], prelude_nil()))
-
+// The prelude value constructors (`True`, `False`, `Nil`, `Ok`, `Error`) as
+// named schemes, with `Ok`'s and `Error`'s type variables minted from `st`.
+// One table serves both the initial environment and the `gleam` interface.
+fn prelude_values(st: State) -> #(List(#(String, ty.Scheme)), State) {
   // Ok(a) -> Result(a, e)
   let #(ok_a, st) = fresh_id(st)
   let #(ok_e, st) = fresh_id(st)
-  let env =
-    bind_value(
-      env,
-      "Ok",
-      ty.Scheme(
-        [ok_a, ok_e],
-        ty.Fn([ty.Var(ok_a)], prelude_result(ty.Var(ok_a), ty.Var(ok_e))),
-      ),
+  let ok =
+    ty.Scheme(
+      [ok_a, ok_e],
+      ty.Fn([ty.Var(ok_a)], prelude_result(ty.Var(ok_a), ty.Var(ok_e))),
     )
 
   // Error(e) -> Result(a, e)
   let #(err_a, st) = fresh_id(st)
   let #(err_e, st) = fresh_id(st)
-  let env =
-    bind_value(
-      env,
-      "Error",
-      ty.Scheme(
-        [err_a, err_e],
-        ty.Fn([ty.Var(err_e)], prelude_result(ty.Var(err_a), ty.Var(err_e))),
-      ),
+  let error =
+    ty.Scheme(
+      [err_a, err_e],
+      ty.Fn([ty.Var(err_e)], prelude_result(ty.Var(err_a), ty.Var(err_e))),
     )
 
+  let values = [
+    #("True", ty.Scheme([], prelude_bool())),
+    #("False", ty.Scheme([], prelude_bool())),
+    #("Nil", ty.Scheme([], prelude_nil())),
+    #("Ok", ok),
+    #("Error", error),
+  ]
+  #(values, st)
+}
+
+// The initial environment and state, seeded with the prelude value
+// constructors.
+fn prelude() -> #(Env, State) {
+  let #(values, st) = prelude_values(new_state())
+  let env =
+    list.fold(values, new_env(), fn(env, value) {
+      bind_value(env, value.0, value.1)
+    })
   #(env, st)
 }
 
 // The implicit `gleam` prelude module's public interface, used to resolve
 // `import gleam` / `import gleam.{Error as Err}`. The prelude has no source
 // file; the compiler treats `gleam` as a built-in module exposing the prelude
-// types and value constructors.
+// types and value constructors. An interface's schemes are instantiated on
+// use, so the ids their variables carry here do not matter.
 fn prelude_interface() -> ModuleInterface {
   let module = prelude_module
-  let ok = ty.Var(0)
-  let error = ty.Var(1)
-  let values =
-    dict.from_list([
-      #("True", ty.Scheme([], prelude_bool())),
-      #("False", ty.Scheme([], prelude_bool())),
-      #("Nil", ty.Scheme([], prelude_nil())),
-      #("Ok", ty.Scheme([0, 1], ty.Fn([ok], prelude_result(ok, error)))),
-      #("Error", ty.Scheme([0, 1], ty.Fn([error], prelude_result(ok, error)))),
-    ])
+  let #(values, _st) = prelude_values(new_state())
+  let values = dict.from_list(values)
   let types_ =
     dict.from_list([
       #("Int", #(module, "Int", 0)),
