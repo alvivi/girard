@@ -28,6 +28,7 @@ support/             modules staged alongside a case, never compiled as fixtures
   differential/io.gleam       the shadow module
   differential/shadow.gleam   a second shadow, for the aliased-import case
   differential/kinds.gleam    a record type, for the cross-module narrowing case
+  differential/labelled.gleam a shadow with a labelled export, for the labelled probe
 cases/<case>/base.gleam           the fixture
 cases/<case>/forced_field.gleam   companion: no colliding module in scope
 cases/<case>/forced_module.gleam  companion: the receiver binding renamed away
@@ -102,6 +103,8 @@ depth.
 - **`owner`** is `PR2` or `PR4` — the change that must remove that divergence.
   Present exactly when `divergent` is true, and rejected by the decoder if it is
   anything else, so a divergence cannot be parked under an owner nobody holds.
+  `PR2` has landed and owns no row any more; it stays in the vocabulary so a
+  row cannot be handed back to it by a typo either.
 - **`why`** is a hand-written one-liner naming the mechanism. It is what makes
   the manifest a document rather than a blob.
 - **`inputs_hash` and `evidence_hash`** answer two different questions: what was
@@ -113,9 +116,11 @@ depth.
   has to touch two files in one diff.
 
 **The suite is green and the divergences are data.** A recorded disagreement is
-the expected answer today; PR 2 and PR 4 must edit the manifest, flipping
-`divergent` from `true` to `false` line by line and lowering the count literal in
-`test/differential_test.gleam`.
+the expected answer today. PR 2 — field-first resolution in call position,
+positional shared accessors, and a callee's field map following the branch it
+resolved to — flipped its eight rows; the three that remain are PR 4's, and it
+must edit the manifest the same way, flipping `divergent` from `true` to `false`
+line by line and lowering the count literal in `test/differential_test.gleam`.
 
 ## Regenerating
 
@@ -152,10 +157,12 @@ pointing at the driver rather than at a diff.
 
 `gleam run -m girard/differential answer <path> <function>` prints girard's
 reading of one file with the corpus resolver. Run it on a forced-field
-companion, where no colliding module is in scope, to decide a row's `owner`:
-girard reading the field there means the narrowing is already expressible and
-only call-position precedence loses it — a PR 2 row — while an error means it is
-not, which is a PR 4 row.
+companion, where no colliding module is in scope, to decide whether a new
+divergence is PR 4's: girard erroring there means the narrowing is not yet
+expressible through `env.variants`, which is what PR 4 replaces. Girard reading
+the field there while the base row still reads the module would mean call
+position and projection have drifted apart again, which PR 2 closed and nothing
+should reopen.
 
 ## Not covered
 

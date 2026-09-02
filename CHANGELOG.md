@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A call on a receiver a pattern has narrowed to a variant — `case l {
+  Loud(..) as io -> io.println("hi") }` — now calls the variant's field when
+  a module of the same name also exports that label. Previously the module
+  export won in call position, so the call was typed as the module function
+  where the compiler types it as the field. Projections already read the
+  field; calls and projections now resolve alike.
+- Alternative patterns that narrow a variable to different variants —
+  `Loud(..) as io | Quiet(..) as io` — no longer narrow it at all, as in the
+  compiler. Previously the clause body read the first alternative's variant
+  under one alternative and the second's under the other.
+- A label is a shared field accessor only when every variant declares it at
+  the same position with the same type. Previously position was ignored, so
+  `A(x: Int, y: String)` / `B(y: String)` exposed `y` as an accessor where the
+  compiler does not.
+- A labelled argument to a call on a record field is now an error, as in
+  the compiler, where a function-typed field accepts no labels. Previously
+  the labels of an unrelated callable with the same name — a same-named
+  module's export, or failing that a top-level function or constructor —
+  were used to reorder the arguments even though the call did not go to it.
+
 - Expressions inside a `panic as` / `todo as` message are now annotated.
   Previously nothing in the message got a type — `name` in
   `panic as { "no such user: " <> name }` had no annotation at all. The message
