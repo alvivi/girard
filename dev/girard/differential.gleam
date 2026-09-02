@@ -61,8 +61,8 @@ pub const stdlib_version = "1.0.3"
 // The case table
 //
 // Hand-authored: `expect` is what the compiler is expected to answer, and does
-// not change as girard's resolution is corrected; `owner` assigns each
-// divergence to the change that must remove it; `why` names the mechanism.
+// not change as girard's resolution is corrected; `why` names the mechanism,
+// and for a divergence, the change that must remove it.
 
 /// One case's hand-authored claims.
 pub type Spec {
@@ -86,7 +86,6 @@ pub type Spec {
     reason: Option(String),
     derivable: Option(Bool),
     expect_girard_error_variant: Option(String),
-    owner: Option(String),
     why: String,
   )
 }
@@ -124,7 +123,6 @@ fn logger(fixture: String, why: String) -> Spec {
     reason: Some(manifest.reason_partial),
     derivable: Some(True),
     expect_girard_error_variant: None,
-    owner: None,
     why:,
   )
 }
@@ -174,7 +172,6 @@ fn probe(
     reason: None,
     derivable: None,
     expect_girard_error_variant: Some(variant),
-    owner: None,
     why:,
   )
 }
@@ -182,9 +179,21 @@ fn probe(
 // Every row whose field branch is out of reach passes today for a reason worth
 // stating in the manifest: girard under-narrows, and these rows want the
 // module. What keeps that from being an accident is the forced-field companion,
-// which must fail to compile - so the field really is unreachable, and PR 4
-// must not over-narrow it back into reach.
-const unreachable = ". The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and PR 4 must not over-narrow it back into reach"
+// which must fail to compile - so the field really is unreachable, and
+// narrowing that follows the value rather than the name must not over-narrow
+// it back into reach.
+const unreachable = ". The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and narrowing that follows the value rather than the name must not over-narrow it back into reach"
+
+// What the remaining divergences share, and the change that removes them: a
+// narrowing is keyed by the pattern-bound name in `env.variants`, so it is
+// lost when the value is re-bound under another name. The compiler carries the
+// inferred variant on the value's type, where a re-binding keeps it.
+const rebinding = "the narrowing is lost at the re-binding because `env.variants` follows the name, not the value; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
+
+// The mechanism the rows that flipped from divergent share: the narrowing
+// girard already recorded is read in call position the way projection always
+// read it.
+const field_first = "narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`"
 
 /// Every case, in the order they appear in the manifest.
 pub fn specs() -> List(Spec) {
@@ -230,7 +239,7 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..narrowed(
         "projection_narrowed",
-        "already agrees: the non-call path consults `env.variants` first, so `Ctor(..) as v` narrowing reaches projections today. Its call-position twin `narrowed_case` diverges - one pattern, two paths, opposite answers",
+        "the projection path consults `env.variants` first, so `Ctor(..) as v` narrowing reaches projections; its call-position twin `narrowed_case` now resolves through the same path and agrees too",
       ),
       label: "n",
       access: manifest.access_projection,
@@ -241,26 +250,19 @@ pub fn specs() -> List(Spec) {
       module_member: Some("String"),
       module_return: Some("String"),
     ),
-    Spec(
-      ..narrowed(
-        "narrowed_case",
-        "infer_callee takes the module export unless field_is_callable, which needs a shared accessor; println is on one variant of two",
-      ),
-      owner: Some(manifest.owner_pr2),
+    narrowed(
+      "narrowed_case",
+      field_first
+        <> ": a reachable variant field wins over the module export exactly as it does in projection",
     ),
-    Spec(
-      ..narrowed(
-        "direct_construction",
-        "girard already records construction narrowing - `infer_expr_assignment` calls `record_variant` on the constructed variant - so the sole cause is `infer_callee` precedence, and the change that fixes `narrowed_case` fixes this row",
-      ),
-      owner: Some(manifest.owner_pr2),
+    narrowed(
+      "direct_construction",
+      "construction narrowing - `infer_expr_assignment` calls `record_variant` on the constructed variant - read field-first in call position since `infer_callee` resolves through `infer_field_access`",
     ),
-    Spec(
-      ..narrowed(
-        "alias_let",
-        "narrowing survives `let io = l` after `let assert Loud(..) = l` in the compiler; girard cannot express that, because `env.variants` is keyed by the pattern-bound name",
-      ),
-      owner: Some(manifest.owner_pr4),
+    narrowed(
+      "alias_let",
+      "narrowing survives `let io = l` after `let assert Loud(..) = l` in the compiler; girard cannot express that, because `env.variants` is keyed by the pattern-bound name: "
+        <> rebinding,
     ),
     Spec(
       ..narrowed(
@@ -270,12 +272,11 @@ pub fn specs() -> List(Spec) {
       module_availability: Some(manifest.undeclared),
       module_member: None,
       module_return: None,
-      owner: Some(manifest.owner_pr4),
     ),
     Spec(
       ..logger(
         "accessor_index",
-        "both variants declare `y` at one type but different positions, so the compiler grants no accessor and reads the module while girard's over-permissive `shared_accessors` reads the field. Live in projection position today, without the call-position flip",
+        "both variants declare `y` at one type but different positions, so no accessor exists and both sides read the module: `shared_accessors` compares position as well as label and type, as the compiler's `get_compatible_record_fields` does. Live in projection position, so it is independent of call-position precedence",
       ),
       label: "y",
       access: manifest.access_projection,
@@ -288,12 +289,11 @@ pub fn specs() -> List(Spec) {
       ]),
       missing_variants: Some([]),
       reason: Some(manifest.reason_index),
-      owner: Some(manifest.owner_pr2),
     ),
     Spec(
       ..logger(
         "accessor_type",
-        "the regression guard for the accessor fix: same label and index, different types, so no accessor exists and the module must win - and must keep winning after PR 2",
+        "the regression guard for the accessor fix: same label and index, different types, so no accessor exists and the module must win - and must keep winning now that a reachable field beats the module",
       ),
       label: "f",
       access: manifest.access_projection,
@@ -319,7 +319,7 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..logger(
         "accessor_shared",
-        "the positive control for the accessor fix: same label, index and type, so the accessor is real and the field must win - PR 2 must not be written as `never share anything`",
+        "the positive control for the accessor fix: same label, index and type, so the accessor is real and the field must win - the positional rule must not be written as `never share anything`",
       ),
       label: "y",
       access: manifest.access_projection,
@@ -342,37 +342,28 @@ pub fn specs() -> List(Spec) {
       field_availability: Some(manifest.shared),
       narrowed_to: None,
     ),
-    Spec(
-      ..narrowed(
-        "narrowed_subject",
-        "the subject of the `case` is the receiver itself and no `as` rebinds it. Measured: with the module out of scope girard reads the field, so `env.variants` already expresses this narrowing and only `infer_callee` precedence loses it",
-      ),
-      owner: Some(manifest.owner_pr2),
+    narrowed(
+      "narrowed_subject",
+      "the subject of the `case` is the receiver itself and no `as` rebinds it: "
+        <> field_first,
     ),
-    Spec(
-      ..narrowed(
-        "alias_block",
-        "the narrowed value leaves a block through its final expression. Measured: with the module out of scope girard errors, so `env.variants` cannot express it - `let io = { .. l }` binds a variable to a variable and no constructor call is in reach, exactly as in `alias_let`",
-      ),
-      owner: Some(manifest.owner_pr4),
+    narrowed(
+      "alias_block",
+      "the narrowed value leaves a block through its final expression. Measured: with the module out of scope girard errors, so `env.variants` cannot express it - `let io = { .. l }` binds a variable to a variable and no constructor call is in reach, exactly as in `alias_let`: "
+        <> rebinding,
     ),
-    Spec(
-      ..narrowed(
-        "let_assert",
-        "`let assert Loud(..) as io = l` narrows and binds in one pattern, the shortest path from a pattern to a narrowed receiver. Measured: girard reads the field with the module out of scope, so this is call-position precedence alone",
-      ),
-      owner: Some(manifest.owner_pr2),
+    narrowed(
+      "let_assert",
+      "`let assert Loud(..) as io = l` narrows and binds in one pattern, the shortest path from a pattern to a narrowed receiver: "
+        <> field_first,
     ),
-    Spec(
-      ..narrowed(
-        "alternatives_agree",
-        "both alternatives of the pattern are `Loud`, so the narrowing is to a single variant and the field stays in reach through an alternative pattern. Measured: girard reads the field with the module out of scope, so this is call-position precedence alone",
-      ),
-      owner: Some(manifest.owner_pr2),
+    narrowed(
+      "alternatives_agree",
+      "both alternatives of the pattern are `Loud`, so the narrowing is to a single variant and the field stays in reach through an alternative pattern: `agree_variants` keeps a narrowing every alternative records the same constructor for, and it is read field-first in call position since `infer_callee` resolves through `infer_field_access`",
     ),
     logger(
       "closure_param",
-      "the closure's parameter is a fresh, annotated binding, so the narrowing outside it does not reach the receiver: passes today for the right reason, and PR 4 must not make it over-narrow",
+      "the closure's parameter is a fresh, annotated binding, so the narrowing outside it does not reach the receiver: passes today for the right reason, and narrowing that follows the value must not make it over-narrow",
     ),
     logger(
       "factory_result",
@@ -381,7 +372,7 @@ pub fn specs() -> List(Spec) {
     ),
     logger(
       "alternatives_disagree",
-      "the alternatives are `Loud` and `Quiet`, so no single variant is narrowed to and the field is out of reach: the row that stops PR 2 from narrowing to the first alternative"
+      "the alternatives are `Loud` and `Quiet`, so no single variant is narrowed to and the field is out of reach: `agree_variants` drops a narrowing the alternatives disagree on before the body is checked under each of them, so neither alternative reads the first one's field"
         <> unreachable,
     ),
     logger(
@@ -407,7 +398,7 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..narrowed(
         "pipe_narrowed",
-        "a bare pipe target is inferred through `infer_expr` into the field-preferring `infer_field_access`, where a call goes through the module-preferring `infer_callee` - opposite precedences, so this row may agree where its call twin diverges",
+        "a bare pipe target is inferred through `infer_expr` into `infer_field_access`, the one resolver a call also reaches through `infer_callee`, so a pipe target and a call read the same field",
       ),
       syntax_site: manifest.site_pipe,
     ),
@@ -422,7 +413,7 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..narrowed(
         "use_guard",
-        "a `use` target is the callee of a `Call` in glance, so the same call-position derivation applies. The shadow module's `guard` is deliberately monomorphic, unlike `gleam/bool.guard`, which is what keeps this row derivable",
+        "a `use` target is the callee of a `Call` in glance, resolved through `infer_callee` like any call, so the same field-first derivation applies. The shadow module's `guard` is deliberately monomorphic, unlike `gleam/bool.guard`, which is what keeps this row derivable",
       ),
       label: "guard",
       narrowed_to: Some("Wrapped"),
@@ -451,18 +442,28 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..narrowed(
         "aliased_import",
-        "the collision is with an import alias rather than a module path's final segment. Measured: girard reads the field with the module out of scope, so this is call-position precedence alone. The row pins only the type answer for now - telling an alias from the canonical module path needs a resolution API girard does not yet expose, and would extend this row rather than add one",
+        "the collision is with an import alias rather than a module path's final segment: "
+          <> field_first
+          <> ". The row pins only the type answer for now - telling an alias from the canonical module path needs a resolution API girard does not yet expose, and would extend this row rather than add one",
       ),
       receiver: "printer",
-      owner: Some(manifest.owner_pr2),
     ),
     Spec(
       ..narrowed(
         "imported_narrowed",
-        "the narrowed type is declared in a second module, pinning that variant narrowing - and the field index the narrowed variant grants - agree across a module boundary. Measured: girard reads the field with the module out of scope, so the module boundary costs nothing and this is call-position precedence alone",
+        "the narrowed type is declared in a second module, pinning that variant narrowing - and the field index the narrowed variant grants - agree across a module boundary: "
+          <> field_first
+          <> ", and the module boundary costs nothing",
       ),
       narrowed_to: Some("Near"),
-      owner: Some(manifest.owner_pr2),
+    ),
+    Spec(
+      ..narrowed(
+        "renamed_alternatives",
+        "the alternatives name one variant two ways - a renamed unqualified import `Near as Close` and the qualified `kinds.Near` - so the narrowing survives `agree_variants`, which compares the constructor's identity in its declaring module rather than its spelling, as the compiler compares variant indices: "
+          <> field_first,
+      ),
+      narrowed_to: Some("Near"),
     ),
     Spec(
       ..narrowed(
@@ -498,6 +499,13 @@ pub fn specs() -> List(Spec) {
       "nosuch",
       "NotARecord",
       "an unbound receiver whose name is a module in scope that does not export the label: the module branch is unavailable too, so the fallback has nothing to fall through to and both sides reject it",
+    ),
+    probe(
+      "narrowed_labelled",
+      "io",
+      "println",
+      "AmbiguousCall",
+      "a record-selected callee has no field map, so a same-named module's labels must not apply: the narrowed receiver reads the field, and `message:` is then an unexpected labelled argument on both sides - girard at AmbiguousCall where the compiler reports `Unexpected labelled argument`",
     ),
   ]
 }
@@ -888,14 +896,9 @@ fn row(spec: Spec, staging: String) -> Row {
       girard:,
       expect_girard_error_variant: spec.expect_girard_error_variant,
       divergent: False,
-      owner: None,
       why: spec.why,
     )
-  let divergent = manifest.is_divergent(draft, girard)
-  Row(..draft, divergent:, owner: case divergent {
-    True -> spec.owner
-    False -> None
-  })
+  Row(..draft, divergent: manifest.is_divergent(draft, girard))
 }
 
 fn outcome(
@@ -929,10 +932,10 @@ fn aggregate() -> Nil {
 }
 
 // `answer` prints girard's reading of one file, with the corpus resolver. It is
-// how a row's `owner` is decided: run it on the forced-field companion, where
+// how a divergence is diagnosed: run it on the forced-field companion, where
 // no colliding module is in scope, and girard's answer says whether the
-// narrowing is expressible today — a PR 2 row, fixed by call-position
-// precedence alone — or not — a PR 4 row.
+// narrowing is expressible through `env.variants` at all — an error there
+// means it is not, and only narrowing carried on the type would reach it.
 fn answer(path: String, function: String) -> Nil {
   let assert Ok(text) = simplifile.read(path)
   io.println(describe(runner.girard_outcome(text, function)))
@@ -958,9 +961,7 @@ fn report(rows: List(Row)) -> Nil {
     io.println(
       "  "
       <> row.fixture
-      <> " ["
-      <> option.unwrap(row.owner, "UNOWNED")
-      <> "] compiler="
+      <> " compiler="
       <> describe(row.compiler)
       <> " girard="
       <> describe(row.girard),

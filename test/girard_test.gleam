@@ -36,14 +36,28 @@ fn signature_with(
   modules: List(#(String, String)),
   name: String,
 ) -> String {
-  let table = dict.from_list(modules)
-  let resolver = fn(path) { dict.get(table, path) }
-  let options = girard.default_options() |> girard.with_resolver(resolver)
-  let assert Ok(annotated) = girard.annotate(source, options)
+  let assert Ok(annotated) = girard.annotate(source, options_with(modules))
   case list.key_find(annotated.functions, name) {
     Ok(sig) -> girard.type_to_string(sig.type_)
     Error(_) -> panic as { "no function named " <> name }
   }
+}
+
+// The inference error `source` reports, resolving imports from the given
+// in-memory modules (path -> source).
+fn error_with(
+  source: String,
+  modules: List(#(String, String)),
+) -> girard.Error {
+  let assert Error(error) = girard.annotate(source, options_with(modules))
+  error
+}
+
+// Options resolving imports from the given in-memory modules (path -> source).
+fn options_with(modules: List(#(String, String))) -> girard.Options {
+  let table = dict.from_list(modules)
+  girard.default_options()
+  |> girard.with_resolver(fn(path) { dict.get(table, path) })
 }
 
 // The inferred type of the named top-level constant.
@@ -842,17 +856,21 @@ pub fn local_value_field_shadows_module_test() {
   |> should.equal("fn() -> Int")
 }
 
-pub fn module_call_beats_field_test() {
-  // The same name in *call position*: `dep.value(dep)` calls the module's
-  // `value` function, not the (non-callable) `value` record field of the local
-  // `dep` value. This is lustre's `cache.events(cache)`.
+pub fn unnarrowed_receiver_call_reads_module_test() {
+  // The same name in *call position*, on a receiver nothing has narrowed:
+  // `Empty` lacks `value`, so no accessor exists, record access fails, and
+  // `dep.value(dep)` falls through to the module's `value` function. The
+  // un-narrowed control for the narrowing tests below. (A `let dep = Box(1)`
+  // would narrow `dep` to `Box` and the field would win — and calling an
+  // `Int` is then rejected, by the compiler and by girard alike.)
   let dep =
-    "pub type Box(a) {\n  Box(value: a)\n}\npub fn value(b: Box(a)) -> a { b.value }"
+    "pub type Box(a) {\n  Box(value: a)\n  Empty\n}\n"
+    <> "pub fn value(b: Box(a)) -> a { todo }"
   let source =
-    "import dep.{type Box, Box}\n"
-    <> "pub fn run() -> Int {\n  let dep = Box(1)\n  dep.value(dep)\n}"
+    "import dep.{type Box}\n"
+    <> "pub fn run(dep: Box(Int)) -> Int {\n  dep.value(dep)\n}"
   signature_with(source, [#("dep", dep)], "run")
-  |> should.equal("fn() -> Int")
+  |> should.equal("fn(Box(Int)) -> Int")
 }
 
 pub fn field_call_beats_module_test() {
@@ -876,7 +894,8 @@ pub fn opaque_field_yields_to_module_call_test() {
   // site. A `schema` parameter shadows the `schema` module alias; `Schema` is
   // opaque, so `schema.decode(schema, v)` calls the module's 2-argument `decode`
   // function, not the (inaccessible) 1-argument `decode` field (kata's
-  // `Schema`). Without honouring opacity this is `wrong number of arguments`.
+  // `Schema`, and lustre's `cache.events(cache)` on its opaque `Cache`).
+  // Without honouring opacity this is `wrong number of arguments`.
   let schema =
     "pub opaque type Schema(a) {\n  Schema(decode: fn(Int) -> a)\n}\n"
     <> "pub fn decode(s: Schema(a), value: Int) -> a { s.decode(value) }"
@@ -1275,6 +1294,367 @@ pub fn signature_scheme_exposes_quantified_vars_test() {
   mono.vars |> should.equal([])
 }
 
+// Call position resolves like projection: a reachable record field wins over
+// a same-named module export, and the field map follows the branch that won.
+
+const logger_type = "pub type Logger {\n  Loud(println: fn(String) -> Nil)\n  Quiet(n: Int)\n}\n"
+
+const io_println = "pub fn println(message: String) -> Int { 1 }"
+
+pub fn narrowed_receiver_call_beats_module_test() {
+  // `Loud(..) as io` narrows `io` to the variant with a `println` field, so
+  // `io.println("hi")` calls that field (`Nil`), not the `io` module's
+  // `println` (`Int`) — the call-position twin of
+  // `variant_narrowed_field_access_test`.
+  let source =
+    "import io\n"
+    <> logger_type
+    <> "pub fn run(l: Logger) {\n"
+    <> "  case l {\n"
+    <> "    Loud(..) as io -> io.println(\"hi\")\n"
+    <> "    Quiet(..) -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature_with(source, [#("io", io_println)], "run")
+  |> should.equal("fn(Logger) -> Nil")
+}
+
+pub fn narrowed_subject_call_beats_module_test() {
+  // The `case` subject itself is narrowed inside the `Loud` clause.
+  let source =
+    "import io\n"
+    <> logger_type
+    <> "pub fn run(io: Logger) {\n"
+    <> "  case io {\n"
+    <> "    Loud(..) -> io.println(\"hi\")\n"
+    <> "    Quiet(..) -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature_with(source, [#("io", io_println)], "run")
+  |> should.equal("fn(Logger) -> Nil")
+}
+
+pub fn constructed_receiver_call_beats_module_test() {
+  // `let io = Loud(f)` narrows `io` by construction.
+  let source =
+    "import io\n"
+    <> logger_type
+    <> "pub fn run(f: fn(String) -> Nil) {\n"
+    <> "  let io = Loud(f)\n"
+    <> "  io.println(\"hi\")\n"
+    <> "}"
+  signature_with(source, [#("io", io_println)], "run")
+  |> should.equal("fn(fn(String) -> Nil) -> Nil")
+}
+
+pub fn let_assert_receiver_call_beats_module_test() {
+  // `let assert Loud(..) as io = l` narrows and binds in one pattern.
+  let source =
+    "import io\n"
+    <> logger_type
+    <> "pub fn run(l: Logger) {\n"
+    <> "  let assert Loud(..) as io = l\n"
+    <> "  io.println(\"hi\")\n"
+    <> "}"
+  signature_with(source, [#("io", io_println)], "run")
+  |> should.equal("fn(Logger) -> Nil")
+}
+
+pub fn aliased_module_collision_test() {
+  // The collision is with the import *alias*: `import shadow as printer`
+  // binds `printer`, and a receiver named `printer` shadows it.
+  let source =
+    "import shadow as printer\n"
+    <> logger_type
+    <> "pub fn run(l: Logger) {\n"
+    <> "  case l {\n"
+    <> "    Loud(..) as printer -> printer.println(\"hi\")\n"
+    <> "    Quiet(..) -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature_with(source, [#("shadow", io_println)], "run")
+  |> should.equal("fn(Logger) -> Nil")
+}
+
+pub fn imported_type_narrowed_call_test() {
+  // The narrowed type is declared in another module: narrowing, and the field
+  // the narrowed variant grants, agree across the module boundary.
+  let kinds =
+    "pub type Remote {\n  Near(println: fn(String) -> Nil)\n  Far(n: Int)\n}"
+  let source =
+    "import io\n"
+    <> "import kinds\n"
+    <> "pub fn run(r: kinds.Remote) {\n"
+    <> "  case r {\n"
+    <> "    kinds.Near(..) as io -> io.println(\"hi\")\n"
+    <> "    kinds.Far(..) -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature_with(source, [#("io", io_println), #("kinds", kinds)], "run")
+  |> should.equal("fn(Remote) -> Nil")
+}
+
+pub fn disagreeing_alternatives_do_not_narrow_test() {
+  // `Loud(..) as io | Quiet(..) as io` narrows `io` to two different variants,
+  // so the compiler keeps no variant for it and the call reads the module in
+  // both alternatives. Narrowing to the first alternative would type the body
+  // as `Nil` under one alternative and `Int` under the other.
+  let source =
+    "import io\n"
+    <> logger_type
+    <> "pub fn run(l: Logger) {\n"
+    <> "  case l {\n"
+    <> "    Loud(..) as io | Quiet(..) as io -> io.println(\"hi\")\n"
+    <> "  }\n"
+    <> "}"
+  signature_with(source, [#("io", io_println)], "run")
+  |> should.equal("fn(Logger) -> Int")
+}
+
+pub fn agreeing_alternatives_narrow_test() {
+  // Both alternatives narrow `io` to `Loud`, so the narrowing survives and
+  // the field wins.
+  let source =
+    "import io\n"
+    <> logger_type
+    <> "pub fn run(l: Logger) {\n"
+    <> "  case l {\n"
+    <> "    Loud(..) as io | Loud(..) as io -> io.println(\"hi\")\n"
+    <> "    Quiet(..) -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature_with(source, [#("io", io_println)], "run")
+  |> should.equal("fn(Logger) -> Nil")
+}
+
+pub fn mixed_spelling_alternatives_agree_test() {
+  // `Near(..) as io | kinds.Near(..) as io` names one variant two ways. The
+  // narrowing compares the constructor's resolved identity, not its spelling,
+  // so the alternatives agree and the field wins.
+  let kinds =
+    "pub type Remote {\n  Near(println: fn(String) -> Nil)\n  Far(n: Int)\n}"
+  let source =
+    "import io\n"
+    <> "import kinds.{type Remote, Far, Near}\n"
+    <> "pub fn run(r: Remote) {\n"
+    <> "  case r {\n"
+    <> "    Near(..) as io | kinds.Near(..) as io -> io.println(\"hi\")\n"
+    <> "    Far(..) -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature_with(source, [#("io", io_println), #("kinds", kinds)], "run")
+  |> should.equal("fn(Remote) -> Nil")
+}
+
+pub fn renamed_import_alternatives_agree_test() {
+  // `Close(..) as io | kinds.Near(..) as io` names one variant under a renamed
+  // unqualified import and its qualified spelling. The identity compared is
+  // the constructor's name in its declaring module, so `Close` and
+  // `kinds.Near` agree and the narrowed field wins over the `io` module.
+  let kinds =
+    "pub type Remote {\n  Near(println: fn(String) -> Nil)\n  Far(n: Int)\n}"
+  let source =
+    "import io\n"
+    <> "import kinds.{type Remote, Far, Near as Close}\n"
+    <> "pub fn run(r: Remote) {\n"
+    <> "  case r {\n"
+    <> "    Close(..) as io | kinds.Near(..) as io -> io.println(\"hi\")\n"
+    <> "    Far(..) -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature_with(source, [#("io", io_println), #("kinds", kinds)], "run")
+  |> should.equal("fn(Remote) -> Nil")
+}
+
+const io_labelled_println = "pub fn println(message message: String) -> Int { 1 }"
+
+pub fn narrowed_receiver_rejects_module_labels_test() {
+  // The record won, so the callee has no field map — the compiler's
+  // `RecordAccess` carries none — and the same-named module's labelled
+  // `println` must not lend it one: `message:` is an unexpected labelled
+  // argument, which girard reports as `AmbiguousCall`.
+  let source =
+    "import io\n"
+    <> logger_type
+    <> "pub fn run(l: Logger) {\n"
+    <> "  case l {\n"
+    <> "    Loud(..) as io -> io.println(message: \"hi\")\n"
+    <> "    Quiet(..) -> panic\n"
+    <> "  }\n"
+    <> "}"
+  error_with(source, [#("io", io_labelled_println)])
+  |> should.equal(girard.AmbiguousCall)
+}
+
+pub fn unnarrowed_receiver_accepts_module_labels_test() {
+  // The other half of the rule: an un-narrowed receiver has no `println`
+  // accessor, the module export wins, and it keeps its own field map.
+  let source =
+    "import io\n"
+    <> logger_type
+    <> "pub fn run(io: Logger) {\n"
+    <> "  io.println(message: \"hi\")\n"
+    <> "}"
+  signature_with(source, [#("io", io_labelled_println)], "run")
+  |> should.equal("fn(Logger) -> Int")
+}
+
+pub fn field_call_rejects_top_level_labels_test() {
+  // No module in scope at all: a field borrows no field map from anything,
+  // including a top-level function that merely shares its label.
+  let source =
+    "pub type Box {\n"
+    <> "  Box(invoke: fn(Int) -> Int)\n"
+    <> "}\n"
+    <> "pub fn invoke(x x: Int) -> Int { x }\n"
+    <> "pub fn run(box: Box) { box.invoke(x: 1) }"
+  error_with(source, [])
+  |> should.equal(girard.AmbiguousCall)
+}
+
+const logger2_type = "pub type Logger {\n  Loud(println: fn(String, Int) -> Nil)\n  Quiet(n: Int)\n}\n"
+
+const io_labelled_println2 = "pub fn println(message message: String, n n: Int) -> Int { 1 }"
+
+pub fn narrowed_receiver_capture_rejects_module_labels_test() {
+  // A capture `io.println(message: _, n: 1)` is a call, and orders its
+  // arguments on its own: the record-selected callee has no field map.
+  let source =
+    "import io\n"
+    <> logger2_type
+    <> "pub fn run(l: Logger) {\n"
+    <> "  case l {\n"
+    <> "    Loud(..) as io -> io.println(message: _, n: 1)\n"
+    <> "    Quiet(..) -> panic\n"
+    <> "  }\n"
+    <> "}"
+  error_with(source, [#("io", io_labelled_println2)])
+  |> should.equal(girard.AmbiguousCall)
+}
+
+pub fn unnarrowed_receiver_capture_accepts_module_labels_test() {
+  let source =
+    "import io\n"
+    <> logger2_type
+    <> "pub fn run(io: Logger) {\n"
+    <> "  io.println(message: _, n: 1)\n"
+    <> "}"
+  signature_with(source, [#("io", io_labelled_println2)], "run")
+  |> should.equal("fn(Logger) -> fn(String) -> Int")
+}
+
+const guarded_type = "pub type Guarded {\n  Wrapped(guard: fn(Bool, Int, fn() -> Int) -> Nil)\n  Plain(n: Int)\n}\n"
+
+const io_labelled_guard = "pub fn guard(when when: Bool, return return: Int, otherwise otherwise: fn() -> Int) -> Int { 1 }"
+
+pub fn narrowed_receiver_use_rejects_module_labels_test() {
+  // A `use` callee with labelled arguments places them by the callee's field
+  // map; a record-selected callee has none.
+  let source =
+    "import io\n"
+    <> guarded_type
+    <> "pub fn run(g: Guarded, cond: Bool) {\n"
+    <> "  case g {\n"
+    <> "    Wrapped(..) as io -> {\n"
+    <> "      use <- io.guard(when: cond, return: 0)\n"
+    <> "      1\n"
+    <> "    }\n"
+    <> "    Plain(..) -> panic\n"
+    <> "  }\n"
+    <> "}"
+  error_with(source, [#("io", io_labelled_guard)])
+  |> should.equal(girard.AmbiguousCall)
+}
+
+pub fn unnarrowed_receiver_use_accepts_module_labels_test() {
+  let source =
+    "import io\n"
+    <> guarded_type
+    <> "pub fn run(io: Guarded, cond: Bool) {\n"
+    <> "  use <- io.guard(when: cond, return: 0)\n"
+    <> "  1\n"
+    <> "}"
+  signature_with(source, [#("io", io_labelled_guard)], "run")
+  |> should.equal("fn(Guarded, Bool) -> Int")
+}
+
+const io_println2 = "pub fn println(message: String, n: Int) -> Int { 1 }"
+
+pub fn narrowed_receiver_piped_call_reads_field_test() {
+  // A piped *call* `"hi" |> io.println(1)` probes the callee's arity and then
+  // calls it; both readings are field-first, so the narrowed receiver's field
+  // wins as it does for a bare pipe target.
+  let source =
+    "import io\n"
+    <> logger2_type
+    <> "pub fn run(l: Logger) {\n"
+    <> "  case l {\n"
+    <> "    Loud(..) as io -> \"hi\" |> io.println(1)\n"
+    <> "    Quiet(..) -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature_with(source, [#("io", io_println2)], "run")
+  |> should.equal("fn(Logger) -> Nil")
+}
+
+pub fn unnarrowed_receiver_piped_call_reads_module_test() {
+  let source =
+    "import io\n"
+    <> logger2_type
+    <> "pub fn run(io: Logger) {\n"
+    <> "  \"hi\" |> io.println(1)\n"
+    <> "}"
+  signature_with(source, [#("io", io_println2)], "run")
+  |> should.equal("fn(Logger) -> Int")
+}
+
+const io_y_float = "pub const y: Float = 1.0"
+
+pub fn accessor_requires_same_position_test() {
+  // Both variants declare `y: String`, but at different positions. The compiler
+  // grants an accessor only when every variant has the label at the same index,
+  // so `io.y` is not a field here and falls through to the module's `y`.
+  let source =
+    "import io\n"
+    <> "pub type Rec {\n"
+    <> "  A(x: Int, y: String)\n"
+    <> "  B(y: String)\n"
+    <> "}\n"
+    <> "pub fn f(io: Rec) { io.y }"
+  signature_with(source, [#("io", io_y_float)], "f")
+  |> should.equal("fn(Rec) -> Float")
+}
+
+pub fn accessor_requires_same_type_test() {
+  // Same label at the same index, but different types: still no accessor, so
+  // the module export wins. Pins that comparing positions did not drop the
+  // type check.
+  let io = "pub fn f(message: String) -> Int { 1 }"
+  let source =
+    "import io\n"
+    <> "pub type Rec {\n"
+    <> "  E(f: fn(String) -> Nil)\n"
+    <> "  G(f: fn(Int) -> Nil)\n"
+    <> "}\n"
+    <> "pub fn f(io: Rec) { io.f }"
+  signature_with(source, [#("io", io)], "f")
+  |> should.equal("fn(Rec) -> fn(String) -> Int")
+}
+
+pub fn accessor_shared_at_same_position_test() {
+  // The positive control: same label, index and type in every variant, so the
+  // accessor is real and the field beats the same-named module export.
+  let source =
+    "import io\n"
+    <> "pub type Rec {\n"
+    <> "  P(y: String)\n"
+    <> "  Q(y: String)\n"
+    <> "}\n"
+    <> "pub fn f(io: Rec) { io.y }"
+  signature_with(source, [#("io", io_y_float)], "f")
+  |> should.equal("fn(Rec) -> String")
+}
+
 // Package annotation
 //
 // Annotating every module of a package in one pass, including the best-effort
@@ -1340,9 +1720,7 @@ pub fn annotate_package_resolves_cross_module_imports_test() {
     #("app/a", "pub fn a() -> Int { 1 }"),
     #("app/b", "import app/a\n\npub fn b() { a.a() }"),
   ]
-  let table = dict.from_list(sources)
-  let resolver = fn(path) { dict.get(table, path) }
-  let options = girard.default_options() |> girard.with_resolver(resolver)
+  let options = options_with(sources)
 
   let assert Ok(b) =
     dict.get(girard.annotate_package(parse_package(sources), options), "app/b")

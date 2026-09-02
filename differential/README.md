@@ -27,7 +27,8 @@ pinned/              template + committed lock for the one case using stdlib
 support/             modules staged alongside a case, never compiled as fixtures
   differential/io.gleam       the shadow module
   differential/shadow.gleam   a second shadow, for the aliased-import case
-  differential/kinds.gleam    a record type, for the cross-module narrowing case
+  differential/kinds.gleam    a record type, for the cross-module and renamed-import cases
+  differential/labelled.gleam a shadow with a labelled export, for the labelled probe
 cases/<case>/base.gleam           the fixture
 cases/<case>/forced_field.gleam   companion: no colliding module in scope
 cases/<case>/forced_module.gleam  companion: the receiver binding renamed away
@@ -99,11 +100,9 @@ depth.
   disagrees. The compiler and girard disagree when their statuses differ, when
   both are `ok` and decode to different branches, or when either decodes to a
   third answer nobody predicted.
-- **`owner`** is `PR2` or `PR4` — the change that must remove that divergence.
-  Present exactly when `divergent` is true, and rejected by the decoder if it is
-  anything else, so a divergence cannot be parked under an owner nobody holds.
-- **`why`** is a hand-written one-liner naming the mechanism. It is what makes
-  the manifest a document rather than a blob.
+- **`why`** is a hand-written one-liner naming the mechanism and, for a
+  divergence, the change that must remove it. It is what makes the manifest a
+  document rather than a blob.
 - **`inputs_hash` and `evidence_hash`** answer two different questions: what was
   compiled, and what came out. CI re-runs only girard, so editing a fixture would
   otherwise invalidate the committed compiler evidence while every other
@@ -113,9 +112,12 @@ depth.
   has to touch two files in one diff.
 
 **The suite is green and the divergences are data.** A recorded disagreement is
-the expected answer today; PR 2 and PR 4 must edit the manifest, flipping
-`divergent` from `true` to `false` line by line and lowering the count literal in
-`test/differential_test.gleam`.
+the expected answer today. The three that remain share one mechanism: a
+narrowing is keyed by the pattern-bound name in `env.variants`, so re-binding
+the value under another name loses it where the compiler, carrying the inferred
+variant on the type, keeps it. The change that carries the variant on the type
+must edit the manifest, flipping `divergent` from `true` to `false` line by line
+and lowering the count literal in `test/differential_test.gleam`.
 
 ## Regenerating
 
@@ -152,10 +154,12 @@ pointing at the driver rather than at a diff.
 
 `gleam run -m girard/differential answer <path> <function>` prints girard's
 reading of one file with the corpus resolver. Run it on a forced-field
-companion, where no colliding module is in scope, to decide a row's `owner`:
-girard reading the field there means the narrowing is already expressible and
-only call-position precedence loses it — a PR 2 row — while an error means it is
-not, which is a PR 4 row.
+companion, where no colliding module is in scope, to diagnose a new divergence:
+girard erroring there means the narrowing is not expressible through
+`env.variants` at all, and only narrowing carried on the type would reach it.
+Girard reading the field there while the base row still reads the module would
+mean call position and projection have drifted apart again, which the shared
+resolver closed and nothing should reopen.
 
 ## Not covered
 

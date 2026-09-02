@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Calling a field on a value a pattern has narrowed — `Loud(..) as io ->
+  io.println("hi")` — now calls the field even when a module named `io` is
+  in scope. Previously the module function won, unlike the compiler.
+  Reading and calling a field now resolve the same way.
+- `Loud(..) as io | Quiet(..) as io` no longer narrows `io` to either
+  variant, matching the compiler.
+- `Close(..) as io | kinds.Near(..) as io`, with `Near` imported as `Close`,
+  keeps its narrowing: the two spellings are recognised as one constructor.
+- A field is only accessible on the whole type when every variant declares it
+  at the same position with the same type. `y` in `A(x: Int, y: String)` /
+  `B(y: String)` is no longer an accessor, matching the compiler.
+- Passing a labelled argument to a function stored in a record field is now an
+  error, as in the compiler. Previously the labels of an unrelated function
+  with the same name were used to reorder the arguments.
 - Expressions inside a `panic as` / `todo as` message are now annotated.
   Previously nothing in the message got a type — `name` in
   `panic as { "no such user: " <> name }` had no annotation at all. The message

@@ -31,7 +31,7 @@ import gleam/string
 // Schema
 //
 // The row and its nested objects. The vocabularies (`kind`, `access`,
-// `syntax_site`, `expect`, the availabilities, `reason` and `owner`) are plain
+// `syntax_site`, `expect`, the availabilities and `reason`) are plain
 // strings with the constants below; `row_decoder` rejects anything outside
 // them, so no reader downstream has to.
 
@@ -115,7 +115,6 @@ pub type Row {
     girard: Outcome,
     expect_girard_error_variant: Option(String),
     divergent: Bool,
-    owner: Option(String),
     why: String,
   )
 }
@@ -176,14 +175,6 @@ pub const reason_type = "type"
 pub const status_ok = "ok"
 
 pub const status_error = "error"
-
-/// The two owners a divergence can be assigned to: the change that must remove
-/// it. Constants rather than literals because the ratchet in
-/// `test/differential_test` is stated in terms of *these two* PRs — an owner
-/// outside them is a divergence nobody has taken.
-pub const owner_pr2 = "PR2"
-
-pub const owner_pr4 = "PR4"
 
 /// The third decoded answer: an `ok` return matching neither the module's nor
 /// any candidate's. Always a divergence, and a broken fixture far more often
@@ -407,9 +398,9 @@ fn manifest_decoder() -> Decoder(Manifest) {
 
 // One member of a closed vocabulary. Without this the enumerated fields are
 // unrestricted strings, and a typo in one sails through the whole suite: every
-// non-`probe` kind reads as a resolution row, and the ratchet asks only that a
-// divergence names *some* owner, so `"resoluton"` and `"PR99"` would both show
-// green.
+// non-`probe` kind reads as a resolution row, and a misspelled `reason` is
+// just a divergence with a different story, so `"resoluton"` and `"partal"`
+// would both show green.
 fn one_of(field: String, vocabulary: List(String)) -> Decoder(String) {
   use raw <- decode.then(decode.string)
   case list.contains(vocabulary, raw) {
@@ -545,10 +536,6 @@ fn row_decoder() -> Decoder(Row) {
     decode.optional(decode.string),
   )
   use divergent <- decode.field("divergent", decode.bool)
-  use owner <- decode.field(
-    "owner",
-    decode.optional(one_of("owner", [owner_pr2, owner_pr4])),
-  )
   use why <- decode.field("why", decode.string)
   decode.success(Row(
     fixture:,
@@ -582,7 +569,6 @@ fn row_decoder() -> Decoder(Row) {
     girard:,
     expect_girard_error_variant:,
     divergent:,
-    owner:,
     why:,
   ))
 }
@@ -702,7 +688,6 @@ fn encode_row(row: Row) -> String {
       opt_string(row.expect_girard_error_variant),
     ),
     #("divergent", bool_json(row.divergent)),
-    #("owner", opt_string(row.owner)),
     #("why", quote(row.why)),
   ]
   let body =

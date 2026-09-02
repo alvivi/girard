@@ -1,6 +1,6 @@
 {
   "gleam": "1.18.0",
-  "generated": "2026-09-01",
+  "generated": "2026-09-02",
   "cases": [
     {
       "fixture": "greet",
@@ -34,7 +34,6 @@
       "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
       "why": "no variant declares `greet`, so every reading is the module: the one-sided control that stops the corpus reading as `the field always wins`"
     },
     {
@@ -69,8 +68,7 @@
       "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "an un-narrowed parameter grants no accessor, since `println` is on one variant of two, so both sides read the module. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and PR 4 must not over-narrow it back into reach"
+      "why": "an un-narrowed parameter grants no accessor, since `println` is on one variant of two, so both sides read the module. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and narrowing that follows the value rather than the name must not over-narrow it back into reach"
     },
     {
       "fixture": "helper_returned",
@@ -104,8 +102,7 @@
       "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "a value returned by an annotated helper carries no variant, so the receiver is un-narrowed exactly as in `plain_param`. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and PR 4 must not over-narrow it back into reach"
+      "why": "a value returned by an annotated helper carries no variant, so the receiver is un-narrowed exactly as in `plain_param`. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and narrowing that follows the value rather than the name must not over-narrow it back into reach"
     },
     {
       "fixture": "projection_plain",
@@ -139,8 +136,7 @@
       "girard": { "status": "ok", "return": "String", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "the projection twin of `plain_param`: no accessor, so both sides read the module const. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and PR 4 must not over-narrow it back into reach"
+      "why": "the projection twin of `plain_param`: no accessor, so both sides read the module const. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and narrowing that follows the value rather than the name must not over-narrow it back into reach"
     },
     {
       "fixture": "projection_narrowed",
@@ -174,8 +170,7 @@
       "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "already agrees: the non-call path consults `env.variants` first, so `Ctor(..) as v` narrowing reaches projections today. Its call-position twin `narrowed_case` diverges - one pattern, two paths, opposite answers"
+      "why": "the projection path consults `env.variants` first, so `Ctor(..) as v` narrowing reaches projections; its call-position twin `narrowed_case` now resolves through the same path and agrees too"
     },
     {
       "fixture": "narrowed_case",
@@ -206,11 +201,10 @@
       "inputs_hash": "58f93aed17befc8534d5045a14731d61792f51b88b1fe2f5bc6cac97ecac1a5e",
       "evidence_hash": "7b7f82211262bc90a2e2c959f42d0e4275fbfabcb08b19aee4723d2de74d200e",
       "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
-      "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
-      "divergent": true,
-      "owner": "PR2",
-      "why": "infer_callee takes the module export unless field_is_callable, which needs a shared accessor; println is on one variant of two"
+      "divergent": false,
+      "why": "narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`: a reachable variant field wins over the module export exactly as it does in projection"
     },
     {
       "fixture": "direct_construction",
@@ -241,11 +235,10 @@
       "inputs_hash": "73c4eab9bc5f777b6beeafc73899dc0677d0f24d42962fafb546265549449e2a",
       "evidence_hash": "7b7f82211262bc90a2e2c959f42d0e4275fbfabcb08b19aee4723d2de74d200e",
       "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
-      "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
-      "divergent": true,
-      "owner": "PR2",
-      "why": "girard already records construction narrowing - `infer_expr_assignment` calls `record_variant` on the constructed variant - so the sole cause is `infer_callee` precedence, and the change that fixes `narrowed_case` fixes this row"
+      "divergent": false,
+      "why": "construction narrowing - `infer_expr_assignment` calls `record_variant` on the constructed variant - read field-first in call position since `infer_callee` resolves through `infer_field_access`"
     },
     {
       "fixture": "alias_let",
@@ -279,8 +272,7 @@
       "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": true,
-      "owner": "PR4",
-      "why": "narrowing survives `let io = l` after `let assert Loud(..) = l` in the compiler; girard cannot express that, because `env.variants` is keyed by the pattern-bound name"
+      "why": "narrowing survives `let io = l` after `let assert Loud(..) = l` in the compiler; girard cannot express that, because `env.variants` is keyed by the pattern-bound name: the narrowing is lost at the re-binding because `env.variants` follows the name, not the value; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
     },
     {
       "fixture": "alias_no_module",
@@ -314,7 +306,6 @@
       "girard": { "status": "error", "return": null, "diagnostic": null, "at": null, "error_variant": "NoSuchField" },
       "expect_girard_error_variant": null,
       "divergent": true,
-      "owner": "PR4",
       "why": "the same shape with the module removed: the compiler reads the field, girard has no module export to fall back to and errors outright. The worked example of a status divergence, and the reminder that girard's fallback is what keeps the other alias rows answering wrongly rather than failing"
     },
     {
@@ -346,11 +337,10 @@
       "inputs_hash": "e2db5d1cb1e3cc9ba5463f88c6e0595108710de25387d2265bcb3b4df2c13de1",
       "evidence_hash": "c470f6ca2f1c1fe7cad10b3ec1db2862468931b40b2d9e855a4edc706d28e450",
       "compiler": { "status": "ok", "return": "Float", "diagnostic": null, "at": null, "error_variant": null },
-      "girard": { "status": "ok", "return": "String", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Float", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
-      "divergent": true,
-      "owner": "PR2",
-      "why": "both variants declare `y` at one type but different positions, so the compiler grants no accessor and reads the module while girard's over-permissive `shared_accessors` reads the field. Live in projection position today, without the call-position flip"
+      "divergent": false,
+      "why": "both variants declare `y` at one type but different positions, so no accessor exists and both sides read the module: `shared_accessors` compares position as well as label and type, as the compiler's `get_compatible_record_fields` does. Live in projection position, so it is independent of call-position precedence"
     },
     {
       "fixture": "accessor_type",
@@ -384,8 +374,7 @@
       "girard": { "status": "ok", "return": "fn(String) -> Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "the regression guard for the accessor fix: same label and index, different types, so no accessor exists and the module must win - and must keep winning after PR 2"
+      "why": "the regression guard for the accessor fix: same label and index, different types, so no accessor exists and the module must win - and must keep winning now that a reachable field beats the module"
     },
     {
       "fixture": "accessor_shared",
@@ -419,8 +408,7 @@
       "girard": { "status": "ok", "return": "String", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "the positive control for the accessor fix: same label, index and type, so the accessor is real and the field must win - PR 2 must not be written as `never share anything`"
+      "why": "the positive control for the accessor fix: same label, index and type, so the accessor is real and the field must win - the positional rule must not be written as `never share anything`"
     },
     {
       "fixture": "only_loud",
@@ -454,7 +442,6 @@
       "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
       "why": "a single-variant type grants a real accessor, so the field is in reach with no narrowing at all"
     },
     {
@@ -486,11 +473,10 @@
       "inputs_hash": "8890444f4a24177590e63da01104c0c965b836bd0f5a3f07d005fc711465b37e",
       "evidence_hash": "7b7f82211262bc90a2e2c959f42d0e4275fbfabcb08b19aee4723d2de74d200e",
       "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
-      "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
-      "divergent": true,
-      "owner": "PR2",
-      "why": "the subject of the `case` is the receiver itself and no `as` rebinds it. Measured: with the module out of scope girard reads the field, so `env.variants` already expresses this narrowing and only `infer_callee` precedence loses it"
+      "divergent": false,
+      "why": "the subject of the `case` is the receiver itself and no `as` rebinds it: narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`"
     },
     {
       "fixture": "alias_block",
@@ -524,8 +510,7 @@
       "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": true,
-      "owner": "PR4",
-      "why": "the narrowed value leaves a block through its final expression. Measured: with the module out of scope girard errors, so `env.variants` cannot express it - `let io = { .. l }` binds a variable to a variable and no constructor call is in reach, exactly as in `alias_let`"
+      "why": "the narrowed value leaves a block through its final expression. Measured: with the module out of scope girard errors, so `env.variants` cannot express it - `let io = { .. l }` binds a variable to a variable and no constructor call is in reach, exactly as in `alias_let`: the narrowing is lost at the re-binding because `env.variants` follows the name, not the value; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
     },
     {
       "fixture": "let_assert",
@@ -556,11 +541,10 @@
       "inputs_hash": "1bf7cccdca15ef0892ffa4341476d45aaea2fc707d32fd45ee6e484eda33925a",
       "evidence_hash": "7b7f82211262bc90a2e2c959f42d0e4275fbfabcb08b19aee4723d2de74d200e",
       "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
-      "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
-      "divergent": true,
-      "owner": "PR2",
-      "why": "`let assert Loud(..) as io = l` narrows and binds in one pattern, the shortest path from a pattern to a narrowed receiver. Measured: girard reads the field with the module out of scope, so this is call-position precedence alone"
+      "divergent": false,
+      "why": "`let assert Loud(..) as io = l` narrows and binds in one pattern, the shortest path from a pattern to a narrowed receiver: narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`"
     },
     {
       "fixture": "alternatives_agree",
@@ -591,11 +575,10 @@
       "inputs_hash": "cb3499949ed86cb8dc2e759bd094d13876038483e895f43c9d0cf18c51e12802",
       "evidence_hash": "7b7f82211262bc90a2e2c959f42d0e4275fbfabcb08b19aee4723d2de74d200e",
       "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
-      "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
-      "divergent": true,
-      "owner": "PR2",
-      "why": "both alternatives of the pattern are `Loud`, so the narrowing is to a single variant and the field stays in reach through an alternative pattern. Measured: girard reads the field with the module out of scope, so this is call-position precedence alone"
+      "divergent": false,
+      "why": "both alternatives of the pattern are `Loud`, so the narrowing is to a single variant and the field stays in reach through an alternative pattern: `agree_variants` keeps a narrowing every alternative records the same constructor for, and it is read field-first in call position since `infer_callee` resolves through `infer_field_access`"
     },
     {
       "fixture": "closure_param",
@@ -629,8 +612,7 @@
       "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "the closure's parameter is a fresh, annotated binding, so the narrowing outside it does not reach the receiver: passes today for the right reason, and PR 4 must not make it over-narrow"
+      "why": "the closure's parameter is a fresh, annotated binding, so the narrowing outside it does not reach the receiver: passes today for the right reason, and narrowing that follows the value must not make it over-narrow"
     },
     {
       "fixture": "factory_result",
@@ -664,8 +646,7 @@
       "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "construction narrowing must not survive a call boundary: `Loud(f)` is constructed inside `build`, whose annotated return carries no variant. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and PR 4 must not over-narrow it back into reach"
+      "why": "construction narrowing must not survive a call boundary: `Loud(f)` is constructed inside `build`, whose annotated return carries no variant. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and narrowing that follows the value rather than the name must not over-narrow it back into reach"
     },
     {
       "fixture": "alternatives_disagree",
@@ -699,8 +680,7 @@
       "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "the alternatives are `Loud` and `Quiet`, so no single variant is narrowed to and the field is out of reach: the row that stops PR 2 from narrowing to the first alternative. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and PR 4 must not over-narrow it back into reach"
+      "why": "the alternatives are `Loud` and `Quiet`, so no single variant is narrowed to and the field is out of reach: `agree_variants` drops a narrowing the alternatives disagree on before the body is checked under each of them, so neither alternative reads the first one's field. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and narrowing that follows the value rather than the name must not over-narrow it back into reach"
     },
     {
       "fixture": "through_generic",
@@ -734,8 +714,7 @@
       "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "a constructed value passed through `fn(x: a) -> a` loses its variant at the generic boundary, matching the compiler's erase. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and PR 4 must not over-narrow it back into reach"
+      "why": "a constructed value passed through `fn(x: a) -> a` loses its variant at the generic boundary, matching the compiler's erase. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and narrowing that follows the value rather than the name must not over-narrow it back into reach"
     },
     {
       "fixture": "wildcard_column",
@@ -769,8 +748,7 @@
       "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "the receiver's column of the `case` is a plain binding, which constrains no variant, so the pattern narrows nothing. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and PR 4 must not over-narrow it back into reach"
+      "why": "the receiver's column of the `case` is a plain binding, which constrains no variant, so the pattern narrows nothing. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and narrowing that follows the value rather than the name must not over-narrow it back into reach"
     },
     {
       "fixture": "after_case",
@@ -804,8 +782,7 @@
       "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "the narrowing inside a `case` must not leak past it: the access is after the `case`, on the same binding the `case` matched on. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and PR 4 must not over-narrow it back into reach"
+      "why": "the narrowing inside a `case` must not leak past it: the access is after the `case`, on the same binding the `case` matched on. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and narrowing that follows the value rather than the name must not over-narrow it back into reach"
     },
     {
       "fixture": "rebound_in_branch",
@@ -839,8 +816,7 @@
       "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "the name is bound twice - a parameter and a `let` inside the branch - and the inner binding is `Quiet`, which declares no `println`, so the field is out of reach. The row whose forced-module companion needs both declarations renamed. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and PR 4 must not over-narrow it back into reach"
+      "why": "the name is bound twice - a parameter and a `let` inside the branch - and the inner binding is `Quiet`, which declares no `println`, so the field is out of reach. The row whose forced-module companion needs both declarations renamed. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and narrowing that follows the value rather than the name must not over-narrow it back into reach"
     },
     {
       "fixture": "pipe_narrowed",
@@ -874,8 +850,7 @@
       "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "a bare pipe target is inferred through `infer_expr` into the field-preferring `infer_field_access`, where a call goes through the module-preferring `infer_callee` - opposite precedences, so this row may agree where its call twin diverges"
+      "why": "a bare pipe target is inferred through `infer_expr` into `infer_field_access`, the one resolver a call also reaches through `infer_callee`, so a pipe target and a call read the same field"
     },
     {
       "fixture": "pipe_plain",
@@ -909,8 +884,7 @@
       "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "the un-narrowed polarity of the pipe row: no accessor, so the module is the only reading either path can take. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and PR 4 must not over-narrow it back into reach"
+      "why": "the un-narrowed polarity of the pipe row: no accessor, so the module is the only reading either path can take. The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and narrowing that follows the value rather than the name must not over-narrow it back into reach"
     },
     {
       "fixture": "use_guard",
@@ -944,8 +918,7 @@
       "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
-      "why": "a `use` target is the callee of a `Call` in glance, so the same call-position derivation applies. The shadow module's `guard` is deliberately monomorphic, unlike `gleam/bool.guard`, which is what keeps this row derivable"
+      "why": "a `use` target is the callee of a `Call` in glance, resolved through `infer_callee` like any call, so the same field-first derivation applies. The shadow module's `guard` is deliberately monomorphic, unlike `gleam/bool.guard`, which is what keeps this row derivable"
     },
     {
       "fixture": "result_try",
@@ -979,7 +952,6 @@
       "girard": { "status": "ok", "return": "Result(Int, Nil)", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
       "why": "the corpus's one intended `derivable: false` row: a callback parameter named `result` shadowing the real `gleam/result`, whose generic `try` cannot have its specialized return read off its declaration without performing unification in the test. The forced compile measures it instead"
     },
     {
@@ -1011,11 +983,10 @@
       "inputs_hash": "7a48a0e08495ba7df654db6fd011c1d615092fd069264c0f60dc7ab969a31d06",
       "evidence_hash": "7b7f82211262bc90a2e2c959f42d0e4275fbfabcb08b19aee4723d2de74d200e",
       "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
-      "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
-      "divergent": true,
-      "owner": "PR2",
-      "why": "the collision is with an import alias rather than a module path's final segment. Measured: girard reads the field with the module out of scope, so this is call-position precedence alone. The row pins only the type answer for now - telling an alias from the canonical module path needs a resolution API girard does not yet expose, and would extend this row rather than add one"
+      "divergent": false,
+      "why": "the collision is with an import alias rather than a module path's final segment: narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`. The row pins only the type answer for now - telling an alias from the canonical module path needs a resolution API girard does not yet expose, and would extend this row rather than add one"
     },
     {
       "fixture": "imported_narrowed",
@@ -1046,11 +1017,44 @@
       "inputs_hash": "6667066ae02ce7366f12d75bc27202b6e6a9c851c7938bae10e748c919e296ee",
       "evidence_hash": "7b7f82211262bc90a2e2c959f42d0e4275fbfabcb08b19aee4723d2de74d200e",
       "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
-      "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
-      "divergent": true,
-      "owner": "PR2",
-      "why": "the narrowed type is declared in a second module, pinning that variant narrowing - and the field index the narrowed variant grants - agree across a module boundary. Measured: girard reads the field with the module out of scope, so the module boundary costs nothing and this is call-position precedence alone"
+      "divergent": false,
+      "why": "the narrowed type is declared in a second module, pinning that variant narrowing - and the field index the narrowed variant grants - agree across a module boundary: narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`, and the module boundary costs nothing"
+    },
+    {
+      "fixture": "renamed_alternatives",
+      "function": "renamed_alternatives",
+      "kind": "resolution",
+      "access": "call",
+      "syntax_site": "call",
+      "expect": "field",
+      "field_availability": "variant",
+      "narrowed_to": "Near",
+      "module_availability": "available",
+      "field_member": "fn(String) -> Nil",
+      "module_member": "fn(String) -> Int",
+      "field_return": "Nil",
+      "module_return": "Int",
+      "field_candidates": null,
+      "missing_variants": null,
+      "reason": null,
+      "derivable": true,
+      "forced_field": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
+      "forced_module": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
+      "target_import": { "module": "differential/io", "alias": null },
+      "label": "println",
+      "target_bindings": [{ "name": "io", "span": { "start": 153, "end": 155 } }, { "name": "io", "span": { "start": 176, "end": 178 } }],
+      "target_access": { "start": 182, "end": 192 },
+      "renamed_to": "rec_0",
+      "renamed_spans": [[153, 155], [176, 178]],
+      "inputs_hash": "5b78a1e588dd0c196b609372b8df17344554390a5b6aa502b3690fbc06ca211a",
+      "evidence_hash": "7b7f82211262bc90a2e2c959f42d0e4275fbfabcb08b19aee4723d2de74d200e",
+      "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
+      "expect_girard_error_variant": null,
+      "divergent": false,
+      "why": "the alternatives name one variant two ways - a renamed unqualified import `Near as Close` and the qualified `kinds.Near` - so the narrowing survives `agree_variants`, which compares the constructor's identity in its declaring module rather than its spelling, as the compiler compares variant indices: narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`"
     },
     {
       "fixture": "field_by_elimination",
@@ -1084,7 +1088,6 @@
       "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
       "why": "no colliding module is in scope at all, so the field wins by elimination: the control that shows the module branch, not the field one, is what the other rows contest"
     },
     {
@@ -1119,7 +1122,6 @@
       "girard": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "owner": null,
       "why": "an unbound receiver whose name is a module in scope that exports the label does not error: the compiler falls through to the module export, and girard's current behaviour is correct. A resolution row rather than a probe, so a regression that read some other type moves the ratchet instead of passing a status comparison"
     },
     {
@@ -1154,7 +1156,6 @@
       "girard": { "status": "error", "return": null, "diagnostic": null, "at": null, "error_variant": "NotARecord" },
       "expect_girard_error_variant": "NotARecord",
       "divergent": false,
-      "owner": null,
       "why": "an unbound receiver whose name is not a module in scope: record access fails, module access is unavailable, and both sides reject it - girard at NotARecord where the compiler reaches `Unknown type for record access`"
     },
     {
@@ -1189,8 +1190,41 @@
       "girard": { "status": "error", "return": null, "diagnostic": null, "at": null, "error_variant": "NotARecord" },
       "expect_girard_error_variant": "NotARecord",
       "divergent": false,
-      "owner": null,
       "why": "an unbound receiver whose name is a module in scope that does not export the label: the module branch is unavailable too, so the fallback has nothing to fall through to and both sides reject it"
+    },
+    {
+      "fixture": "narrowed_labelled",
+      "function": "narrowed_labelled",
+      "kind": "probe",
+      "access": "call",
+      "syntax_site": "call",
+      "expect": "error",
+      "field_availability": null,
+      "narrowed_to": null,
+      "module_availability": null,
+      "field_member": null,
+      "module_member": null,
+      "field_return": null,
+      "module_return": null,
+      "field_candidates": null,
+      "missing_variants": null,
+      "reason": null,
+      "derivable": null,
+      "forced_field": null,
+      "forced_module": null,
+      "target_import": { "module": "differential/labelled", "alias": "io" },
+      "label": "println",
+      "target_bindings": [{ "name": "io", "span": { "start": 173, "end": 175 } }],
+      "target_access": { "start": 179, "end": 189 },
+      "renamed_to": null,
+      "renamed_spans": [],
+      "inputs_hash": "64d1f4f0dd2aab71dfffa3e7e41e3b4bb9a62753fba02069e572c4a18408fbe1",
+      "evidence_hash": "88c319e684df53ea8b5eb3968a0a9173d46cb51ef3bd339f5026dc37d05fe700",
+      "compiler": { "status": "error", "return": null, "diagnostic": "Unexpected labelled argument", "at": { "line": 10, "column": 34 }, "error_variant": null },
+      "girard": { "status": "error", "return": null, "diagnostic": null, "at": null, "error_variant": "AmbiguousCall" },
+      "expect_girard_error_variant": "AmbiguousCall",
+      "divergent": false,
+      "why": "a record-selected callee has no field map, so a same-named module's labels must not apply: the narrowed receiver reads the field, and `message:` is then an unexpected labelled argument on both sides - girard at AmbiguousCall where the compiler reports `Unexpected labelled argument`"
     }
   ]
 }
