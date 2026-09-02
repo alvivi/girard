@@ -1,0 +1,13 @@
+# The template for the one case that reaches real stdlib: the `result.try`
+# control, whose point is a callback parameter shadowing a real module name.
+#
+# The version is pinned exactly and `manifest.toml` beside it is committed, so
+# the compiler's evidence for that row is reproducible and a dependency bump
+# elsewhere in girard cannot silently invalidate it. `test/differential_test`
+# asserts girard's own `build/packages/gleam_stdlib` matches this pin, so a skew
+# fails loudly instead of reading as a resolution divergence (PR 1, §4, §7).
+name = "differential"
+version = "1.0.0"
+
+[dependencies]
+gleam_stdlib = "1.0.3"

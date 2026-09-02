@@ -25,6 +25,13 @@ gleam_json = ">= 3.1.0 and < 4.0.0"
 # Snapshot testing for the golden report fixtures under `golden/` (see
 # test/golden_test.gleam). Review changes with `gleam run -m birdie`.
 birdie = ">= 2.0.2 and < 3.0.0"
+# SHA-256 for the differential manifest's canonical `inputs_hash` /
+# `evidence_hash` digests (see test/differential_test.gleam).
+gleam_crypto = ">= 1.4.0 and < 2.0.0"
+# Identifier tokens, with byte offsets, for the differential suite's
+# receiver-occurrence derivation. glance parses; glexer is what tells the test
+# which byte ranges are identifier tokens rather than string or comment text.
+glexer = ">= 2.0.0 and < 3.0.0"
 
 # Linter config. Run with `gleam run -m glinter`.
 # We lint the library (src/) only: gleeunit tests are public, un-annotated, and

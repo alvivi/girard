@@ -25,6 +25,7 @@ gleam test                            # run the full test suite
 gleam run -m birdie                   # review golden snapshot changes
 gleam run -m girard/sweep [package]   # sweep an installed dependency
 bash scripts/gen-oracle.sh            # regenerate compiler oracle fixtures
+bash scripts/gen-differential.sh      # regenerate the resolution manifest
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the local dev loop, differential
@@ -35,9 +36,12 @@ API directly. `test/oracle_test.gleam` compares inferred public signatures and
 per-expression types with committed JSON exports from the real Gleam compiler
 for sources under `oracle/`. `test/golden_test.gleam` uses **birdie** to
 snapshot `girard.report`'s rendered output for each fixture under `golden/`;
-review pending snapshots with `gleam run -m birdie`. Both `oracle/` and
-`golden/` sit at the repo root, outside `src/` and `test/`, so `gleam` does not
-compile the fixtures as modules.
+review pending snapshots with `gleam run -m birdie`.
+`test/differential_test.gleam` re-derives girard's answer for every case under
+`differential/` and asserts it still matches the committed manifest of compiler
+answers there. `oracle/`, `golden/` and `differential/` all sit at the repo
+root, outside `src/` and `test/`, so `gleam` does not compile the fixtures as
+modules.
 
 ## Architecture
 
@@ -52,8 +56,10 @@ API.
 | `src/girard/internal/reference.gleam` | Lexically scoped reference collection for the top-level definition graph |
 
 Development-only modules under `dev/girard/` provide package sweeps,
-per-expression compiler diffs, and benchmarks. Shell scripts under `scripts/`
-stage packages and compiler output for those tools.
+per-expression compiler diffs, benchmarks, and the resolution differential
+driver (`girard/differential`, whose `manifest`, `source` and `runner`
+submodules are shared with `test/differential_test.gleam`). Shell scripts under
+`scripts/` stage packages and compiler output for those tools.
 
 ## Inference Pipeline
 
@@ -120,6 +126,12 @@ There are three levels of compiler comparison:
 - `scripts/batch_sweep.sh` repeats the per-expression sweep across many Hex
   packages. [PACKAGES.md](PACKAGES.md) records the resulting ecosystem
   coverage.
+- `test/differential_test.gleam` compares *which* member a name resolves to —
+  record field or same-named module export — against a manifest of answers from
+  a pinned gleam 1.18.0 under `differential/`. Regenerate it with
+  `scripts/gen-differential.sh`. Divergences are recorded rather than hidden:
+  the manifest flags each one, names the change that must remove it, and the
+  test pins their count so the total cannot quietly grow.
 
 The broad per-expression sweep needs the patched compiler and network access,
 so it is a manual safety net rather than a CI gate.

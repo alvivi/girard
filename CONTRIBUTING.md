@@ -92,6 +92,21 @@ bash scripts/gen-oracle.sh
 gleam test
 ```
 
+A third fixture corpus, [`differential/`](differential/), measures something the
+oracle cannot: **which** `x.label` a name resolves to when a record field and a
+same-named module export both offer one. Each fixture makes the decision visible
+in a type — the module's export returns something different from the field — and
+the manifest records both sides' answers with each disagreement flagged, owned,
+and explained. The suite is green and the divergences are data:
+[`differential/README.md`](differential/README.md) describes the layout, the
+manifest and how to add a case. Regenerate it after adding or changing a
+fixture; it needs the pinned gleam 1.18.0 but no patched compiler:
+
+```sh
+bash scripts/gen-differential.sh
+gleam test
+```
+
 For full breadth, `scripts/sweep.sh <package>` checks girard's
 **per-expression** output against a patched compiler's `gleam export
 expression-types` over a package's whole Hex-resolved dependency closure;
