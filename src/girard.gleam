@@ -1759,14 +1759,6 @@ fn variant_of(type_: ty.Type) -> Option(Int) {
   }
 }
 
-// The variant a constructor's scheme builds, read off the return of its type.
-fn scheme_variant(scheme: ty.Scheme) -> Option(Int) {
-  case scheme.type_ {
-    ty.Fn(_, return) -> variant_of(return)
-    other -> variant_of(other)
-  }
-}
-
 // Forget which variant a value was built with, as happens when it is bound to
 // a type variable. It reaches through functions and tuples but *not* into a
 // named type's arguments: a `List(Loud)` still knows its elements are `Loud`.
@@ -3519,7 +3511,7 @@ fn infer_use(
         Some(ann) -> hydrate(env, st, ann)
         None -> fresh(st)
       }
-      use #(env, st) <- result.try(infer_pattern(
+      use #(env, _, st) <- result.try(infer_pattern(
         env,
         st,
         use_pattern.pattern,
@@ -3692,7 +3684,7 @@ fn infer_expr_assignment(
     None -> Ok(st)
   })
   // `let assert Ctor(..) = x` narrows `x` itself, for the rest of the block.
-  use #(env, st) <- result.try(infer_pattern(
+  use #(env, _, st) <- result.try(infer_pattern(
     env,
     st,
     pattern,
@@ -3792,13 +3784,14 @@ fn bind_alternative(
     fn(acc, pair) {
       let #(env, st) = acc
       let #(pattern, #(subject, subject_type)) = pair
-      infer_pattern(
+      use #(env, _, st) <- result.map(infer_pattern(
         env,
         st,
         pattern,
         subject_type,
         subject_variable(subject, bound),
-      )
+      ))
+      #(env, st)
     },
   )
 }
@@ -3882,28 +3875,6 @@ fn subject_variable(
   }
 }
 
-// The type an `as` name binds to: the pattern's own type, which for a
-// constructor pattern is that constructor's return, variant and all. Every
-// other pattern binds the expected type unchanged.
-fn pattern_type(
-  env: Env,
-  st: State,
-  pattern: glance.Pattern,
-  expected: ty.Type,
-) -> ty.Type {
-  let variant = case pattern {
-    glance.PatternVariant(_, module, constructor, _, _) ->
-      constructor_scheme(env, module, constructor)
-      |> result.map(scheme_variant)
-      |> result.unwrap(None)
-    _ -> None
-  }
-  case variant {
-    Some(index) -> stamp(st, expected, index)
-    None -> expected
-  }
-}
-
 // Rebind `name` to its type narrowed to `variant`. The compiler sets the
 // variant on a link-collapsed copy so the outer scope keeps its type; here the
 // rebinding is the copy, and it lives only as long as the environment it is
@@ -3929,38 +3900,68 @@ fn narrow(env: Env, st: State, name: String, variant: Int) -> Env {
   }
 }
 
+// Infer a pattern, returning the environment it extends, **its own type**, and
+// the state. The type is the compiler's `Pattern::type_()` rather than the
+// expected type it was matched against: the two differ exactly where a pattern
+// is more specific than what it matched, which is what an enclosing `as` has to
+// bind at. A constructor pattern's own type carries the variant it matched, and
+// a tuple pattern's is rebuilt from its elements' own types, so
+// `#(Loud(..), _) as pair` binds `pair` at `#(Logger[Loud], Int)` and
+// `pair.0.println` is in reach.
+//
+// Measured against 1.18.0: the rebuild is recursive (a tuple in a tuple keeps
+// the stamp) and it stops at a constructor's arguments — `Box(Loud(..)) as b`
+// leaves `b.value` un-narrowed, because a constructor pattern's type is its
+// return, whose arguments were erased when the type variable was bound.
 fn infer_pattern(
   env: Env,
   st: State,
   pattern: glance.Pattern,
   expected: ty.Type,
   subject: Option(String),
-) -> Result(#(Env, State), Error) {
+) -> Result(#(Env, ty.Type, State), Error) {
   case pattern {
-    glance.PatternInt(..) -> with_env(env, unify(st, expected, prelude_int()))
+    glance.PatternInt(..) ->
+      typed(env, prelude_int(), unify(st, expected, prelude_int()))
     glance.PatternFloat(..) ->
-      with_env(env, unify(st, expected, prelude_float()))
+      typed(env, prelude_float(), unify(st, expected, prelude_float()))
     glance.PatternString(..) ->
-      with_env(env, unify(st, expected, prelude_string()))
-    glance.PatternDiscard(..) -> Ok(#(env, st))
+      typed(env, prelude_string(), unify(st, expected, prelude_string()))
+    glance.PatternDiscard(..) -> Ok(#(env, expected, st))
 
     glance.PatternVariable(_, name) ->
-      Ok(#(bind_value(env, name, ty.Scheme([], expected)), st))
+      Ok(#(bind_value(env, name, ty.Scheme([], expected)), expected, st))
 
     glance.PatternTuple(_, elements) -> {
       // Destructure a tuple the expected type already is, element by element,
       // rather than through fresh element variables: a variable binding erases
-      // what the element was built with, and the compiler destructures.
+      // what the element was built with, and the compiler destructures. The
+      // tuple's own type is then rebuilt from what the elements matched, which
+      // is where an element's variant survives to an enclosing `as`.
       use #(elem_types, st) <- result.try(tuple_elements(
         st,
         expected,
         list.length(elements),
       ))
-      list.try_fold(list.zip(elements, elem_types), #(env, st), fn(acc, pair) {
-        let #(env, st) = acc
-        let #(pattern, t) = pair
-        infer_pattern(env, st, pattern, t, None)
-      })
+      use #(env, rev_types, st) <- result.try(
+        list.try_fold(
+          list.zip(elements, elem_types),
+          #(env, [], st),
+          fn(acc, pair) {
+            let #(env, types_, st) = acc
+            let #(pattern, t) = pair
+            use #(env, t, st) <- result.map(infer_pattern(
+              env,
+              st,
+              pattern,
+              t,
+              None,
+            ))
+            #(env, [t, ..types_], st)
+          },
+        ),
+      )
+      Ok(#(env, ty.Tuple(list.reverse(rev_types)), st))
     }
 
     glance.PatternList(_, elements, tail) -> {
@@ -3969,35 +3970,39 @@ fn infer_pattern(
       use #(env, st) <- result.try(
         list.try_fold(elements, #(env, st), fn(acc, p) {
           let #(env, st) = acc
-          infer_pattern(env, st, p, elem, None)
+          use #(env, _, st) <- result.map(infer_pattern(env, st, p, elem, None))
+          #(env, st)
         }),
       )
-      case tail {
-        Some(t) -> infer_pattern(env, st, t, prelude_list(elem), None)
+      use #(env, st) <- result.try(case tail {
+        Some(t) -> {
+          use #(env, _, st) <- result.map(infer_pattern(
+            env,
+            st,
+            t,
+            prelude_list(elem),
+            None,
+          ))
+          #(env, st)
+        }
         None -> Ok(#(env, st))
-      }
+      })
+      Ok(#(env, prelude_list(elem), st))
     }
 
     // `Ctor(..) as name` hands the subject on to the pattern inside it, which
     // narrows the subject as it would on its own; the `as` name then takes the
-    // constructor pattern's own type, variant and all. The pattern is inferred
-    // first so its narrowing cannot overwrite this binding.
+    // pattern's own type, and so is itself that pattern's type. The pattern is
+    // inferred first so its narrowing cannot overwrite this binding.
     glance.PatternAssignment(_, pattern, name) -> {
-      use #(env, st) <- result.try(infer_pattern(
+      use #(env, type_, st) <- result.try(infer_pattern(
         env,
         st,
         pattern,
         expected,
         subject,
       ))
-      Ok(#(
-        bind_value(
-          env,
-          name,
-          ty.Scheme([], pattern_type(env, st, pattern, expected)),
-        ),
-        st,
-      ))
+      Ok(#(bind_value(env, name, ty.Scheme([], type_)), type_, st))
     }
 
     glance.PatternConcatenate(_, _prefix, prefix_name, rest_name) -> {
@@ -4014,7 +4019,7 @@ fn infer_pattern(
         Some(name) -> bind_name(env, name)
         None -> env
       }
-      Ok(#(bind_name(env, rest_name), st))
+      Ok(#(bind_name(env, rest_name), prelude_string(), st))
     }
 
     glance.PatternVariant(_, module, constructor, arguments, _spread) -> {
@@ -4040,25 +4045,50 @@ fn infer_pattern(
         arguments,
         list.length(field_types),
       ))
-      list.try_fold(
-        list.zip(arg_patterns, field_types),
-        #(env, st),
-        fn(acc, pair) {
-          let #(env, st) = acc
-          let #(pattern, t) = pair
-          infer_pattern(env, st, pattern, t, None)
-        },
+      use #(env, st) <- result.try(
+        list.try_fold(
+          list.zip(arg_patterns, field_types),
+          #(env, st),
+          fn(acc, pair) {
+            let #(env, st) = acc
+            let #(pattern, t) = pair
+            use #(env, _, st) <- result.map(infer_pattern(
+              env,
+              st,
+              pattern,
+              t,
+              None,
+            ))
+            #(env, st)
+          },
+        ),
       )
+      // The constructor's own return, stamped: the arguments matched above do
+      // not re-stamp it, which is the compiler's shape.
+      Ok(#(env, ret, st))
     }
 
     glance.PatternBitString(_, segments) -> {
       use st <- result.try(unify(st, expected, prelude_bit_array()))
-      list.try_fold(segments, #(env, st), fn(acc, segment) {
-        let #(env, st) = acc
-        infer_bit_pattern_segment(env, st, segment)
-      })
+      use #(env, st) <- result.try(
+        list.try_fold(segments, #(env, st), fn(acc, segment) {
+          let #(env, st) = acc
+          infer_bit_pattern_segment(env, st, segment)
+        }),
+      )
+      Ok(#(env, prelude_bit_array(), st))
     }
   }
+}
+
+// A pattern arm's result where the pattern's own type is already known: the
+// `with_env` of the three-place return.
+fn typed(
+  env: Env,
+  type_: ty.Type,
+  st: Result(State, Error),
+) -> Result(#(Env, ty.Type, State), Error) {
+  result.map(st, fn(st) { #(env, type_, st) })
 }
 
 // A tuple pattern's element types: the expected type's own elements where it
@@ -4105,7 +4135,7 @@ fn infer_bit_pattern_segment(
     glance.PatternFloat(..) -> prelude_float()
     _ -> prelude_int()
   }
-  use #(env, st) <- result.try(infer_pattern(
+  use #(env, _, st) <- result.try(infer_pattern(
     env,
     st,
     pattern,

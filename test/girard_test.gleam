@@ -1525,6 +1525,76 @@ pub fn record_update_narrows_result_test() {
   |> should.equal("fn(Tagged, fn(String) -> Nil) -> fn(String) -> Nil")
 }
 
+pub fn tuple_as_binding_keeps_element_variant_test() {
+  // An `as` name binds the pattern's *own* type, and a tuple pattern's own type
+  // is rebuilt from its elements', so `#(Loud(..), _) as p` binds `p` at
+  // `#(Tagged[Loud], Int)` and the element's variant is still in reach through
+  // it. The corpus cannot express this: its contest needs a bare name that
+  // could also denote a module, and the receiver here is a tuple access.
+  let source =
+    tagged_type
+    <> "pub fn run(t: Tagged) {\n"
+    <> "  let pair = #(t, 1)\n"
+    <> "  case pair {\n"
+    <> "    #(Loud(..), _) as p -> p.0.println\n"
+    <> "    _ -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn(Tagged) -> fn(String) -> Nil")
+}
+
+pub fn nested_tuple_as_binding_keeps_variant_test() {
+  // The rebuild is recursive, so a tuple inside a tuple keeps the stamp too.
+  let source =
+    tagged_type
+    <> "pub fn run(t: Tagged) {\n"
+    <> "  let nested = #(#(t, 1), 2)\n"
+    <> "  case nested {\n"
+    <> "    #(#(Loud(..), _), _) as p -> p.0.0.println\n"
+    <> "    _ -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn(Tagged) -> fn(String) -> Nil")
+}
+
+pub fn nested_as_inside_tuple_narrows_both_test() {
+  // An `as` inside the tuple binds the constructor pattern's own type, and the
+  // enclosing `as` still sees that element as stamped: the two bindings agree.
+  let source =
+    tagged_type
+    <> "pub fn run(t: Tagged) {\n"
+    <> "  let pair = #(t, 1)\n"
+    <> "  case pair {\n"
+    <> "    #(Loud(..) as l, _) as p -> #(l.println, p.0.println)\n"
+    <> "    _ -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn(Tagged) -> #(fn(String) -> Nil, fn(String) -> Nil)")
+}
+
+pub fn constructor_as_binding_does_not_narrow_arguments_test() {
+  // The rebuild stops at a constructor's arguments: a constructor pattern's own
+  // type is its return, whose type arguments were erased when the variable was
+  // bound, so `Box(Loud(..)) as b` leaves `b.value` un-narrowed. Measured
+  // against 1.18.0, which rejects this program for the same reason.
+  let source =
+    tagged_type
+    <> "pub type Box {\n"
+    <> "  Box(value: Tagged)\n"
+    <> "}\n"
+    <> "pub fn run(b: Box) {\n"
+    <> "  case b {\n"
+    <> "    Box(Loud(..)) as bb -> bb.value.println\n"
+    <> "    _ -> panic\n"
+    <> "  }\n"
+    <> "}"
+  error_with(source, [])
+  |> should.equal(girard.NoSuchField("Tagged", "println"))
+}
+
 pub fn monomorphic_constant_subject_narrows_test() {
   // A module constant is a subject like any local name. This one is
   // monomorphic, so it has no quantifier to stamp under — the companion of the
