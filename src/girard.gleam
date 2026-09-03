@@ -571,6 +571,22 @@ type Pending {
   PendingIndex(container: ty.Type, index: Int, result: ty.Type)
 }
 
+// What kind of module-level value a name is: the part of the compiler's
+// `ValueConstructorVariant` that says which member a reference resolved to.
+type ValueKind {
+  FunctionKind
+  ConstantKind
+  ConstructorKind
+}
+
+// Where a module-level value was declared: its defining module's canonical
+// path, the name it has *there*, and what kind of value it is. An
+// `import kinds.{Near as Close}` is in scope as `Close` and has origin
+// `Origin("kinds", "Near", ConstructorKind)`.
+type Origin {
+  Origin(module: String, name: String, kind: ValueKind)
+}
+
 // A record type's field accessors: the labels every variant declares
 // compatibly, and each variant's own, in declaration order. Each map is
 // `label -> fn(record) -> field`, generalized over the type's parameters. A
@@ -616,6 +632,12 @@ type Env {
     // label of each positional parameter (`None` where unlabelled). Used to
     // reorder labelled and shorthand arguments at call/pattern sites.
     field_maps: Dict(String, List(Option(String))),
+    // The module-level bindings in scope — this module's own functions,
+    // constants and constructors, and the values unqualified imports bring in
+    // — by the name each is in scope under. **An absent name is a local**: a
+    // `let`, a parameter or a pattern binding, which `bind_value` clears here
+    // as it clears the name's field map.
+    origins: Dict(String, Origin),
     // The name of the module currently being inferred. Local types are minted
     // with this module so they stay distinct from imported types.
     current_module: String,
@@ -652,6 +674,10 @@ type ModuleInterface {
     aliases: Dict(String, #(List(Int), ty.Type)),
     accessors: Dict(String, Accessors),
     field_maps: Dict(String, List(Option(String))),
+    // What kind of value each public export is, so an importer can say which
+    // member a qualified reference resolved to. Built over the keys of
+    // `values`, so it holds no kind for a value the interface does not.
+    kinds: Dict(String, ValueKind),
     // The modules this one imports, so a type it exposes from another module
     // (e.g. a `glance.Span` field) keeps its accessors reachable transitively.
     // Keyed by the alias they are reachable under *here*, which is why a
@@ -692,6 +718,7 @@ fn new_env() -> Env {
     accessors: dict.new(),
     local_types: dict.new(),
     field_maps: dict.new(),
+    origins: dict.new(),
     current_module: "",
     modules: dict.new(),
     module_index: dict.new(),
@@ -719,6 +746,13 @@ fn register_field_map(
     True -> Env(..env, field_maps: dict.insert(env.field_maps, name, labels))
     False -> Env(..env, field_maps: dict.delete(env.field_maps, name))
   }
+}
+
+// Record where a module-level value came from, replacing whatever the name
+// held before. Written wherever `register_field_map` is: the two say different
+// things about the same scope entry, which the compiler keeps as one.
+fn register_origin(env: Env, name: String, origin: Origin) -> Env {
+  Env(..env, origins: dict.insert(env.origins, name, origin))
 }
 
 // Declare a local type name (and arity) so references to it during hydration
@@ -829,6 +863,10 @@ fn prelude() -> #(Env, State) {
   let env =
     list.fold(values, new_env(), fn(env, value) {
       insert_value(env, value.0, value.1)
+      |> register_origin(
+        value.0,
+        Origin(prelude_module, value.0, ConstructorKind),
+      )
     })
   #(env, st)
 }
@@ -861,6 +899,8 @@ fn prelude_interface() -> ModuleInterface {
     aliases: dict.new(),
     accessors: dict.new(),
     field_maps: dict.new(),
+    // Every prelude value is a constructor of a prelude type.
+    kinds: dict.map_values(values, fn(_, _) { ConstructorKind }),
     modules: dict.new(),
     reachable: dict.new(),
   )
@@ -868,14 +908,16 @@ fn prelude_interface() -> ModuleInterface {
 
 // Bind a local value: a `let`, a parameter, a pattern's binding. The labels a
 // call may use are read off whatever the callee's name resolves to, and a local
-// value has none of its own, so the binding takes the name's field map with it.
-// The compiler needs no such line because a name's type and its field map are
-// one scope entry there; here they are two dictionaries, and this is what keeps
-// them written together.
+// value has none of its own, so the binding takes the name's field map with it
+// — and its origin, since a local shadows a module-level name's identity as it
+// shadows its labels. The compiler needs no such line because a name's type,
+// its field map and its constructor variant are one scope entry there; here
+// they are three dictionaries, and this is what keeps them written together.
 fn bind_value(env: Env, name: String, scheme: ty.Scheme) -> Env {
   Env(
     ..insert_value(env, name, scheme),
     field_maps: dict.delete(env.field_maps, name),
+    origins: dict.delete(env.origins, name),
   )
 }
 
@@ -934,6 +976,26 @@ fn lookup(env: Env, name: String) -> Result(ty.Scheme, Nil) {
 type Def {
   FunctionDef(glance.Function)
   ConstantDef(glance.Constant)
+}
+
+// Install a top-level definition's value and its identity together. The
+// compiler keeps them as one scope entry; splitting them is what would let them
+// disagree, and best-effort mode is where that shows. A definition whose
+// component fails to type has that component's whole environment discarded, so
+// a name it shadowed reverts — an unqualified import of the same name keeps its
+// scheme, and has to keep its origin with it, or a caller typed against the
+// import would be published under the local definition's identity.
+fn define_def(env: Env, def: Def, scheme: ty.Scheme) -> Env {
+  let name = def_name(def)
+  define(env, name, scheme)
+  |> register_origin(name, Origin(env.current_module, name, def_kind(def)))
+}
+
+fn def_kind(def: Def) -> ValueKind {
+  case def {
+    FunctionDef(_) -> FunctionKind
+    ConstantDef(_) -> ConstantKind
+  }
 }
 
 fn def_name(def: Def) -> String {
@@ -1213,13 +1275,9 @@ fn infer_group(
     list.fold(items, env, fn(env, item) {
       case item {
         AnnotatedDef(def, _, params, return_type) ->
-          define(
-            env,
-            def_name(def),
-            function_scheme(env, st, params, return_type),
-          )
+          define_def(env, def, function_scheme(env, st, params, return_type))
         PlaceholderDef(def, var) ->
-          define(env, def_name(def), generalize(st, env, var))
+          define_def(env, def, generalize(st, env, var))
       }
     })
   Ok(#(env, st))
@@ -1248,7 +1306,7 @@ fn placeholder(
 ) -> #(Env, List(GroupItem), State) {
   let #(var, st) = fresh_var(st)
   #(
-    define(env, def_name(def), ty.Scheme([], var)),
+    define_def(env, def, ty.Scheme([], var)),
     [PlaceholderDef(def, var), ..items],
     st,
   )
@@ -1276,7 +1334,7 @@ fn prereg_def(
     Ok(f) -> {
       let #(params, return_type, rigid_ids, st) = signature_skeleton(env, st, f)
       #(
-        define(env, def_name(def), rigid_scheme(rigid_ids, params, return_type)),
+        define_def(env, def, rigid_scheme(rigid_ids, params, return_type)),
         [AnnotatedDef(def, f, params, return_type), ..items],
         st,
       )
@@ -1434,15 +1492,29 @@ fn build_interface(
   type_names: List(String),
   accessor_type_names: List(String),
 ) -> ModuleInterface {
+  let values = take(env.values, value_names)
   ModuleInterface(
     name: name,
-    values: take(env.values, value_names),
+    values: values,
     types: take(env.local_types, type_names),
     aliases: resolve_aliases(env, st, type_names),
     // Only non-opaque public types expose their field accessors: an opaque
     // type's fields are private to its defining module.
     accessors: take(env.accessors, accessor_type_names),
     field_maps: take(env.field_maps, value_names),
+    // Over the keys `values` actually kept, not over `value_names`: in
+    // best-effort mode a skipped public definition keeps the origin step 2
+    // registered while `best_effort_group` drops its value, and a kind for a
+    // value the interface does not export would be a key with nothing behind
+    // it. The other direction is a writer invariant: every public value is one
+    // of this module's own functions, constants or constructors, each of which
+    // registers its origin before this runs.
+    kinds: dict.fold(values, dict.new(), fn(kinds, name, _scheme) {
+      case dict.get(env.origins, name) {
+        Ok(origin) -> dict.insert(kinds, name, origin.kind)
+        Error(_) -> kinds
+      }
+    }),
     modules: env.modules,
     reachable: env.module_index,
   )
@@ -1546,6 +1618,15 @@ fn import_value(
 ) -> Env {
   let env = case dict.get(interface.values, original) {
     Ok(scheme) -> insert_value(env, local, scheme)
+    Error(_) -> env
+  }
+  // The origin is the module's real path and the name the value has *there*,
+  // never the alias it reached this module under. A value with no kind is
+  // absent from `origins` rather than given a guessed one; `module_access` is
+  // the reader that turns that broken invariant into a structured error.
+  let env = case dict.get(interface.kinds, original) {
+    Ok(kind) ->
+      register_origin(env, local, Origin(interface.name, original, kind))
     Error(_) -> env
   }
   case dict.get(interface.field_maps, original) {
@@ -2294,6 +2375,12 @@ fn register_custom_type(
         }
         let env = register_field_map(env, variant.name, labels)
         let env =
+          register_origin(
+            env,
+            variant.name,
+            Origin(env.current_module, variant.name, ConstructorKind),
+          )
+        let env =
           insert_value(env, variant.name, ty.Scheme(param_ids, ctor_type))
         #(env, st, [fields, ..variant_fields])
       },
@@ -2720,18 +2807,66 @@ fn infer_bit_segment(
 }
 
 // Which branch a `name.label` access took. A call reads it to pick the
-// callee's field map, which is a property of the branch, not of the alias.
+// callee's field map, which is a property of the branch, not of the alias, and
+// the resolver reads it to record which member the access resolved to.
 type Access {
   // A record field: the compiler's `RecordAccess`, which has no field map.
-  Field
-  // A module export, with its own field map when the export has one.
-  Export(labels: Result(List(Option(String)), Nil))
+  // Carries the receiver's nominal type, live — the reference publishes it
+  // zonked, so later unification still refines it.
+  Field(receiver: ty.Type)
+  // A module export, with its own field map when the export has one, and the
+  // identity it was read under.
+  Export(labels: Result(List(Option(String)), Nil), origin: Origin)
+  // Neither yet: the container's type is still a variable and no module of its
+  // name exports the label, so a `PendingField` was queued. The reference is
+  // recorded if and when `resolve_one` reads the field.
+  Deferred
 }
 
-// A module export a `name.label` access may fall through to: its scheme and
-// its field map, both read from the interface while it is in hand.
-type ModuleExport =
-  #(ty.Scheme, Result(List(Option(String)), Nil))
+// A module export a `name.label` access may fall through to: its scheme, its
+// field map and where it was declared, all read from the interface while it is
+// in hand.
+type ModuleExport {
+  ModuleExport(
+    scheme: ty.Scheme,
+    labels: Result(List(Option(String)), Nil),
+    origin: Origin,
+  )
+}
+
+// The export `name.label` reaches when `name` is an imported module, in three
+// states rather than two: `Ok(None)` for no such module or no such export,
+// `Ok(Some(export))` for a valid export with its kind, and `Error` for a value
+// the interface exports with no kind recorded for it. That last is girard's own
+// broken invariant (see `build_interface`), and it ends the definition with a
+// structured error rather than falling through to the record branch or
+// publishing a plausible-but-false identity for it.
+fn module_access(
+  env: Env,
+  name: String,
+  label: String,
+) -> Result(Option(ModuleExport), Error) {
+  case dict.get(env.modules, name) {
+    Error(_) -> Ok(None)
+    Ok(interface) ->
+      case dict.get(interface.values, label) {
+        Error(_) -> Ok(None)
+        Ok(scheme) ->
+          case dict.get(interface.kinds, label) {
+            Error(_) ->
+              Error(Unsupported("kind of " <> interface.name <> "." <> label))
+            Ok(kind) ->
+              Ok(
+                Some(ModuleExport(
+                  scheme: scheme,
+                  labels: dict.get(interface.field_maps, label),
+                  origin: Origin(interface.name, label, kind),
+                )),
+              )
+          }
+      }
+  }
+}
 
 // The one resolver for `name.label`, in projection and in call position
 // alike. The compiler's rule: a valid record access wins unconditionally, a
@@ -2749,20 +2884,13 @@ fn infer_field_access(
     // Only a bare name can also denote a module, so only there is there a
     // module export for a failing record access to fall through to.
     glance.Variable(_, name) -> {
-      let module_access = case dict.get(env.modules, name) {
-        Ok(interface) ->
-          dict.get(interface.values, label)
-          |> result.map(fn(scheme) {
-            #(scheme, dict.get(interface.field_maps, label))
-          })
-        Error(_) -> Error(Nil)
-      }
+      use export <- result.try(module_access(env, name, label))
       case dict.has_key(env.values, name) {
-        True -> value_field(env, st, container, label, module_access)
-        False -> module_or_record(env, st, container, label, module_access)
+        True -> value_field(env, st, container, label, export)
+        False -> module_or_record(env, st, container, label, export)
       }
     }
-    _ -> module_or_record(env, st, container, label, Error(Nil))
+    _ -> module_or_record(env, st, container, label, None)
   }
 }
 
@@ -2771,9 +2899,8 @@ fn module_export(
   st: State,
   export: ModuleExport,
 ) -> Result(#(ty.Type, Access, State), Error) {
-  let #(scheme, labels) = export
-  let #(type_, st) = instantiate(st, scheme)
-  Ok(#(type_, Export(labels), st))
+  let #(type_, st) = instantiate(st, export.scheme)
+  Ok(#(type_, Export(export.labels, export.origin), st))
 }
 
 // Defer `container.label` until inference fixes the container's type.
@@ -2788,7 +2915,7 @@ fn pending_field(
       PendingField(container_type, label, field),
       ..st.pending
     ])
-  Ok(#(field, Field, st))
+  Ok(#(field, Deferred, st))
 }
 
 // Field access where the container names a bound value: prefer a record field
@@ -2798,7 +2925,7 @@ fn value_field(
   st: State,
   container: glance.Expression,
   label: String,
-  module_access: Result(ModuleExport, Nil),
+  export: Option(ModuleExport),
 ) -> Result(#(ty.Type, Access, State), Error) {
   use #(container_type, st) <- result.try(infer_expr(env, st, container))
   case resolve(st, container_type) {
@@ -2806,26 +2933,26 @@ fn value_field(
       case accessor(env, record, label) {
         Ok(_) -> {
           use #(field, st) <- result.try(field_type(env, st, record, label))
-          Ok(#(field, Field, st))
+          Ok(#(field, Field(record), st))
         }
         // Not a field of this record; a same-named module may export it.
         Error(field_error) ->
-          case module_access {
-            Ok(export) -> module_export(st, export)
-            Error(_) -> Error(field_error)
+          case export {
+            Some(export) -> module_export(st, export)
+            None -> Error(field_error)
           }
       }
     // The record type is not known yet. Prefer a same-named module export;
     // otherwise defer until inference fixes the type.
     ty.Var(_) ->
-      case module_access {
-        Ok(export) -> module_export(st, export)
-        Error(_) -> pending_field(st, container_type, label)
+      case export {
+        Some(export) -> module_export(st, export)
+        None -> pending_field(st, container_type, label)
       }
     _ ->
-      case module_access {
-        Ok(export) -> module_export(st, export)
-        Error(_) -> Error(NotARecord)
+      case export {
+        Some(export) -> module_export(st, export)
+        None -> Error(NotARecord)
       }
   }
 }
@@ -2837,16 +2964,16 @@ fn module_or_record(
   st: State,
   container: glance.Expression,
   label: String,
-  module_access: Result(ModuleExport, Nil),
+  export: Option(ModuleExport),
 ) -> Result(#(ty.Type, Access, State), Error) {
-  case module_access {
-    Ok(export) -> module_export(st, export)
-    Error(_) -> {
+  case export {
+    Some(export) -> module_export(st, export)
+    None -> {
       use #(container_type, st) <- result.try(infer_expr(env, st, container))
       case resolve(st, container_type) {
         ty.Named(_, _, _, _) as record -> {
           use #(field, st) <- result.try(field_type(env, st, record, label))
-          Ok(#(field, Field, st))
+          Ok(#(field, Field(record), st))
         }
         ty.Var(_) -> pending_field(st, container_type, label)
         _ -> Error(NotARecord)
@@ -3093,8 +3220,8 @@ fn infer_callee(
         label,
       ))
       let labels = case access {
-        Export(labels) -> labels
-        Field -> Error(Nil)
+        Export(labels, _) -> labels
+        Field(_) | Deferred -> Error(Nil)
       }
       Ok(#(type_, labels, record(st, span(function), type_)))
     }
