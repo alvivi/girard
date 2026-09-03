@@ -1715,6 +1715,34 @@ pub fn field_call_rejects_top_level_labels_test() {
   |> should.equal(girard.AmbiguousCall)
 }
 
+const labelled_greet = "pub fn greet(name name: String) -> Int { 1 }\n"
+
+pub fn let_shadowed_callee_rejects_labels_test() {
+  // A bare-name callee's labels come from whatever the name resolves to, and a
+  // `let` binding has none: the top-level `greet`'s `name:` is out of reach
+  // inside the shadow, so the call is an unexpected labelled argument.
+  let source =
+    labelled_greet
+    <> "pub fn run() {\n"
+    <> "  let greet = fn(who: String) -> String { who }\n"
+    <> "  greet(name: \"hi\")\n"
+    <> "}"
+  error_with(source, [])
+  |> should.equal(girard.AmbiguousCall)
+}
+
+pub fn parameter_shadowed_callee_rejects_labels_test() {
+  // A parameter shadows a labelled top-level function the same way a `let`
+  // does.
+  let source =
+    labelled_greet
+    <> "pub fn run(greet: fn(String) -> String) -> String {\n"
+    <> "  greet(name: \"hi\")\n"
+    <> "}"
+  error_with(source, [])
+  |> should.equal(girard.AmbiguousCall)
+}
+
 const logger2_type = "pub type Logger {\n  Loud(println: fn(String, Int) -> Nil)\n  Quiet(n: Int)\n}\n"
 
 const io_labelled_println2 = "pub fn println(message message: String, n n: Int) -> Int { 1 }"
@@ -1958,4 +1986,41 @@ pub fn annotate_package_cascades_to_dependents_test() {
   list.key_find(m.skipped, "bad") |> should.be_ok
   let assert Ok(girard.UnboundVariable("bad")) =
     list.key_find(m.skipped, "uses_it")
+}
+
+pub fn definition_shadowed_import_rejects_labels_test() {
+  // A top-level definition replaces an unqualified import of its name, labels
+  // and all: the imported `greet`'s `name:` is out of reach even though the
+  // local `greet` registers no labels of its own.
+  let source =
+    "import imported.{greet}\n"
+    <> "pub fn greet(who: String) -> String { who }\n"
+    <> "pub fn run() { greet(name: \"hi\") }"
+  error_with(source, [#("imported", labelled_greet)])
+  |> should.equal(girard.AmbiguousCall)
+}
+
+pub fn constant_shadowed_import_rejects_labels_test() {
+  // A constant is a top-level definition too, and carries no labels either.
+  let source =
+    "import imported.{greet}\n"
+    <> "fn plain(who: String) -> String { who }\n"
+    <> "pub const greet: fn(String) -> String = plain\n"
+    <> "pub fn run() { greet(name: \"hi\") }"
+  error_with(source, [#("imported", labelled_greet)])
+  |> should.equal(girard.AmbiguousCall)
+}
+
+pub fn constructor_shadowed_import_rejects_labels_test() {
+  // As does an unlabelled constructor shadowing a labelled imported one.
+  let source =
+    "import imported.{Greet}\n"
+    <> "pub type Local {\n"
+    <> "  Greet(String)\n"
+    <> "}\n"
+    <> "pub fn run() { Greet(name: \"hi\") }"
+  error_with(source, [
+    #("imported", "pub type Msg {\n  Greet(name: String)\n}\n"),
+  ])
+  |> should.equal(girard.AmbiguousCall)
 }

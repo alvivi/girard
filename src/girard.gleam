@@ -595,7 +595,7 @@ type Env {
     // every variable in their type, so they contribute nothing regardless of
     // the substitution and are omitted. `env_free_vars` scans only these, which
     // are few, instead of every binding in scope (mostly closed imports).
-    // Maintained alongside `values` in `bind_value`, its sole writer.
+    // Maintained alongside `values` in `insert_value`, its sole writer.
     open_values: Dict(String, ty.Scheme),
     // Locally-defined type aliases: name -> (parameter names, aliased type
     // AST), expanded during hydration in this module's environment.
@@ -704,15 +704,21 @@ fn set_module(env: Env, name: String) -> Env {
   Env(..env, current_module: name)
 }
 
-// Register the field map (per-position labels) of a callable.
+// Register the field map (per-position labels) of a top-level callable,
+// replacing whatever the name held before. A definition shadows an unqualified
+// import of its name, so an unlabelled one must leave no labels behind: the
+// compiler's single scope entry per name carries the type and the field map
+// together, and installing the definition drops the import's map with it.
 fn register_field_map(
   env: Env,
   name: String,
   labels: List(Option(String)),
 ) -> Env {
-  // Only worth recording if at least one position is labelled.
-  use <- bool.guard(when: !list.any(labels, fn(l) { l != None }), return: env)
-  Env(..env, field_maps: dict.insert(env.field_maps, name, labels))
+  // Only a labelled position is worth recording; the rest is a clean slate.
+  case list.any(labels, fn(l) { l != None }) {
+    True -> Env(..env, field_maps: dict.insert(env.field_maps, name, labels))
+    False -> Env(..env, field_maps: dict.delete(env.field_maps, name))
+  }
 }
 
 // Declare a local type name (and arity) so references to it during hydration
@@ -765,9 +771,10 @@ fn fresh_var(st: State) -> #(ty.Type, State) {
 }
 
 // Bind a value scheme into the environment (used to register top-level
-// functions and constructors).
+// functions and constructors). Inserting rather than binding, so the field map
+// registered for the name survives.
 fn define(env: Env, name: String, scheme: ty.Scheme) -> Env {
-  bind_value(env, name, scheme)
+  insert_value(env, name, scheme)
 }
 
 // Mark `names` as the live members of the strongly-connected component being
@@ -821,7 +828,7 @@ fn prelude() -> #(Env, State) {
   let #(values, st) = prelude_values(new_state())
   let env =
     list.fold(values, new_env(), fn(env, value) {
-      bind_value(env, value.0, value.1)
+      insert_value(env, value.0, value.1)
     })
   #(env, st)
 }
@@ -859,7 +866,25 @@ fn prelude_interface() -> ModuleInterface {
   )
 }
 
+// Bind a local value: a `let`, a parameter, a pattern's binding. The labels a
+// call may use are read off whatever the callee's name resolves to, and a local
+// value has none of its own, so the binding takes the name's field map with it.
+// The compiler needs no such line because a name's type and its field map are
+// one scope entry there; here they are two dictionaries, and this is what keeps
+// them written together.
 fn bind_value(env: Env, name: String, scheme: ty.Scheme) -> Env {
+  Env(
+    ..insert_value(env, name, scheme),
+    field_maps: dict.delete(env.field_maps, name),
+  )
+}
+
+// Insert a value's scheme, leaving any field map registered under the name
+// alone. For a definition that carries labels of its own — a top-level
+// function, a constructor, an unqualified import — and for a rebinding of a
+// name at a re-typed copy of its own type, which is the same binding rather
+// than a new one.
+fn insert_value(env: Env, name: String, scheme: ty.Scheme) -> Env {
   Env(
     ..env,
     values: dict.insert(env.values, name, scheme),
@@ -999,6 +1024,12 @@ fn infer_module(
         function.name,
         list.map(function.parameters, fn(p) { p.label }),
       )
+    })
+  // A constant names no parameters, so its (empty) map only ever clears one an
+  // import left under the name it shadows.
+  let env =
+    list.fold(module.constants, env, fn(env, d) {
+      register_field_map(env, d.definition.name, [])
     })
 
   // 3. Infer definitions in strongly-connected-component order.
@@ -1514,7 +1545,7 @@ fn import_value(
   original: String,
 ) -> Env {
   let env = case dict.get(interface.values, original) {
-    Ok(scheme) -> bind_value(env, local, scheme)
+    Ok(scheme) -> insert_value(env, local, scheme)
     Error(_) -> env
   }
   case dict.get(interface.field_maps, original) {
@@ -2262,7 +2293,8 @@ fn register_custom_type(
           _ -> ty.Fn(field_types, built)
         }
         let env = register_field_map(env, variant.name, labels)
-        let env = bind_value(env, variant.name, ty.Scheme(param_ids, ctor_type))
+        let env =
+          insert_value(env, variant.name, ty.Scheme(param_ids, ctor_type))
         #(env, st, [fields, ..variant_fields])
       },
     )
@@ -3887,7 +3919,11 @@ fn bound_variant(st: State, env: Env, name: String) -> Option(Int) {
 fn erase_binding(st: State, env: Env, name: String) -> Env {
   case dict.get(env.values, name) {
     Ok(ty.Scheme(vars, type_)) ->
-      bind_value(env, name, ty.Scheme(vars, erase_variant(resolve(st, type_))))
+      insert_value(
+        env,
+        name,
+        ty.Scheme(vars, erase_variant(resolve(st, type_))),
+      )
     Error(_) -> env
   }
 }
@@ -3950,7 +3986,7 @@ fn narrow(env: Env, st: State, name: String, variant: Int) -> Env {
     Ok(ty.Scheme(vars, type_)) ->
       case stamp(st, type_, variant) {
         ty.Named(..) as stamped ->
-          bind_value(env, name, ty.Scheme(vars, stamped))
+          insert_value(env, name, ty.Scheme(vars, stamped))
         _ -> env
       }
     Error(_) -> env
