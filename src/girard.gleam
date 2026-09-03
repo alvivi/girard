@@ -3752,7 +3752,8 @@ fn infer_clause(
       }
       let subjects =
         option.values(list.map(subjects, subject_variable(_, bound)))
-      agree_variants(st, list.reverse(rev_envs), list.append(subjects, bound))
+      let envs = agree_subjects(st, list.reverse(rev_envs), subjects)
+      agree_bindings(st, envs, bound)
     }
   }
   list.try_fold(envs, st, fn(st, clause_env) {
@@ -3796,13 +3797,52 @@ fn bind_alternative(
   )
 }
 
-// Alternative patterns bind the same names, and the compiler keeps a name's
-// variant only where every alternative gives it the same one: `Loud(..) as io
-// | Quiet(..) as io` narrows `io` to nothing, and so does `Loud(..) | Quiet(..)`
-// on the subject `io`. `names` covers both — the subject variables and the
-// names the patterns bind — because the compiler has one rule for each and they
-// agree. Equal and unstamped is agreement too.
-fn agree_variants(
+// A subject variable's variant across alternatives, the compiler's
+// `set_subject_variable_variant` in alternative mode: the **first** alternative
+// is the only one that may set it, and a later alternative can only take it
+// away, by naming a different variant. One that names none returns early and
+// leaves it alone.
+//
+// So the rule is order-sensitive, and measured to be: `Loud(..) | _` keeps the
+// narrowing and reads the field, while `_ | Loud(..)` is rejected — the first
+// alternative narrows nothing, and the second is not allowed to. The envs are
+// then made to agree at that answer rather than merely stripped, because the
+// body is checked under each of them and only the first binds the subject at
+// the variant the compiler ends up with.
+fn agree_subjects(
+  st: State,
+  envs: List(Env),
+  names: List(String),
+) -> List(Env) {
+  list.fold(names, envs, fn(envs, name) {
+    let variants = list.map(envs, bound_variant(st, _, name))
+    let agreed = case variants {
+      // A later alternative erases only by naming a *different* variant; `None`
+      // from one is silence, not disagreement.
+      [first, ..rest] ->
+        case list.any(rest, fn(v) { v != None && v != first }) {
+          True -> None
+          False -> first
+        }
+      [] -> None
+    }
+    list.map(envs, fn(env) {
+      case agreed {
+        Some(index) -> narrow(env, st, name, index)
+        None -> erase_binding(st, env, name)
+      }
+    })
+  })
+}
+
+// A name the patterns *bind* is a different rule, and not the one above: the
+// compiler unifies the alternatives' bindings through
+// `unify_constructor_variants`, which keeps a variant only where every
+// alternative gives it the same one. Measured: `Loud(..) as io | _ as io` is
+// rejected, where the subject form `Loud(..) | _` is accepted, so the two
+// classes genuinely disagree and cannot share a pass. Equal and unstamped is
+// agreement too.
+fn agree_bindings(
   st: State,
   envs: List(Env),
   names: List(String),

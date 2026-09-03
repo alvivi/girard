@@ -510,6 +510,10 @@ pub fn specs() -> List(Spec) {
       "a module constant is a subject like any other name, and a generic one is generalized: `const io = Quiet(0)` is bound at `Logger(a)`, so narrowing has to stamp under the quantifier rather than monomorphize the binding, which would reject the constant's other instantiations",
     ),
     narrowed(
+      "wildcard_alternative_keeps",
+      "a later alternative can only take the subject's narrowing away, and only by naming a *different* variant: `Loud(..) | _` names none in the second alternative, so the first alternative's narrowing stands and the field is in reach. The rule is the compiler's alternative-mode `set_subject_variable_variant`, which returns early rather than erasing when nothing was recorded",
+    ),
+    narrowed(
       "use_result",
       "`use` is the fourth call shape, after the call, the pipe and the capture: it desugars to a call of the right-hand side with the callback as its last argument, so the block's value is the callee's own return and keeps the variant that return was stamped with. `use_bound` pins the callback's parameter; this row pins the result"
         <> on_the_type,
@@ -605,6 +609,16 @@ pub fn specs() -> List(Spec) {
     logger(
       "subject_alternatives_disagree",
       "the alternatives narrow the subject to `Loud` and to `Quiet`, so it is narrowed to nothing under both: the subject-variable twin of `alternatives_disagree`"
+        <> unreachable,
+    ),
+    logger(
+      "wildcard_alternative_first",
+      "the other order of `wildcard_alternative_keeps`, and why that rule has to be order-sensitive rather than a set comparison: only the *first* alternative may set the subject's variant, so a leading `_` narrows nothing and the `Loud(..)` after it is not allowed to put it back"
+        <> unreachable,
+    ),
+    logger(
+      "as_alternative_wildcard",
+      "the pattern-bound analogue of `wildcard_alternative_keeps`, measured because the two classes turn out not to share a rule: a name the alternatives *bind* is unified through `unify_constructor_variants`, which keeps a variant only where every alternative gives the same one, so the `_ as io` alternative erases what `Loud(..) as io` narrowed - where the subject form keeps it"
         <> unreachable,
     ),
     logger(
