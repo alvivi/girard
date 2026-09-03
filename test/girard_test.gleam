@@ -1987,3 +1987,40 @@ pub fn annotate_package_cascades_to_dependents_test() {
   let assert Ok(girard.UnboundVariable("bad")) =
     list.key_find(m.skipped, "uses_it")
 }
+
+pub fn definition_shadowed_import_rejects_labels_test() {
+  // A top-level definition replaces an unqualified import of its name, labels
+  // and all: the imported `greet`'s `name:` is out of reach even though the
+  // local `greet` registers no labels of its own.
+  let source =
+    "import imported.{greet}\n"
+    <> "pub fn greet(who: String) -> String { who }\n"
+    <> "pub fn run() { greet(name: \"hi\") }"
+  error_with(source, [#("imported", labelled_greet)])
+  |> should.equal(girard.AmbiguousCall)
+}
+
+pub fn constant_shadowed_import_rejects_labels_test() {
+  // A constant is a top-level definition too, and carries no labels either.
+  let source =
+    "import imported.{greet}\n"
+    <> "fn plain(who: String) -> String { who }\n"
+    <> "pub const greet: fn(String) -> String = plain\n"
+    <> "pub fn run() { greet(name: \"hi\") }"
+  error_with(source, [#("imported", labelled_greet)])
+  |> should.equal(girard.AmbiguousCall)
+}
+
+pub fn constructor_shadowed_import_rejects_labels_test() {
+  // As does an unlabelled constructor shadowing a labelled imported one.
+  let source =
+    "import imported.{Greet}\n"
+    <> "pub type Local {\n"
+    <> "  Greet(String)\n"
+    <> "}\n"
+    <> "pub fn run() { Greet(name: \"hi\") }"
+  error_with(source, [
+    #("imported", "pub type Msg {\n  Greet(name: String)\n}\n"),
+  ])
+  |> should.equal(girard.AmbiguousCall)
+}

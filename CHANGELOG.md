@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is an error rather than being reordered by the top-level `greet`'s labels,
   as in the compiler. A parameter and a shadowed unqualified import behave the
   same way.
+- A top-level definition replaces the labels of the unqualified import it
+  shadows. `import imported.{greet}` followed by an unlabelled
+  `pub fn greet(who: String)` no longer lets `greet(name: "hi")` borrow the
+  import's `name:`; a constant and a record constructor clear the shadowed
+  name's labels the same way.
 - Expressions inside a `panic as` / `todo as` message are now annotated.
   Previously nothing in the message got a type — `name` in
   `panic as { "no such user: " <> name }` had no annotation at all. The message

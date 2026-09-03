@@ -704,15 +704,21 @@ fn set_module(env: Env, name: String) -> Env {
   Env(..env, current_module: name)
 }
 
-// Register the field map (per-position labels) of a callable.
+// Register the field map (per-position labels) of a top-level callable,
+// replacing whatever the name held before. A definition shadows an unqualified
+// import of its name, so an unlabelled one must leave no labels behind: the
+// compiler's single scope entry per name carries the type and the field map
+// together, and installing the definition drops the import's map with it.
 fn register_field_map(
   env: Env,
   name: String,
   labels: List(Option(String)),
 ) -> Env {
-  // Only worth recording if at least one position is labelled.
-  use <- bool.guard(when: !list.any(labels, fn(l) { l != None }), return: env)
-  Env(..env, field_maps: dict.insert(env.field_maps, name, labels))
+  // Only a labelled position is worth recording; the rest is a clean slate.
+  case list.any(labels, fn(l) { l != None }) {
+    True -> Env(..env, field_maps: dict.insert(env.field_maps, name, labels))
+    False -> Env(..env, field_maps: dict.delete(env.field_maps, name))
+  }
 }
 
 // Declare a local type name (and arity) so references to it during hydration
@@ -1018,6 +1024,12 @@ fn infer_module(
         function.name,
         list.map(function.parameters, fn(p) { p.label }),
       )
+    })
+  // A constant names no parameters, so its (empty) map only ever clears one an
+  // import left under the name it shadows.
+  let env =
+    list.fold(module.constants, env, fn(env, d) {
+      register_field_map(env, d.definition.name, [])
     })
 
   // 3. Infer definitions in strongly-connected-component order.
