@@ -129,8 +129,8 @@ so a local shadows a module-level name's identity as it shadows its labels.
 `infer_field_access` and `infer_callee` record a `Reference` into
 `State.references` for every field access and every bare name in call position;
 `publish_references` zonks each receiver, converts it and keeps one entry per
-span — the last recorded, so the pipe arity probe's unconstrained receiver loses
-to the real callee inference.
+span, which is what `Analysis.resolutions` promises: no walk produces a
+duplicate today, but the guarantee is the API's rather than any one walk's.
 
 Absence has exactly three shapes. A definition in `Analysis.skipped` contributes
 no references, because `best_effort_group` discards its component's whole
