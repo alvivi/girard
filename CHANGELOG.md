@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `analyse`, `analyse_module`, `analyse_with_cache` and `analyse_package`
+  report what every field access, and every bare name in call position,
+  resolved to, alongside the types `annotate*` already report. Each
+  `ResolvedReference` carries the access's span, the label's and the
+  receiver's, and a `Resolution`: a record field with its receiver's type, a
+  module function, constant or constructor under the module's canonical path
+  (never the import alias), a local value, or `Unresolved` where girard reached
+  the type but no member. `annotate*` are unchanged.
+
 ### Fixed
 
 - Variant narrowing now follows the value, not the name it was bound under.
