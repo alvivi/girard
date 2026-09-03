@@ -1715,6 +1715,34 @@ pub fn field_call_rejects_top_level_labels_test() {
   |> should.equal(girard.AmbiguousCall)
 }
 
+const labelled_greet = "pub fn greet(name name: String) -> Int { 1 }\n"
+
+pub fn let_shadowed_callee_rejects_labels_test() {
+  // A bare-name callee's labels come from whatever the name resolves to, and a
+  // `let` binding has none: the top-level `greet`'s `name:` is out of reach
+  // inside the shadow, so the call is an unexpected labelled argument.
+  let source =
+    labelled_greet
+    <> "pub fn run() {\n"
+    <> "  let greet = fn(who: String) -> String { who }\n"
+    <> "  greet(name: \"hi\")\n"
+    <> "}"
+  error_with(source, [])
+  |> should.equal(girard.AmbiguousCall)
+}
+
+pub fn parameter_shadowed_callee_rejects_labels_test() {
+  // A parameter shadows a labelled top-level function the same way a `let`
+  // does.
+  let source =
+    labelled_greet
+    <> "pub fn run(greet: fn(String) -> String) -> String {\n"
+    <> "  greet(name: \"hi\")\n"
+    <> "}"
+  error_with(source, [])
+  |> should.equal(girard.AmbiguousCall)
+}
+
 const logger2_type = "pub type Logger {\n  Loud(println: fn(String, Int) -> Nil)\n  Quiet(n: Int)\n}\n"
 
 const io_labelled_println2 = "pub fn println(message message: String, n n: Int) -> Int { 1 }"

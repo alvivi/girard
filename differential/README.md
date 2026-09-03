@@ -112,12 +112,9 @@ depth.
   aggregate over all rows is pinned as a literal in the test file, so tampering
   has to touch two files in one diff.
 
-**The suite is green and the one divergence is data.** girard and the pinned
-compiler answer every row here the same way but one: `shadowed_callee_labels`,
-where a `let` shadowing an imported labelled function still lends the call the
-import's labels, so girard accepts a call the compiler rejects. Its `why` names
-the change that removes it. Green here is a floor rather than a finish: a new
-divergence means girard has drifted, and it has to be recorded
+**The suite is green and there are no divergences.** girard and the pinned
+compiler answer every row here the same way. That is a floor rather than a
+finish: a new divergence means girard has drifted, and it has to be recorded
 here — with the mechanism and the change that removes it in `why` — before the
 suite can go green again, which is a reviewable diff and a raised count
 literal in `test/differential_test.gleam`. The literal is what stops the

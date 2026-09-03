@@ -2275,9 +2275,9 @@
       "inputs_hash": "94e2ae3a7fff71dc212a204d2da77a4acc5a28e9dd8275787630b6849f9b4e49",
       "evidence_hash": "26bc0f1afb00efb354dd602995a203c5e26bab33e1f6f3072817e6b7f15bb830",
       "compiler": { "status": "error", "return": null, "diagnostic": "Unexpected labelled argument", "at": { "line": 5, "column": 11 }, "error_variant": null },
-      "girard": { "status": "ok", "return": "String", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "error", "return": null, "diagnostic": null, "at": null, "error_variant": "AmbiguousCall" },
       "expect_girard_error_variant": "AmbiguousCall",
-      "divergent": true,
+      "divergent": false,
       "why": "a `let` shadowing an imported labelled function takes its labels with it: the compiler reads a bare-name callee's field map off whatever the name resolves to, and a local binding has none, so `message:` is an unexpected labelled argument - girard reorders by the shadowed import's labels and accepts, which `shadowed-callee-labels` fixes"
     }
   ]

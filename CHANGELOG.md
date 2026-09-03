@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Passing a labelled argument to a function stored in a record field is now an
   error, as in the compiler. Previously the labels of an unrelated function
   with the same name were used to reorder the arguments.
+- A local binding now shadows a callable's labels as well as its type. After
+  `let greet = fn(who: String) -> String { who }`, calling `greet(name: "hi")`
+  is an error rather than being reordered by the top-level `greet`'s labels,
+  as in the compiler. A parameter and a shadowed unqualified import behave the
+  same way.
 - Expressions inside a `panic as` / `todo as` message are now annotated.
   Previously nothing in the message got a type — `name` in
   `panic as { "no such user: " <> name }` had no annotation at all. The message
