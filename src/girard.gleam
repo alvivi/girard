@@ -3533,17 +3533,25 @@ fn infer_use(
   use #(body_type, st) <- result.try(infer_statements(callback_env, st, rest))
   let callback_type = ty.Fn(param_types, body_type)
 
-  // The right-hand side is called with the callback as its final argument.
+  // The right-hand side is called with the callback as its final argument. A
+  // `use` is the fourth call shape, so its value is the callee's own return
+  // rather than the hole that was unified against it — only the callee's
+  // carries the variant a constructor built.
   let #(result, st) = fresh(st)
-  use st <- result.try(case function {
+  use #(return, st) <- result.try(case function {
     glance.Call(_, callee, arguments) ->
       infer_use_call(env, st, callee, arguments, callback_type, result)
     other -> {
       use #(callee_type, st) <- result.try(infer_expr(env, st, other))
-      unify(st, callee_type, ty.Fn([callback_type], result))
+      use st <- result.try(unify(
+        st,
+        callee_type,
+        ty.Fn([callback_type], result),
+      ))
+      Ok(#(call_return(st, callee_type, result), st))
     }
   })
-  Ok(#(result, st))
+  Ok(#(return, st))
 }
 
 // Infer `use ... <- callee(args)`: the callback is the final positional
@@ -3557,9 +3565,9 @@ fn infer_use_call(
   arguments: List(glance.Field(glance.Expression)),
   callback_type: ty.Type,
   result: ty.Type,
-) -> Result(State, Error) {
+) -> Result(#(ty.Type, State), Error) {
   use #(callee_type, labels, st) <- result.try(infer_callee(env, st, callee))
-  case list.all(arguments, is_unlabelled) {
+  use st <- result.try(case list.all(arguments, is_unlabelled) {
     True -> {
       use #(arg_types, st) <- result.try(infer_each(
         env,
@@ -3598,7 +3606,8 @@ fn infer_use_call(
       )
       unify(st, callee_type, ty.Fn(arg_types, result))
     }
-  }
+  })
+  Ok(#(call_return(st, callee_type, result), st))
 }
 
 // Infer one statement, returning its type and the (possibly extended)
