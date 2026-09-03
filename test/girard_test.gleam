@@ -1515,9 +1515,16 @@ pub fn narrowing_is_scope_local_test() {
 pub fn record_update_narrows_result_test() {
   // A record update's type is the named constructor's own, so the result is
   // known to be that variant and a label only it declares is in reach.
+  //
+  // The subject is narrowed first. Updating an un-narrowed `t` on a
+  // multi-variant type is `Unsafe record update` in 1.18.0 — "I'm not sure this
+  // is always a `Loud`" — so pinning it would assert outside the set of
+  // programs girard is validated against. The `record_update_result` fixture
+  // narrows for the same reason.
   let source =
     tagged_type
     <> "pub fn run(t: Tagged, f: fn(String) -> Nil) {\n"
+    <> "  let assert Loud(..) = t\n"
     <> "  let updated = Loud(..t, println: f)\n"
     <> "  updated.println\n"
     <> "}"
