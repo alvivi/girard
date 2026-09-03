@@ -3898,16 +3898,25 @@ fn pattern_type(
 // Rebind `name` to its type narrowed to `variant`. The compiler sets the
 // variant on a link-collapsed copy so the outer scope keeps its type; here the
 // rebinding is the copy, and it lives only as long as the environment it is
-// made in. A polymorphic name (a top-level function) is left alone, and so is
-// one whose type is not a record.
+// made in.
+//
+// The scheme's quantifiers are kept rather than instantiated away. A module
+// constant is generalized like a function, so `const box = Empty` is bound at
+// `Box(a)`, and monomorphizing it here would reject a clause that uses it at
+// two instantiations — which the compiler accepts. Stamping under the
+// quantifier narrows every instantiation instead, and `substitute` carries the
+// variant through. Only a record is narrowed: a name whose type is a function
+// or a tuple stamps to itself and is left alone, which is what excludes a
+// top-level function used as a subject.
 fn narrow(env: Env, st: State, name: String, variant: Int) -> Env {
   case dict.get(env.values, name) {
-    Ok(ty.Scheme([], type_)) ->
+    Ok(ty.Scheme(vars, type_)) ->
       case stamp(st, type_, variant) {
-        ty.Named(..) as stamped -> bind_value(env, name, ty.Scheme([], stamped))
+        ty.Named(..) as stamped ->
+          bind_value(env, name, ty.Scheme(vars, stamped))
         _ -> env
       }
-    _ -> env
+    Error(_) -> env
   }
 }
 

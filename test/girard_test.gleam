@@ -1525,6 +1525,47 @@ pub fn record_update_narrows_result_test() {
   |> should.equal("fn(Tagged, fn(String) -> Nil) -> fn(String) -> Nil")
 }
 
+pub fn monomorphic_constant_subject_narrows_test() {
+  // A module constant is a subject like any local name. This one is
+  // monomorphic, so it has no quantifier to stamp under — the companion of the
+  // generic case, which the differential corpus measures.
+  let source =
+    tagged_type
+    <> "const quiet = Quiet(0)\n"
+    <> "pub fn run() {\n"
+    <> "  case quiet {\n"
+    <> "    Quiet(..) -> quiet.tag\n"
+    <> "    Loud(..) -> 0\n"
+    <> "  }\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn() -> Int")
+}
+
+pub fn generic_constant_narrowing_keeps_quantifier_test() {
+  // Narrowing a generalized constant stamps under its quantifier instead of
+  // monomorphizing it: the clause still uses `box` at two instantiations, which
+  // the compiler accepts, and the narrowed field is still in reach.
+  let source =
+    "pub type Box(a) {\n"
+    <> "  Full(item: a)\n"
+    <> "  Empty\n"
+    <> "}\n"
+    <> "const box = Empty\n"
+    <> "pub fn run() {\n"
+    <> "  case box {\n"
+    <> "    Full(..) -> {\n"
+    <> "      let a: Box(Int) = box\n"
+    <> "      let b: Box(String) = box\n"
+    <> "      #(a, b, box.item)\n"
+    <> "    }\n"
+    <> "    Empty -> #(Empty, Empty, Empty)\n"
+    <> "  }\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn() -> #(Box(Int), Box(String), Box(a))")
+}
+
 pub fn stamped_types_unify_test() {
   // Two values built with different variants have the same type, so they share
   // a list. The variant is carried on the type but is not part of what

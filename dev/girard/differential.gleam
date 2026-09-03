@@ -506,6 +506,10 @@ pub fn specs() -> List(Spec) {
         <> on_the_type,
     ),
     narrowed(
+      "generic_constant_subject",
+      "a module constant is a subject like any other name, and a generic one is generalized: `const io = Quiet(0)` is bound at `Logger(a)`, so narrowing has to stamp under the quantifier rather than monomorphize the binding, which would reject the constant's other instantiations",
+    ),
+    narrowed(
       "capture_call",
       "a capture is a lambda whose body is the call it wraps, so `Loud(_)` returns the constructor's own stamped type and calling it keeps the variant"
         <> on_the_type,

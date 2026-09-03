@@ -1,6 +1,6 @@
 {
   "gleam": "1.18.0",
-  "generated": "2026-09-02",
+  "generated": "2026-09-03",
   "cases": [
     {
       "fixture": "greet",
@@ -1157,6 +1157,40 @@
       "expect_girard_error_variant": null,
       "divergent": false,
       "why": "a tuple pattern is structural, so `let #(io, _) = #(Loud(f), 1)` binds `io` to the first element's own type, variant and all. girard agrees because the value's type carries the variant it was constructed with, and a field access selects that variant's own accessors"
+    },
+    {
+      "fixture": "generic_constant_subject",
+      "function": "generic_constant_subject",
+      "kind": "resolution",
+      "access": "call",
+      "syntax_site": "call",
+      "expect": "field",
+      "field_availability": "variant",
+      "narrowed_to": "Loud",
+      "module_availability": "available",
+      "field_member": "fn(String) -> Nil",
+      "module_member": "fn(String) -> Int",
+      "field_return": "Nil",
+      "module_return": "Int",
+      "field_candidates": null,
+      "missing_variants": null,
+      "reason": null,
+      "derivable": true,
+      "forced_field": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
+      "forced_module": null,
+      "target_import": { "module": "differential/io", "alias": null },
+      "label": "println",
+      "target_bindings": [],
+      "target_access": { "start": 194, "end": 204 },
+      "renamed_to": null,
+      "renamed_spans": [],
+      "inputs_hash": "d236810fa8e6ac7eae4bff1118298b45cb4de7a2082cfc78b2b0d70ce545c7cc",
+      "evidence_hash": "db3e414c0b76153f4a1fd707c0f8e399b7c94d14d42a063b9a1cf64d604c9fa0",
+      "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
+      "expect_girard_error_variant": null,
+      "divergent": false,
+      "why": "a module constant is a subject like any other name, and a generic one is generalized: `const io = Quiet(0)` is bound at `Logger(a)`, so narrowing has to stamp under the quantifier rather than monomorphize the binding, which would reject the constant's other instantiations"
     },
     {
       "fixture": "capture_call",
