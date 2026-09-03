@@ -3789,8 +3789,14 @@ fn infer_pipe(
       // than is supplied. But if `f(args)` is already a saturated call that
       // returns a function, the pipe applies `left` to that result:
       // `f(args)(left)`. Distinguish on the callee's arity.
-      use #(ft, st) <- result.try(infer_expr(env, st, function))
-      let saturated = case resolve(st, ft) {
+      //
+      // The probe's state is thrown away and `st` carries on: `infer_call`
+      // infers the callee again, properly, and keeping the probe's work would
+      // annotate and resolve the callee's span twice over — the second time
+      // with the instantiation the call actually constrained. An ill-typed
+      // callee still fails here, as it did before.
+      use #(ft, probe) <- result.try(infer_expr(env, st, function))
+      let saturated = case resolve(probe, ft) {
         ty.Fn(params, _) -> list.length(params) == list.length(arguments)
         _ -> False
       }
@@ -4970,15 +4976,11 @@ fn publish_references(st: State) -> List(ResolvedReference) {
 }
 
 // `Analysis.resolutions` promises one entry per span, so this is where that
-// promise is kept, whoever produced a duplicate. The survivor is the **last
-// recorded**: `st.references` is in reverse discovery order, where the last
-// recorded is the first met.
-//
-// Today the only producer is `infer_pipe`'s arity probe, which infers a
-// `left |> f(args)` callee once to test saturation and then again as part of
-// the call. Its two records are not interchangeable — the probe instantiates
-// the callee and discards the result, while the real inference ties it to the
-// call, so for a generic receiver only the second is constrained.
+// promise is kept, whoever produces a duplicate. No inference path does today
+// — `infer_pipe`'s arity probe used to, and now runs on a state it throws away
+// — but the guarantee is the API's, not one walk's, so it is enforced rather
+// than assumed. The survivor is the **last recorded**: `st.references` is in
+// reverse discovery order, where the last recorded is the first met.
 //
 // Two *different* references never share a whole span: a bare callee's is its
 // variable, and a field access's includes its container.

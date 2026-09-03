@@ -324,6 +324,21 @@ pub fn pipe_into_saturated_call_test() {
   |> should.equal("fn(String) -> String")
 }
 
+pub fn piped_call_annotates_its_callee_once_test() {
+  // `left |> f(args)` infers `f` once to measure its arity and again as part of
+  // the call. The probe runs on a state that is thrown away, so the callee's
+  // span carries one type rather than the same one twice.
+  let source =
+    "fn add(a: Int, b: Int) -> Int { a + b }\n" <> "pub fn go() { 1 |> add(2) }"
+  let assert Ok(annotated) = girard.annotate(source, girard.default_options())
+
+  list.filter(annotated.expressions, fn(a) {
+    a.span == last_span(source, "add")
+  })
+  |> list.map(fn(a) { girard.type_to_string(a.type_) })
+  |> should.equal(["fn(Int, Int) -> Int"])
+}
+
 // Panic and todo
 //
 // `panic` and `todo` are bottom — they unify with anything — but their optional
@@ -2128,8 +2143,7 @@ pub fn pipe_and_use_targets_are_recorded_test() {
 
 pub fn references_are_unique_per_span_test() {
   // `infer_pipe` infers a piped call's callee twice — once to test saturation,
-  // once as part of the call — so the same span is recorded twice and published
-  // once.
+  // once as part of the call — and the span carries one resolution.
   let modules = [#("m", "pub fn add(a: Int, b: Int) -> Int { a + b }")]
   let piped = "import m\npub fn run() { 1 |> m.add(2) }"
   list.filter(references(piped, modules), fn(r) {
@@ -2138,9 +2152,9 @@ pub fn references_are_unique_per_span_test() {
   |> list.map(fn(r) { r.resolution })
   |> should.equal([girard.ModuleFunction("m", "add")])
 
-  // The survivor is the real callee's record, not the arity probe's: applying
-  // `run` to the piped `1` fixes the box's parameter to `Int`, where the
-  // probe's instantiation leaves it unconstrained.
+  // And it is the real callee's, not the arity probe's: applying `run` to the
+  // piped `1` fixes the box's parameter to `Int`, where the probe's
+  // instantiation leaves it unconstrained.
   let generic =
     "pub type Box(a) {\n  Box(run: fn(a) -> a)\n}\n"
     <> "pub fn go() { 1 |> Box(fn(x) { x }).run() }"

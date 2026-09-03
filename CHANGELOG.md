@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A piped call's callee is no longer annotated twice. `left |> f(args)` infers
+  `f` once to measure its arity and again as part of the call; the arity probe
+  now runs on an inference state that is thrown away, so `expressions` holds one
+  entry for the callee's span rather than two — and for a generic callee, the
+  instantiation the call constrained rather than the probe's unconstrained one.
 - Variant narrowing now follows the value, not the name it was bound under.
   After `let assert Loud(..) = l`, `let io = l` still reads `io.println` as the
   field, and so do a tuple pattern, a closure's return, a record update, a
