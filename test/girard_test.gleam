@@ -863,6 +863,19 @@ pub fn discarded_import_keeps_variant_accessors_test() {
   |> should.equal("fn(fn(String) -> Nil) -> Nil")
 }
 
+pub fn discarded_import_is_reachable_transitively_test() {
+  // Three modules: `kinds` declares the record, `a` imports it under a
+  // discarded alias and returns one, and `b` imports only `a`. Nothing in `b`
+  // names `kinds`, so `b` can only find its accessors through what `a`'s
+  // interface carries — which is why the interface exports a real-name-keyed
+  // index and not just the alias-keyed one a discarded import is absent from.
+  let kinds = "pub type Box {\n  Box(value: Int)\n}"
+  let a = "import kinds.{Box} as _k\npub fn make() { Box(1) }"
+  let source = "import a\npub fn run() { a.make().value }"
+  signature_with(source, [#("kinds", kinds), #("a", a)], "run")
+  |> should.equal("fn() -> Int")
+}
+
 pub fn local_value_field_shadows_module_test() {
   // A local value named like an imported module: a bare `dep.value` reads the
   // record field (the value shadows the module here), since the field type fits

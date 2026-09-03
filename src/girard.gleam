@@ -654,7 +654,14 @@ type ModuleInterface {
     field_maps: Dict(String, List(Option(String))),
     // The modules this one imports, so a type it exposes from another module
     // (e.g. a `glance.Span` field) keeps its accessors reachable transitively.
+    // Keyed by the alias they are reachable under *here*, which is why a
+    // discard-aliased import is absent from it: it has no qualified name.
     modules: Dict(String, ModuleInterface),
+    // Everything this module resolved, keyed by real module name — the same
+    // graph, addressed the way `accessors_of_module` addresses it. A
+    // discard-aliased import is in here, so an importer can still find the
+    // accessors of a type this module exposes from one.
+    reachable: Dict(String, ModuleInterface),
   )
 }
 
@@ -848,6 +855,7 @@ fn prelude_interface() -> ModuleInterface {
     accessors: dict.new(),
     field_maps: dict.new(),
     modules: dict.new(),
+    reachable: dict.new(),
   )
 }
 
@@ -1297,7 +1305,8 @@ fn import_items(
   // still indexed by real module name: an unqualified constructor taken from it
   // builds a value whose type names that module, and the accessors for that
   // type are found through `module_index`, which is keyed by real name and so
-  // cannot shadow anything.
+  // cannot shadow anything. The index travels to importers as this module's
+  // `reachable`, so the entry is found from further away too.
   let env = case qualified_alias(import_) {
     Ok(alias) -> import_qualified(env, alias, interface)
     Error(_) ->
@@ -1404,6 +1413,7 @@ fn build_interface(
     accessors: take(env.accessors, accessor_type_names),
     field_maps: take(env.field_maps, value_names),
     modules: env.modules,
+    reachable: env.module_index,
   )
 }
 
@@ -1476,17 +1486,24 @@ fn import_qualified(
 // keyed by real module name. First insert wins (a name already present is left
 // as-is), which both guards the DAG against re-walking shared modules and is
 // unambiguous: a real module name resolves to one inferred interface per run.
+//
+// `reachable` is what carries the transitive half, rather than a walk over
+// `modules`: `modules` is keyed by the alias a module was imported under, so a
+// discard-aliased import is missing from it and everything only that import
+// could reach would be unreachable from here.
 fn index_interface(
   index: Dict(String, ModuleInterface),
   interface: ModuleInterface,
 ) -> Dict(String, ModuleInterface) {
   // Already indexed: stop. Guards the DAG against re-walking shared modules.
   use <- bool.guard(when: dict.has_key(index, interface.name), return: index)
-  dict.fold(
-    interface.modules,
-    dict.insert(index, interface.name, interface),
-    fn(acc, _alias, nested) { index_interface(acc, nested) },
-  )
+  let index = dict.insert(index, interface.name, interface)
+  dict.fold(interface.reachable, index, fn(acc, name, nested) {
+    case dict.has_key(acc, name) {
+      True -> acc
+      False -> dict.insert(acc, name, nested)
+    }
+  })
 }
 
 // Bring a single value (function/constant/constructor) into scope unqualified.
