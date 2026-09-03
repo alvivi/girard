@@ -44,29 +44,21 @@ pub fn resolver() -> girard.Resolver {
   }
 }
 
-/// Annotate a fixture and read off the inferred return type of the one function
-/// under test.
-pub fn girard_outcome(source: String, function: String) -> Outcome {
+/// girard's whole answer for one fixture, in one pass: the inferred return type
+/// of the function under test, and what each field access and each called bare
+/// name resolved to. A source girard cannot type answers an error and resolves
+/// nothing. Both halves come from one inference, so a caller that reads the
+/// type *and* the resolutions does not infer the module twice.
+pub fn girard_analysis(
+  source: String,
+  function: String,
+) -> #(Outcome, List(girard.ResolvedReference)) {
   let options = girard.with_resolver(girard.default_options(), resolver())
-  case girard.annotate(source, options) {
-    Error(error) ->
-      Outcome(
-        status: manifest.status_error,
-        return: None,
-        diagnostic: None,
-        at: None,
-        error_variant: Some(error_variant(error)),
-      )
-    Ok(annotated) ->
-      case list.key_find(annotated.functions, function) {
-        Error(_) ->
-          Outcome(
-            status: manifest.status_error,
-            return: None,
-            diagnostic: None,
-            at: None,
-            error_variant: Some("MissingFunction"),
-          )
+  case girard.analyse(source, options) {
+    Error(error) -> #(girard_error(error_variant(error)), [])
+    Ok(analysis) -> #(
+      case list.key_find(analysis.annotated.functions, function) {
+        Error(_) -> girard_error("MissingFunction")
         Ok(scheme) ->
           Outcome(
             status: manifest.status_ok,
@@ -75,8 +67,28 @@ pub fn girard_outcome(source: String, function: String) -> Outcome {
             at: None,
             error_variant: None,
           )
-      }
+      },
+      analysis.resolutions,
+    )
   }
+}
+
+/// Annotate a fixture and read off the inferred return type of the one function
+/// under test.
+pub fn girard_outcome(source: String, function: String) -> Outcome {
+  girard_analysis(source, function).0
+}
+
+// A girard-side failure: the constructor tag and nothing else. `diagnostic` and
+// `at` are compiler-side keys and stay null here.
+fn girard_error(variant: String) -> Outcome {
+  Outcome(
+    status: manifest.status_error,
+    return: None,
+    diagnostic: None,
+    at: None,
+    error_variant: Some(variant),
+  )
 }
 
 fn return_of(type_: girard.Type) -> girard.Type {
