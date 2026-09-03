@@ -143,6 +143,24 @@ fn narrowed(fixture: String, why: String) -> Spec {
   )
 }
 
+// The same contest read as a projection of `n`, which only `Quiet` declares:
+// an un-narrowed receiver grants no accessor, so the module's `String` is the
+// only reading that type-checks.
+fn projected_n(fixture: String, why: String) -> Spec {
+  Spec(
+    ..logger(fixture, why),
+    label: "n",
+    access: manifest.access_projection,
+    syntax_site: manifest.site_bare,
+    module_member: Some("String"),
+    module_return: Some("String"),
+    field_candidates: Some([
+      Candidate(variant: "Quiet", index: 0, member: "Int", return: "Int"),
+    ]),
+    missing_variants: Some(["Loud"]),
+  )
+}
+
 // A probe: it asks only whether the program was accepted, so it contests no
 // branch and records no availability, member or return.
 fn probe(
@@ -176,24 +194,26 @@ fn probe(
   )
 }
 
-// Every row whose field branch is out of reach passes today for a reason worth
-// stating in the manifest: girard under-narrows, and these rows want the
-// module. What keeps that from being an accident is the forced-field companion,
-// which must fail to compile - so the field really is unreachable, and
-// narrowing that follows the value rather than the name must not over-narrow
-// it back into reach.
-const unreachable = ". The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so girard agreeing today is not an accident of under-narrowing - and narrowing that follows the value rather than the name must not over-narrow it back into reach"
+// Every row whose field branch is out of reach wants the module, on both sides.
+// What keeps that from being an accident is the forced-field companion, which
+// must fail to compile - so the field really is unreachable, and the narrowing
+// that follows the value must not over-narrow it back into reach.
+const unreachable = ". The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so agreement is not an accident of under-narrowing: these are the rows that keep narrowing carried on the value's type from over-narrowing it back into reach"
 
-// What the remaining divergences share, and the change that removes them: a
-// narrowing is keyed by the pattern-bound name in `env.variants`, so it is
-// lost when the value is re-bound under another name. The compiler carries the
-// inferred variant on the value's type, where a re-binding keeps it.
-const rebinding = "the narrowing is lost at the re-binding because `env.variants` follows the name, not the value; carrying the inferred variant on the type, as the compiler does, is the change that removes this divergence"
+// What the alias rows share: the value is re-bound under another name, and the
+// narrowing comes with it because it lives on the value's own type rather than
+// under the name it happened to be bound to.
+const rebinding = "the narrowing survives the re-binding because it lives on the value's type rather than under the name it was bound to"
 
-// The mechanism the rows that flipped from divergent share: the narrowing
-// girard already recorded is read in call position the way projection always
-// read it.
-const field_first = "narrowing through `env.variants`, read field-first in call position since `infer_callee` resolves through `infer_field_access`"
+// What the rows that flip when a field access selects by variant share: the
+// constructed value reaches the receiver carrying the variant it was built
+// with, and the accessor lookup reads it off the type.
+const on_the_type = ". girard agrees because the value's type carries the variant it was constructed with, and a field access selects that variant's own accessors"
+
+// The mechanism the narrowed rows share: the receiver's own type says which
+// variant it was built with, and that reading is taken in call position the
+// way projection always took it.
+const field_first = "narrowing carried on the value's type, read field-first in call position since `infer_callee` resolves through `infer_field_access`"
 
 /// Every case, in the order they appear in the manifest.
 pub fn specs() -> List(Spec) {
@@ -220,26 +240,15 @@ pub fn specs() -> List(Spec) {
       "a value returned by an annotated helper carries no variant, so the receiver is un-narrowed exactly as in `plain_param`"
         <> unreachable,
     ),
-    Spec(
-      ..logger(
-        "projection_plain",
-        "the projection twin of `plain_param`: no accessor, so both sides read the module const"
-          <> unreachable,
-      ),
-      label: "n",
-      access: manifest.access_projection,
-      syntax_site: manifest.site_bare,
-      module_member: Some("String"),
-      module_return: Some("String"),
-      field_candidates: Some([
-        Candidate(variant: "Quiet", index: 0, member: "Int", return: "Int"),
-      ]),
-      missing_variants: Some(["Loud"]),
+    projected_n(
+      "projection_plain",
+      "the projection twin of `plain_param`: no accessor, so both sides read the module const"
+        <> unreachable,
     ),
     Spec(
       ..narrowed(
         "projection_narrowed",
-        "the projection path consults `env.variants` first, so `Ctor(..) as v` narrowing reaches projections; its call-position twin `narrowed_case` now resolves through the same path and agrees too",
+        "the projection path reads the receiver's own type, so `Ctor(..) as v` narrowing reaches projections; its call-position twin `narrowed_case` resolves through the same path and agrees too",
       ),
       label: "n",
       access: manifest.access_projection,
@@ -257,17 +266,18 @@ pub fn specs() -> List(Spec) {
     ),
     narrowed(
       "direct_construction",
-      "construction narrowing - `infer_expr_assignment` calls `record_variant` on the constructed variant - read field-first in call position since `infer_callee` resolves through `infer_field_access`",
+      "construction narrowing: a constructor's return type carries the variant it builds, so `let io = Loud(f)` needs nothing else. "
+        <> field_first,
     ),
     narrowed(
       "alias_let",
-      "narrowing survives `let io = l` after `let assert Loud(..) = l` in the compiler; girard cannot express that, because `env.variants` is keyed by the pattern-bound name: "
+      "`let assert Loud(..) = l` narrows `l` itself, and `let io = l` binds `io` to `l`'s type: "
         <> rebinding,
     ),
     Spec(
       ..narrowed(
         "alias_no_module",
-        "the same shape with the module removed: the compiler reads the field, girard has no module export to fall back to and errors outright. The worked example of a status divergence, and the reminder that girard's fallback is what keeps the other alias rows answering wrongly rather than failing",
+        "the same shape with the module removed, so the field is the only reading and there is nothing to fall through to. It was the worked example of a status divergence - girard errored outright where the compiler read the field - and is now what proves the other alias rows are answered rather than defaulted to the module",
       ),
       module_availability: Some(manifest.undeclared),
       module_member: None,
@@ -349,7 +359,7 @@ pub fn specs() -> List(Spec) {
     ),
     narrowed(
       "alias_block",
-      "the narrowed value leaves a block through its final expression. Measured: with the module out of scope girard errors, so `env.variants` cannot express it - `let io = { .. l }` binds a variable to a variable and no constructor call is in reach, exactly as in `alias_let`: "
+      "the narrowed value leaves a block through its final expression, and a block's type is that expression's, so `let io = { .. l }` is `alias_let` with a block in the way: "
         <> rebinding,
     ),
     narrowed(
@@ -359,7 +369,7 @@ pub fn specs() -> List(Spec) {
     ),
     narrowed(
       "alternatives_agree",
-      "both alternatives of the pattern are `Loud`, so the narrowing is to a single variant and the field stays in reach through an alternative pattern: `agree_variants` keeps a narrowing every alternative records the same constructor for, and it is read field-first in call position since `infer_callee` resolves through `infer_field_access`",
+      "both alternatives of the pattern are `Loud`, so the narrowing is to a single variant and the field stays in reach through an alternative pattern: `agree_variants` keeps a variant every alternative gives the name, and it is read field-first in call position since `infer_callee` resolves through `infer_field_access`",
     ),
     logger(
       "closure_param",
@@ -372,7 +382,7 @@ pub fn specs() -> List(Spec) {
     ),
     logger(
       "alternatives_disagree",
-      "the alternatives are `Loud` and `Quiet`, so no single variant is narrowed to and the field is out of reach: `agree_variants` drops a narrowing the alternatives disagree on before the body is checked under each of them, so neither alternative reads the first one's field"
+      "the alternatives are `Loud` and `Quiet`, so no single variant is narrowed to and the field is out of reach: `agree_variants` erases a variant the alternatives disagree on before the body is checked under each of them, so neither alternative reads the first one's field"
         <> unreachable,
     ),
     logger(
@@ -460,7 +470,7 @@ pub fn specs() -> List(Spec) {
     Spec(
       ..narrowed(
         "renamed_alternatives",
-        "the alternatives name one variant two ways - a renamed unqualified import `Near as Close` and the qualified `kinds.Near` - so the narrowing survives `agree_variants`, which compares the constructor's identity in its declaring module rather than its spelling, as the compiler compares variant indices: "
+        "the alternatives name one variant two ways - a renamed unqualified import `Near as Close` and the qualified `kinds.Near` - so the narrowing survives `agree_variants`, which compares the variant each alternative's type carries rather than the constructor's spelling, exactly as the compiler compares variant indices: "
           <> field_first,
       ),
       narrowed_to: Some("Near"),
@@ -485,6 +495,156 @@ pub fn specs() -> List(Spec) {
       field_candidates: None,
       missing_variants: None,
       reason: None,
+    ),
+    // Where the compiler keeps a narrowing
+    //
+    // Each row hands the receiver a value that is already known to be `Loud`,
+    // by a route that never passes through a type variable.
+    narrowed(
+      "tuple_pattern",
+      "a tuple pattern is structural, so `let #(io, _) = #(Loud(f), 1)` binds `io` to the first element's own type, variant and all"
+        <> on_the_type,
+    ),
+    narrowed(
+      "generic_constant_subject",
+      "a module constant is a subject like any other name, and a generic one is generalized: `const io = Quiet(0)` is bound at `Logger(a)`, so narrowing has to stamp under the quantifier rather than monomorphize the binding, which would reject the constant's other instantiations",
+    ),
+    narrowed(
+      "wildcard_alternative_keeps",
+      "a later alternative can only take the subject's narrowing away, and only by naming a *different* variant: `Loud(..) | _` names none in the second alternative, so the first alternative's narrowing stands and the field is in reach. The rule is the compiler's alternative-mode `set_subject_variable_variant`, which returns early rather than erasing when nothing was recorded",
+    ),
+    narrowed(
+      "use_result",
+      "`use` is the fourth call shape, after the call, the pipe and the capture: it desugars to a call of the right-hand side with the callback as its last argument, so the block's value is the callee's own return and keeps the variant that return was stamped with. `use_bound` pins the callback's parameter; this row pins the result"
+        <> on_the_type,
+    ),
+    narrowed(
+      "capture_call",
+      "a capture is a lambda whose body is the call it wraps, so `Loud(_)` returns the constructor's own stamped type and calling it keeps the variant"
+        <> on_the_type,
+    ),
+    narrowed(
+      "closure_returned",
+      "a closure is not generalized, and a call's type is the callee's own return type, so `mk()` hands back the `Loud` the closure built"
+        <> on_the_type,
+    ),
+    narrowed(
+      "constructor_in_variable",
+      "`let mk = Loud` binds the constructor itself, so calling it returns the type `Loud(f)` would have had"
+        <> on_the_type,
+    ),
+    narrowed(
+      "pipe_into_constructor_call",
+      "a call-form pipe is a call: `f |> Loud()` is `Loud(f)`, whose type is the constructor's own"
+        <> on_the_type,
+    ),
+    narrowed(
+      "saturated_pipe_closure",
+      "a saturated pipe applies the piped value to the call's result, and that application is structural too, so `f |> mk()` is `mk()(f)` and keeps the variant"
+        <> on_the_type,
+    ),
+    narrowed(
+      "record_update_result",
+      "a record update's result is the named constructor's instantiated return, so `Loud(..l, println: f)` is known to be `Loud`"
+        <> on_the_type,
+    ),
+    narrowed(
+      "as_passes_subject",
+      "an assignment pattern hands the subject variable on to the pattern inside it, so `Loud(..) as l` narrows the subject `io` as well as binding `l`. girard threads the subject through `PatternAssignment` for the same reason",
+    ),
+    narrowed(
+      "echo_subject",
+      "`echo` is transparent to the subject rule, so `case echo io` narrows `io` exactly as `case io` does: `subject_of` looks through it as the compiler's `subject_variable` does",
+    ),
+    narrowed(
+      "echo_let_assert",
+      "the same transparency on the `let assert` path, where the subject is the assigned value rather than a `case` subject",
+    ),
+    narrowed(
+      "annotated_let",
+      "an annotation is unified against the value's type rather than substituted for it, so `let io: Logger = Loud(f)` keeps the variant the constructor built and the annotation never displaces it",
+    ),
+    narrowed(
+      "let_assert_as",
+      "the `as` name takes the constructor pattern's own type, which carries the variant. The subject here is a call rather than a bare variable, so no subject narrowing is available and the `as` binding is the only route to the field - which is what separates this row from `let_assert`",
+    ),
+    narrowed(
+      "unannotated_param_subject",
+      "an unannotated parameter is bound first and narrowed second, so `let assert Loud(..) = io` reaches the field on the parameter itself: the row that guards binding a parameter's type against erasing what the pattern then narrows",
+    ),
+    narrowed(
+      "subject_alternatives_agree",
+      "both alternatives narrow the subject to `Loud`, so the agreement rule keeps it: the subject-variable twin of `alternatives_agree`, which narrows through `as` bindings instead",
+    ),
+    narrowed(
+      "subject_rebound_in_pattern",
+      "`Loud(..) as io` on the subject `io` rebinds the subject, so the subject is not narrowed - and need not be, because the `as` binding takes the constructor's own type. The row that keeps the rule about a rebound subject from also suppressing the `as` binding's own variant",
+    ),
+    // Where the compiler drops a narrowing
+    //
+    // Each row puts the constructed value somewhere the compiler forgets which
+    // variant it was: a type variable, a generalized definition, or two
+    // alternatives that disagree. They pin the erase, and a wrong erase fails
+    // in the silent direction.
+    logger(
+      "unannotated_helper",
+      "an unannotated top-level function is generalized at the module boundary, which erases every variant in its type, so `make(f)` hands back a plain `Logger` where `factory_result`'s annotation does the same job explicitly"
+        <> unreachable,
+    ),
+    projected_n(
+      "constant_receiver",
+      "a module constant is generalized the way a function is, so `const quiet = Quiet(0)` reaches the receiver un-narrowed. Live in projection position, so it is independent of call-position precedence"
+        <> unreachable,
+    ),
+    logger(
+      "pipe_into_constructor",
+      "a bare-function pipe applies through a fresh type variable, and binding a variable erases the variant: `f |> Loud` is where the pipe rows part from `pipe_into_constructor_call`"
+        <> unreachable,
+    ),
+    logger(
+      "case_result",
+      "a `case` result is a fresh type variable every arm is bound into, so a `case` returning `Loud(f)` from every arm still yields an un-narrowed `Logger`"
+        <> unreachable,
+    ),
+    logger(
+      "subject_alternatives_disagree",
+      "the alternatives narrow the subject to `Loud` and to `Quiet`, so it is narrowed to nothing under both: the subject-variable twin of `alternatives_disagree`"
+        <> unreachable,
+    ),
+    logger(
+      "wildcard_alternative_first",
+      "the other order of `wildcard_alternative_keeps`, and why that rule has to be order-sensitive rather than a set comparison: only the *first* alternative may set the subject's variant, so a leading `_` narrows nothing and the `Loud(..)` after it is not allowed to put it back"
+        <> unreachable,
+    ),
+    logger(
+      "as_alternative_wildcard",
+      "the pattern-bound analogue of `wildcard_alternative_keeps`, measured because the two classes turn out not to share a rule: a name the alternatives *bind* is unified through `unify_constructor_variants`, which keeps a variant only where every alternative gives the same one, so the `_ as io` alternative erases what `Loud(..) as io` narrowed - where the subject form keeps it"
+        <> unreachable,
+    ),
+    logger(
+      "list_pattern",
+      "a list literal's elements are bound into the list's element variable, which erases the variant before the pattern binds `io`"
+        <> unreachable,
+    ),
+    logger(
+      "generic_constructor_arg",
+      "a constructed value put into `Box(a)` is bound into a type variable and comes back out of the pattern un-narrowed: the erase reaches through a constructor's argument as `through_generic` shows it reaching through a function's"
+        <> unreachable,
+    ),
+    logger(
+      "use_bound",
+      "a `use` callback's parameter is a fresh type variable the caller binds, so a value the caller constructs arrives un-narrowed"
+        <> unreachable,
+    ),
+    logger(
+      "subject_rebound_by_sibling",
+      "a subject the multi-pattern itself rebinds is not narrowed: `io` in the first column binds `left`'s value, and that binding wins. girard asks which names the whole multi-pattern binds before narrowing any column's subject, so the sibling's binding is left alone"
+        <> unreachable,
+    ),
+    logger(
+      "subject_narrowed_then_rebound",
+      "the other order of `subject_rebound_by_sibling`: the subject is narrowed by the first column and rebound by the second, and the pattern's binding still wins. The rule is about the whole multi-pattern, so it holds in both orders"
+        <> unreachable,
     ),
     probe(
       "unbound_no_module",
@@ -933,9 +1093,9 @@ fn aggregate() -> Nil {
 
 // `answer` prints girard's reading of one file, with the corpus resolver. It is
 // how a divergence is diagnosed: run it on the forced-field companion, where
-// no colliding module is in scope, and girard's answer says whether the
-// narrowing is expressible through `env.variants` at all — an error there
-// means it is not, and only narrowing carried on the type would reach it.
+// no colliding module is in scope, and girard's answer says whether the field
+// is in reach at all — an error there means the receiver's type never carried
+// the variant, so the narrowing is lost upstream of the resolution.
 fn answer(path: String, function: String) -> Nil {
   let assert Ok(text) = simplifile.read(path)
   io.println(describe(runner.girard_outcome(text, function)))

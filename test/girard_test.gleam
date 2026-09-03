@@ -843,6 +843,39 @@ pub fn discarded_import_does_not_shadow_test() {
   |> should.equal("fn() -> Int")
 }
 
+pub fn discarded_import_keeps_variant_accessors_test() {
+  // A discarded alias still imports unqualified items, so `Loud` constructs a
+  // value narrowed to that variant — and `println` is declared by `Loud` alone.
+  // Its accessors are reached by the type's origin module, so the interface
+  // must be indexed even though the module gets no qualified name.
+  let support =
+    "pub type Logger {\n"
+    <> "  Loud(println: fn(String) -> Nil)\n"
+    <> "  Quiet(n: Int)\n"
+    <> "}"
+  let source =
+    "import support.{Loud} as _support\n"
+    <> "pub fn run(f: fn(String) -> Nil) {\n"
+    <> "  let logger = Loud(f)\n"
+    <> "  logger.println(\"hi\")\n"
+    <> "}"
+  signature_with(source, [#("support", support)], "run")
+  |> should.equal("fn(fn(String) -> Nil) -> Nil")
+}
+
+pub fn discarded_import_is_reachable_transitively_test() {
+  // Three modules: `kinds` declares the record, `a` imports it under a
+  // discarded alias and returns one, and `b` imports only `a`. Nothing in `b`
+  // names `kinds`, so `b` can only find its accessors through what `a`'s
+  // interface carries — which is why the interface exports a real-name-keyed
+  // index and not just the alias-keyed one a discarded import is absent from.
+  let kinds = "pub type Box {\n  Box(value: Int)\n}"
+  let a = "import kinds.{Box} as _k\npub fn make() { Box(1) }"
+  let source = "import a\npub fn run() { a.make().value }"
+  signature_with(source, [#("kinds", kinds), #("a", a)], "run")
+  |> should.equal("fn() -> Int")
+}
+
 pub fn local_value_field_shadows_module_test() {
   // A local value named like an imported module: a bare `dep.value` reads the
   // record field (the value shadows the module here), since the field type fits
@@ -1428,9 +1461,9 @@ pub fn agreeing_alternatives_narrow_test() {
 }
 
 pub fn mixed_spelling_alternatives_agree_test() {
-  // `Near(..) as io | kinds.Near(..) as io` names one variant two ways. The
-  // narrowing compares the constructor's resolved identity, not its spelling,
-  // so the alternatives agree and the field wins.
+  // `Near(..) as io | kinds.Near(..) as io` names one variant two ways. What
+  // the alternatives are compared on is the variant each one's type carries,
+  // not the spelling, so they agree and the field wins.
   let kinds =
     "pub type Remote {\n  Near(println: fn(String) -> Nil)\n  Far(n: Int)\n}"
   let source =
@@ -1448,9 +1481,9 @@ pub fn mixed_spelling_alternatives_agree_test() {
 
 pub fn renamed_import_alternatives_agree_test() {
   // `Close(..) as io | kinds.Near(..) as io` names one variant under a renamed
-  // unqualified import and its qualified spelling. The identity compared is
-  // the constructor's name in its declaring module, so `Close` and
-  // `kinds.Near` agree and the narrowed field wins over the `io` module.
+  // unqualified import and its qualified spelling. Both resolve to the same
+  // constructor, so both stamp the same variant, `Close` and `kinds.Near`
+  // agree, and the narrowed field wins over the `io` module.
   let kinds =
     "pub type Remote {\n  Near(println: fn(String) -> Nil)\n  Far(n: Int)\n}"
   let source =
@@ -1464,6 +1497,176 @@ pub fn renamed_import_alternatives_agree_test() {
     <> "}"
   signature_with(source, [#("io", io_println), #("kinds", kinds)], "run")
   |> should.equal("fn(Remote) -> Nil")
+}
+
+// A type with one label every variant declares and one only `Loud` does, so a
+// receiver's narrowing decides which of the two it can read.
+const tagged_type = "pub type Tagged {\n  Loud(tag: Int, println: fn(String) -> Nil)\n  Quiet(tag: Int)\n}\n"
+
+pub fn narrowing_is_scope_local_test() {
+  // A narrowing is a rebinding in the clause's own scope, so after the `case`
+  // the outer binding is the un-narrowed one: the shared label still resolves,
+  // and the label only `Loud` declares does not.
+  let after_case = fn(access: String) {
+    tagged_type
+    <> "pub fn run(t: Tagged) {\n"
+    <> "  let _ = case t {\n"
+    <> "    Loud(..) -> Nil\n"
+    <> "    Quiet(..) -> Nil\n"
+    <> "  }\n"
+    <> "  "
+    <> access
+    <> "\n"
+    <> "}"
+  }
+  signature(after_case("t.tag"), "run")
+  |> should.equal("fn(Tagged) -> Int")
+  error_with(after_case("t.println(\"hi\")"), [])
+  |> should.equal(girard.NoSuchField("Tagged", "println"))
+}
+
+pub fn record_update_narrows_result_test() {
+  // A record update's type is the named constructor's own, so the result is
+  // known to be that variant and a label only it declares is in reach.
+  //
+  // The subject is narrowed first. Updating an un-narrowed `t` on a
+  // multi-variant type is `Unsafe record update` in 1.18.0 — "I'm not sure this
+  // is always a `Loud`" — so pinning it would assert outside the set of
+  // programs girard is validated against. The `record_update_result` fixture
+  // narrows for the same reason.
+  let source =
+    tagged_type
+    <> "pub fn run(t: Tagged, f: fn(String) -> Nil) {\n"
+    <> "  let assert Loud(..) = t\n"
+    <> "  let updated = Loud(..t, println: f)\n"
+    <> "  updated.println\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn(Tagged, fn(String) -> Nil) -> fn(String) -> Nil")
+}
+
+pub fn tuple_as_binding_keeps_element_variant_test() {
+  // An `as` name binds the pattern's *own* type, and a tuple pattern's own type
+  // is rebuilt from its elements', so `#(Loud(..), _) as p` binds `p` at
+  // `#(Tagged[Loud], Int)` and the element's variant is still in reach through
+  // it. The corpus cannot express this: its contest needs a bare name that
+  // could also denote a module, and the receiver here is a tuple access.
+  let source =
+    tagged_type
+    <> "pub fn run(t: Tagged) {\n"
+    <> "  let pair = #(t, 1)\n"
+    <> "  case pair {\n"
+    <> "    #(Loud(..), _) as p -> p.0.println\n"
+    <> "    _ -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn(Tagged) -> fn(String) -> Nil")
+}
+
+pub fn nested_tuple_as_binding_keeps_variant_test() {
+  // The rebuild is recursive, so a tuple inside a tuple keeps the stamp too.
+  let source =
+    tagged_type
+    <> "pub fn run(t: Tagged) {\n"
+    <> "  let nested = #(#(t, 1), 2)\n"
+    <> "  case nested {\n"
+    <> "    #(#(Loud(..), _), _) as p -> p.0.0.println\n"
+    <> "    _ -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn(Tagged) -> fn(String) -> Nil")
+}
+
+pub fn nested_as_inside_tuple_narrows_both_test() {
+  // An `as` inside the tuple binds the constructor pattern's own type, and the
+  // enclosing `as` still sees that element as stamped: the two bindings agree.
+  let source =
+    tagged_type
+    <> "pub fn run(t: Tagged) {\n"
+    <> "  let pair = #(t, 1)\n"
+    <> "  case pair {\n"
+    <> "    #(Loud(..) as l, _) as p -> #(l.println, p.0.println)\n"
+    <> "    _ -> panic\n"
+    <> "  }\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn(Tagged) -> #(fn(String) -> Nil, fn(String) -> Nil)")
+}
+
+pub fn constructor_as_binding_does_not_narrow_arguments_test() {
+  // The rebuild stops at a constructor's arguments: a constructor pattern's own
+  // type is its return, whose type arguments were erased when the variable was
+  // bound, so `Box(Loud(..)) as b` leaves `b.value` un-narrowed. Measured
+  // against 1.18.0, which rejects this program for the same reason.
+  let source =
+    tagged_type
+    <> "pub type Box {\n"
+    <> "  Box(value: Tagged)\n"
+    <> "}\n"
+    <> "pub fn run(b: Box) {\n"
+    <> "  case b {\n"
+    <> "    Box(Loud(..)) as bb -> bb.value.println\n"
+    <> "    _ -> panic\n"
+    <> "  }\n"
+    <> "}"
+  error_with(source, [])
+  |> should.equal(girard.NoSuchField("Tagged", "println"))
+}
+
+pub fn monomorphic_constant_subject_narrows_test() {
+  // A module constant is a subject like any local name. This one is
+  // monomorphic, so it has no quantifier to stamp under — the companion of the
+  // generic case, which the differential corpus measures.
+  let source =
+    tagged_type
+    <> "const quiet = Quiet(0)\n"
+    <> "pub fn run() {\n"
+    <> "  case quiet {\n"
+    <> "    Quiet(..) -> quiet.tag\n"
+    <> "    Loud(..) -> 0\n"
+    <> "  }\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn() -> Int")
+}
+
+pub fn generic_constant_narrowing_keeps_quantifier_test() {
+  // Narrowing a generalized constant stamps under its quantifier instead of
+  // monomorphizing it: the clause still uses `box` at two instantiations, which
+  // the compiler accepts, and the narrowed field is still in reach.
+  let source =
+    "pub type Box(a) {\n"
+    <> "  Full(item: a)\n"
+    <> "  Empty\n"
+    <> "}\n"
+    <> "const box = Empty\n"
+    <> "pub fn run() {\n"
+    <> "  case box {\n"
+    <> "    Full(..) -> {\n"
+    <> "      let a: Box(Int) = box\n"
+    <> "      let b: Box(String) = box\n"
+    <> "      #(a, b, box.item)\n"
+    <> "    }\n"
+    <> "    Empty -> #(Empty, Empty, Empty)\n"
+    <> "  }\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn() -> #(Box(Int), Box(String), Box(a))")
+}
+
+pub fn stamped_types_unify_test() {
+  // Two values built with different variants have the same type, so they share
+  // a list. The variant is carried on the type but is not part of what
+  // unification compares.
+  let source =
+    tagged_type
+    <> "pub fn run(f: fn(String) -> Nil) {\n"
+    <> "  [Loud(0, f), Quiet(1)]\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn(fn(String) -> Nil) -> List(Tagged)")
 }
 
 const io_labelled_println = "pub fn println(message message: String) -> Int { 1 }"

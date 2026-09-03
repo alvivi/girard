@@ -9,12 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Variant narrowing now follows the value, not the name it was bound under.
+  After `let assert Loud(..) = l`, `let io = l` still reads `io.println` as the
+  field, and so do a tuple pattern, a closure's return, a record update, a
+  `use` value and a generic constant. It is dropped where the compiler drops
+  it: through a type variable, out of a `case` result, into a bare constructor,
+  and at a top-level definition's generalized type.
 - Calling a field on a value a pattern has narrowed — `Loud(..) as io ->
   io.println("hi")` — now calls the field even when a module named `io` is
   in scope. Previously the module function won, unlike the compiler.
   Reading and calling a field now resolve the same way.
 - `Loud(..) as io | Quiet(..) as io` no longer narrows `io` to either
-  variant, matching the compiler.
+  variant, matching the compiler. A `case` subject follows the compiler's
+  other rule: only the first alternative may narrow it, so
+  `case io { Loud(..) | _ -> ... }` keeps the narrowing and `_ | Loud(..)`
+  does not.
+- A record type imported under a discarded alias (`import kinds.{Box} as _k`)
+  keeps its field accessors, in the importing module and downstream.
 - `Close(..) as io | kinds.Near(..) as io`, with `Near` imported as `Close`,
   keeps its narrowing: the two spellings are recognised as one constructor.
 - A field is only accessible on the whole type when every variant declares it

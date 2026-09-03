@@ -52,7 +52,7 @@ API.
 | File | Responsibility |
 |---|---|
 | `src/girard.gleam` | The whole public API and inference engine, in labelled comment sections, public API first: source/AST/package entry points and CLI; the public `Type`, `Scheme`, and inference `Error` vocabulary; Hindley-Milner inference (state, substitutions, environments and schemes, unification, generalization/instantiation, expression/pattern/statement inference, type hydration, module interfaces); the built-in prelude type constructors; and the type printer |
-| `src/girard/internal/ty.gleam` | The inference-side `Type` and `Scheme`: the public vocabulary plus the narrowed-variant slot on `Named`, converted to the public types when a result or an error is published |
+| `src/girard/internal/ty.gleam` | The inference-side `Type` and `Scheme`: the public vocabulary plus the narrowed variant on `Named`, converted to the public types when a result or an error is published |
 | `src/girard/internal/scc.gleam` | Tarjan strongly-connected components for dependency-ordered inference |
 | `src/girard/internal/reference.gleam` | Lexically scoped reference collection for the top-level definition graph |
 
@@ -90,6 +90,25 @@ The substitution, the environment and module interfaces hold the inference-side
 `Type` from `girard/internal/ty`; the public `Type` is produced from it
 only where a result or an error is published.
 
+The inference-side `Named` carries the variant a value is known to have been
+built with, as the compiler's `Type::Named { inferred_variant }` does. A
+constructor's return type is stamped with its index; a pattern that matches a
+bare subject variable rebinds it, in that scope only, to a stamped copy of its
+type; field access on a stamped type reads that variant's own accessors instead
+of the shared ones. The stamp is erased when a type variable is bound to the
+type and when a top-level definition is generalized, so it never survives a
+generic function, a `case` result, or a module boundary except on a
+constructor.
+
+`infer_pattern` returns the pattern's own type — the compiler's
+`Pattern::type_()` — so an `as` name binds at what the pattern matched rather
+than at what it was matched against: a tuple pattern's type is rebuilt from its
+elements', recursively, and stops at a constructor's arguments. Across a
+clause's alternatives the two name classes follow different rules, as they do in
+the compiler: only the first alternative may set a *subject* variable's variant
+and a later one may only take it away by naming a different index, while a name
+the patterns *bind* keeps its variant only where every alternative agrees.
+
 Generalization normally happens at module-level definition boundaries, so
 unannotated local `let` bindings remain monomorphic. The compiler-matching
 exception is a local function whose annotations name type variables: those
@@ -112,7 +131,10 @@ default disk resolver searches project sources and installed packages under
 `build/packages`; callers can inject an in-memory or otherwise custom resolver.
 
 An interface contains the public values, types, aliases, accessors and call
-metadata required by importing modules. The reusable cache avoids parsing and
+metadata required by importing modules, plus the modules it resolved keyed two
+ways: by the alias each is reachable under here, for qualified lookup, and by
+real module name, which is how accessors are addressed and the only key a
+discard-aliased import has. The reusable cache avoids parsing and
 inferring a shared import more than once and can invalidate a single module when
 its source changes.
 

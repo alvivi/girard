@@ -29,6 +29,7 @@ support/             modules staged alongside a case, never compiled as fixtures
   differential/shadow.gleam   a second shadow, for the aliased-import case
   differential/kinds.gleam    a record type, for the cross-module and renamed-import cases
   differential/labelled.gleam a shadow with a labelled export, for the labelled probe
+  differential/box.gleam      a generic wrapper, for the erase-through-a-type-variable case
 cases/<case>/base.gleam           the fixture
 cases/<case>/forced_field.gleam   companion: no colliding module in scope
 cases/<case>/forced_module.gleam  companion: the receiver binding renamed away
@@ -111,13 +112,21 @@ depth.
   aggregate over all rows is pinned as a literal in the test file, so tampering
   has to touch two files in one diff.
 
-**The suite is green and the divergences are data.** A recorded disagreement is
-the expected answer today. The three that remain share one mechanism: a
-narrowing is keyed by the pattern-bound name in `env.variants`, so re-binding
-the value under another name loses it where the compiler, carrying the inferred
-variant on the type, keeps it. The change that carries the variant on the type
-must edit the manifest, flipping `divergent` from `true` to `false` line by line
-and lowering the count literal in `test/differential_test.gleam`.
+**The suite is green and there are no divergences.** girard and the pinned
+compiler answer every row here the same way. That is a floor rather than a
+finish: a new divergence means girard has drifted, and it has to be recorded
+here — with the mechanism and the change that removes it in `why` — before the
+suite can go green again, which is a reviewable diff and a raised count
+literal in `test/differential_test.gleam`. The literal is what stops the
+ratchet being walked around: it may fall when a divergence is fixed, and
+nothing else may move it.
+
+The rows that used to diverge shared one root, and it is worth stating because
+it is what a regression would look like: a narrowing was tracked by the *name*
+it was bound under and re-derived from the shape of the expression it came
+from, so it was lost wherever the value was re-bound or arrived by a shape
+nothing matched, and wrongly kept where a sibling pattern rebound the name. It
+now lives on the value's own type, as it does in the compiler.
 
 ## Regenerating
 
@@ -155,8 +164,8 @@ pointing at the driver rather than at a diff.
 `gleam run -m girard/differential answer <path> <function>` prints girard's
 reading of one file with the corpus resolver. Run it on a forced-field
 companion, where no colliding module is in scope, to diagnose a new divergence:
-girard erroring there means the narrowing is not expressible through
-`env.variants` at all, and only narrowing carried on the type would reach it.
+girard erroring there means the receiver's type never carried the variant, so
+the narrowing was lost upstream of the resolution rather than at it.
 Girard reading the field there while the base row still reads the module would
 mean call position and projection have drifted apart again, which the shared
 resolver closed and nothing should reopen.
