@@ -1293,10 +1293,15 @@ fn import_items(
   // A discarded alias (`import x as _y`) imports the module for its unqualified
   // items only — it must NOT be bound under any qualified name, or we'd bind it
   // under the module's last segment and shadow a real import sharing that name
-  // (mist's `gleam/http as _ghttp` vs `mist/internal/http`).
+  // (mist's `gleam/http as _ghttp` vs `mist/internal/http`). Its interface is
+  // still indexed by real module name: an unqualified constructor taken from it
+  // builds a value whose type names that module, and the accessors for that
+  // type are found through `module_index`, which is keyed by real name and so
+  // cannot shadow anything.
   let env = case qualified_alias(import_) {
     Ok(alias) -> import_qualified(env, alias, interface)
-    Error(_) -> env
+    Error(_) ->
+      Env(..env, module_index: index_interface(env.module_index, interface))
   }
   let env =
     list.fold(import_.unqualified_values, env, fn(env, u) {

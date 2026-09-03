@@ -843,6 +843,26 @@ pub fn discarded_import_does_not_shadow_test() {
   |> should.equal("fn() -> Int")
 }
 
+pub fn discarded_import_keeps_variant_accessors_test() {
+  // A discarded alias still imports unqualified items, so `Loud` constructs a
+  // value narrowed to that variant — and `println` is declared by `Loud` alone.
+  // Its accessors are reached by the type's origin module, so the interface
+  // must be indexed even though the module gets no qualified name.
+  let support =
+    "pub type Logger {\n"
+    <> "  Loud(println: fn(String) -> Nil)\n"
+    <> "  Quiet(n: Int)\n"
+    <> "}"
+  let source =
+    "import support.{Loud} as _support\n"
+    <> "pub fn run(f: fn(String) -> Nil) {\n"
+    <> "  let logger = Loud(f)\n"
+    <> "  logger.println(\"hi\")\n"
+    <> "}"
+  signature_with(source, [#("support", support)], "run")
+  |> should.equal("fn(fn(String) -> Nil) -> Nil")
+}
+
 pub fn local_value_field_shadows_module_test() {
   // A local value named like an imported module: a bare `dep.value` reads the
   // record field (the value shadows the module here), since the field type fits
