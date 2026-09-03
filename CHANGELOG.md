@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   receiver's, and a `Resolution`: a record field with its receiver's type, a
   module function, constant or constructor under the module's canonical path
   (never the import alias), a local value, or `Unresolved` where girard reached
-  the type but no member. `annotate*` are unchanged.
+  the type but no member. `annotate*` keep their signatures: they are these
+  functions with the resolutions taken off.
 
 ### Fixed
 
