@@ -667,6 +667,13 @@ pub fn specs() -> List(Spec) {
       "AmbiguousCall",
       "a record-selected callee has no field map, so a same-named module's labels must not apply: the narrowed receiver reads the field, and `message:` is then an unexpected labelled argument on both sides - girard at AmbiguousCall where the compiler reports `Unexpected labelled argument`",
     ),
+    probe(
+      "shadowed_callee_labels",
+      "println",
+      "println",
+      "AmbiguousCall",
+      "a `let` shadowing an imported labelled function takes its labels with it: the compiler reads a bare-name callee's field map off whatever the name resolves to, and a local binding has none, so `message:` is an unexpected labelled argument - girard reorders by the shadowed import's labels and accepts, which `shadowed-callee-labels` fixes",
+    ),
   ]
 }
 

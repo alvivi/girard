@@ -33,7 +33,8 @@ import glexer/token
 pub type Span =
   glance.Span
 
-/// One `x.label` in the source whose container is a plain variable, with the
+/// One `x.label` in the source whose container is a plain variable — or one
+/// bare-name callee, which is its own receiver and its own label — with the
 /// syntactic position that decides how the row's return derives from its
 /// member.
 pub type Access {
@@ -152,11 +153,12 @@ pub fn in_imports(imports: List(Span), span: Span) -> Bool {
 
 // The contested access
 //
-// Every `x.label` whose container is a plain variable, with its syntactic
-// position. `glance` answers the position from the syntax tree alone, with no
-// scope analysis.
+// Every `x.label` whose container is a plain variable, and every bare-name
+// callee, with its syntactic position. `glance` answers the position from the
+// syntax tree alone, with no scope analysis.
 
-/// Every field access in the module whose container is a plain variable.
+/// Every field access in the module whose container is a plain variable, plus
+/// every bare-name callee.
 pub fn accesses(module: glance.Module) -> List(Access) {
   let from_functions =
     list.flat_map(module.functions, fn(definition) {
@@ -253,10 +255,33 @@ fn walk(expression: glance.Expression, site: String) -> List(Access) {
       list.flat_map(segments, fn(segment) {
         walk(segment.0, manifest.site_bare)
       })
-    glance.Int(..)
-    | glance.Float(..)
-    | glance.String(..)
-    | glance.Variable(..) -> []
+    // A bare-name callee is its own receiver and its own member: there is one
+    // name, and the question is what that one name resolves to, so it is
+    // recorded with the name on both sides and its own span as the container.
+    // Only in call position, and only for a lower-case name — an upper-case
+    // callee is a record constructor, whose labels come from its type
+    // declaration and which no local binding can shadow.
+    glance.Variable(location, name) ->
+      case site == manifest.site_call && is_lower(name) {
+        True -> [
+          Access(
+            span: location,
+            container: location,
+            receiver: name,
+            label: name,
+            site:,
+          ),
+        ]
+        False -> []
+      }
+    glance.Int(..) | glance.Float(..) | glance.String(..) -> []
+  }
+}
+
+fn is_lower(name: String) -> Bool {
+  case string.first(name) {
+    Ok(first) -> string.lowercase(first) == first
+    Error(_) -> False
   }
 }
 
