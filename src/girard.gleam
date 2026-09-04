@@ -902,17 +902,17 @@ type Env {
 type ModuleInterface {
   ModuleInterface(
     name: String,
-    values: Dict(String, ty.Scheme),
+    // One entry per public value, as the compiler's `ModuleInterface.values`
+    // (`type_.rs:1021`) holds them: an export's scheme, its labels and the
+    // identity it was declared under travel together, so an importer reads
+    // what the exporting module had in scope rather than a reconstruction of
+    // it.
+    values: Dict(String, ValueConstructor),
     types: Dict(String, #(String, String, Int)),
     // Public type aliases, resolved to a type with the alias's parameters as
     // variables (param ids + body).
     aliases: Dict(String, #(List(Int), ty.Type)),
     accessors: Dict(String, Accessors),
-    field_maps: Dict(String, List(Option(String))),
-    // What kind of value each public export is, so an importer can say which
-    // member a qualified reference resolved to. Built over the keys of
-    // `values`, so it holds no kind for a value the interface does not.
-    kinds: Dict(String, ValueKind),
     // The modules this one imports, so a type it exposes from another module
     // (e.g. a `glance.Span` field) keeps its accessors reachable transitively.
     // Keyed by the alias they are reachable under *here*, which is why a
@@ -1083,7 +1083,14 @@ fn prelude() -> #(Env, State) {
 fn prelude_interface() -> ModuleInterface {
   let module = prelude_module
   let #(values, _st) = prelude_values(new_state())
-  let values = dict.from_list(values)
+  // Every prelude value is a constructor of a prelude type.
+  let values =
+    dict.from_list(
+      list.map(values, fn(value) {
+        let #(name, scheme) = value
+        #(name, ValueConstructor(scheme, ConstructorValue(module, name, None)))
+      }),
+    )
   let types_ =
     dict.from_list([
       #("Int", #(module, "Int", 0)),
@@ -1102,9 +1109,6 @@ fn prelude_interface() -> ModuleInterface {
     types: types_,
     aliases: dict.new(),
     accessors: dict.new(),
-    field_maps: dict.new(),
-    // Every prelude value is a constructor of a prelude type.
-    kinds: dict.map_values(values, fn(_, _) { ConstructorKind }),
     modules: dict.new(),
     reachable: dict.new(),
   )
@@ -1703,29 +1707,18 @@ fn build_interface(
   type_names: List(String),
   accessor_type_names: List(String),
 ) -> ModuleInterface {
-  let entries = take(env.values, value_names)
   ModuleInterface(
     name: name,
-    values: dict.map_values(entries, fn(_name, entry) { entry.scheme }),
+    // The scope entry each public name holds, verbatim. In best-effort mode a
+    // public definition girard declined leaves the entry of whatever it
+    // shadowed — an unqualified import, say — and exporting that entry whole
+    // is what tells an importer the identity it was actually typed against.
+    values: take(env.values, value_names),
     types: take(env.local_types, type_names),
     aliases: resolve_aliases(env, st, type_names),
     // Only non-opaque public types expose their field accessors: an opaque
     // type's fields are private to its defining module.
     accessors: take(env.accessors, accessor_type_names),
-    // Both halves are projections off the same entries, so neither can name a
-    // value the interface does not export, nor miss one it does.
-    field_maps: dict.fold(entries, dict.new(), fn(maps, name, entry) {
-      case field_map(entry.variant) {
-        Ok(labels) -> dict.insert(maps, name, labels)
-        Error(_) -> maps
-      }
-    }),
-    kinds: dict.fold(entries, dict.new(), fn(kinds, name, entry) {
-      case origin(entry.variant) {
-        Some(origin) -> dict.insert(kinds, name, origin.kind)
-        None -> kinds
-      }
-    }),
     modules: env.modules,
     reachable: env.module_index,
   )
@@ -1827,29 +1820,14 @@ fn import_value(
   interface: ModuleInterface,
   original: String,
 ) -> Env {
+  // The entry is copied verbatim, so the identity it carries stays the one it
+  // was declared under — the exporting module's real path and the name the
+  // value has *there*, never the alias it reached this module under. Through
+  // `install_entry` rather than a raw insert, so `open_values` is maintained
+  // from the entry's own scheme like every other write.
   case dict.get(interface.values, original) {
     Error(_) -> env
-    Ok(scheme) ->
-      install(env, local, scheme, imported_variant(interface, original))
-  }
-}
-
-// The variant an imported value takes here: the module's real path and the
-// name the value has *there*, never the alias it reached this module under. A
-// value the interface exports with no kind recorded for it is girard's own
-// broken invariant (see `build_interface`); `module_access` is the reader that
-// turns it into a structured error, and there is nothing better to bind it as
-// here than a local.
-fn imported_variant(
-  interface: ModuleInterface,
-  original: String,
-) -> ValueVariant {
-  let labels = option.from_result(dict.get(interface.field_maps, original))
-  case dict.get(interface.kinds, original) {
-    Ok(FunctionKind) -> FunctionValue(interface.name, original, labels)
-    Ok(ConstantKind) -> ConstantValue(interface.name, original)
-    Ok(ConstructorKind) -> ConstructorValue(interface.name, original, labels)
-    Error(_) -> LocalValue
+    Ok(entry) -> install_entry(env, local, entry)
   }
 }
 
@@ -3034,57 +3012,27 @@ type Access {
   // Carries the accessed record's nominal type, live — the reference publishes it
   // zonked, so later unification still refines it.
   Field(record: ty.Type)
-  // A module export, with its own field map when the export has one, and the
-  // identity it was read under.
-  Export(labels: Result(List(Option(String)), Nil), origin: Origin)
+  // A module export: the scope entry the interface holds for it, whose variant
+  // carries both the labels a call may use and the identity to publish.
+  Export(entry: ValueConstructor)
   // Neither yet: the container's type is still a variable and no module of its
   // name exports the label, so a `PendingField` was queued and no member was
   // decided here.
   Deferred
 }
 
-// A module export a `name.label` access may fall through to: its scheme, its
-// field map and where it was declared, all read from the interface while it is
-// in hand.
-type ModuleExport {
-  ModuleExport(
-    scheme: ty.Scheme,
-    labels: Result(List(Option(String)), Nil),
-    origin: Origin,
-  )
-}
-
-// The export `name.label` reaches when `name` is an imported module, in three
-// states rather than two: `Ok(None)` for no such module or no such export,
-// `Ok(Some(export))` for a valid export with its kind, and `Error` for a value
-// the interface exports with no kind recorded for it. That last is girard's own
-// broken invariant (see `build_interface`), and it ends the definition with a
-// structured error rather than falling through to the record branch or
-// publishing a plausible-but-false identity for it.
+// The export `name.label` reaches when `name` is an imported module: the whole
+// scope entry, or nothing when there is no such module or no such export. One
+// lookup answers every question a caller has about the export, because the
+// interface stores what the caller needs as one thing.
 fn module_access(
   env: Env,
   name: String,
   label: String,
-) -> Result(Option(ModuleExport), Error) {
+) -> Option(ValueConstructor) {
   case dict.get(env.modules, name) {
-    Error(_) -> Ok(None)
-    Ok(interface) ->
-      case dict.get(interface.values, label) {
-        Error(_) -> Ok(None)
-        Ok(scheme) ->
-          case dict.get(interface.kinds, label) {
-            Error(_) ->
-              Error(Unsupported("kind of " <> interface.name <> "." <> label))
-            Ok(kind) ->
-              Ok(
-                Some(ModuleExport(
-                  scheme: scheme,
-                  labels: dict.get(interface.field_maps, label),
-                  origin: Origin(interface.name, label, kind),
-                )),
-              )
-          }
-      }
+    Error(_) -> None
+    Ok(interface) -> option.from_result(dict.get(interface.values, label))
   }
 }
 
@@ -3106,7 +3054,7 @@ fn infer_field_access(
     // Only a bare name can also denote a module, so only there is there a
     // module export for a failing record access to fall through to.
     glance.Variable(_, name) -> {
-      use export <- result.try(module_access(env, name, label))
+      let export = module_access(env, name, label)
       case dict.has_key(env.values, name) {
         True -> value_field(env, st, container, label, export)
         False -> module_or_record(env, st, container, label, export)
@@ -3130,8 +3078,17 @@ fn record_access(
 ) -> State {
   case access {
     Field(record) -> reference(st, spans, ResolvedField(record, label))
-    Export(_, origin) -> reference(st, spans, ResolvedOrigin(origin))
+    Export(entry) -> reference(st, spans, resolved_value(label, entry.variant))
     Deferred -> reference(st, spans, ResolvedDeferred)
+  }
+}
+
+// What a reference to a value bound under `name` resolved to: the member its
+// entry names, or the local it is when the entry names none.
+fn resolved_value(name: String, variant: ValueVariant) -> Resolved {
+  case origin(variant) {
+    Some(origin) -> ResolvedOrigin(origin)
+    None -> ResolvedLocal(name)
   }
 }
 
@@ -3153,10 +3110,10 @@ fn access_spans(
 // Instantiate a module export: the branch a record access fell through to.
 fn module_export(
   st: State,
-  export: ModuleExport,
+  entry: ValueConstructor,
 ) -> Result(#(ty.Type, Access, State), Error) {
-  let #(type_, st) = instantiate(st, export.scheme)
-  Ok(#(type_, Export(export.labels, export.origin), st))
+  let #(type_, st) = instantiate(st, entry.scheme)
+  Ok(#(type_, Export(entry), st))
 }
 
 // Defer `container.label` until inference fixes the container's type.
@@ -3181,7 +3138,7 @@ fn value_field(
   st: State,
   container: glance.Expression,
   label: String,
-  export: Option(ModuleExport),
+  export: Option(ValueConstructor),
 ) -> Result(#(ty.Type, Access, State), Error) {
   use #(container_type, st) <- result.try(infer_expr(env, st, container))
   case resolve(st, container_type) {
@@ -3220,7 +3177,7 @@ fn module_or_record(
   st: State,
   container: glance.Expression,
   label: String,
-  export: Option(ModuleExport),
+  export: Option(ValueConstructor),
 ) -> Result(#(ty.Type, Access, State), Error) {
   case export {
     Some(export) -> module_export(st, export)
@@ -3354,7 +3311,7 @@ fn qualified_field_map(
   case module {
     Some(alias) ->
       case dict.get(env.modules, alias) {
-        Ok(interface) -> dict.get(interface.field_maps, name)
+        Ok(interface) -> entry_field_map(interface.values, name)
         Error(_) -> local_field_map(env, name)
       }
     None -> local_field_map(env, name)
@@ -3362,7 +3319,14 @@ fn qualified_field_map(
 }
 
 fn local_field_map(env: Env, name: String) -> Result(FieldMap, Nil) {
-  case dict.get(env.values, name) {
+  entry_field_map(env.values, name)
+}
+
+fn entry_field_map(
+  entries: Dict(String, ValueConstructor),
+  name: String,
+) -> Result(FieldMap, Nil) {
+  case dict.get(entries, name) {
     Ok(entry) -> field_map(entry.variant)
     Error(_) -> Error(Nil)
   }
@@ -3494,7 +3458,7 @@ fn infer_callee(
         label,
       ))
       let labels = case access {
-        Export(labels, _) -> labels
+        Export(entry) -> field_map(entry.variant)
         Field(_) | Deferred -> Error(Nil)
       }
       Ok(#(type_, labels, record(st, span(function), type_)))
@@ -3523,11 +3487,12 @@ fn bare_callee(
         Ok(entry) -> entry.variant
         Error(_) -> LocalValue
       }
-      let resolved = case origin(variant) {
-        Some(origin) -> ResolvedOrigin(origin)
-        None -> ResolvedLocal(name)
-      }
-      let st = reference(st, Spans(name_span, name_span, name_span), resolved)
+      let st =
+        reference(
+          st,
+          Spans(name_span, name_span, name_span),
+          resolved_value(name, variant),
+        )
       #(type_, field_map(variant), st)
     }
     _ -> #(type_, Error(Nil), st)
@@ -4723,7 +4688,7 @@ fn constructor_scheme(
       case dict.get(env.modules, alias) {
         Ok(interface) ->
           case dict.get(interface.values, constructor) {
-            Ok(scheme) -> Ok(scheme)
+            Ok(entry) -> Ok(entry.scheme)
             Error(_) -> Error(NoSuchExport(alias, constructor))
           }
         Error(_) -> Error(UnknownModule(alias))

@@ -2217,6 +2217,34 @@ pub fn skipped_definition_has_no_references_test() {
   |> should.equal([span_of(source, "p.name")])
 }
 
+pub fn skipped_definition_exports_the_shadowed_import_identity_test() {
+  // The package-level half of the test below. An interface exports whole scope
+  // entries, so the identity a declined definition leaves behind crosses the
+  // module boundary with the scheme it belongs to: `b` is typed against
+  // `imported`'s `g`, the value that survived in `a`, and has to be told so
+  // rather than be handed `a`'s own name for a member `a` never bound.
+  let b = "import app/a\npub fn run() { a.g() }"
+  let sources = [
+    #("app/imported", "pub fn g() -> String { \"x\" }"),
+    #(
+      "app/a",
+      "import app/imported.{g}\n"
+        <> "pub fn g() { 1 + \"oops\" }\n"
+        <> "pub fn uses() { g() }",
+    ),
+    #("app/b", b),
+  ]
+  let options =
+    girard.default_options() |> girard.with_resolver(fn(_) { Error(Nil) })
+  let assert Ok(analysis) =
+    dict.get(girard.analyse_package(parse_package(sources), options), "app/b")
+
+  let assert Ok(reference) =
+    list.find(analysis.resolutions, fn(r) { r.span == span_of(b, "a.g") })
+  reference.resolution
+  |> should.equal(girard.ModuleFn("app/imported", "g"))
+}
+
 pub fn skipped_definition_keeps_the_shadowed_import_origin_test() {
   // A definition registers its identity when its value is installed, not before
   // it, so a definition girard declines leaves the unqualified import it

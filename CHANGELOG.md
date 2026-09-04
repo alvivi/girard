@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A public definition girard declined no longer exports the identity of the
+  unqualified import it shadows under its own module's name. An interface now
+  carries one entry per export — its scheme, its labels and the module it was
+  declared in, together — so an importer typed against the import resolves the
+  call to the import's module, as it already did inside the defining module.
+
 ## [2.2.0] - 2026-09-04
 
 ### Added
