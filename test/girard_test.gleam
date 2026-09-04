@@ -559,6 +559,22 @@ pub fn labelled_function_call_test() {
   |> should.equal("fn(Int) -> Int")
 }
 
+pub fn mutually_recursive_labelled_call_test() {
+  // A call to a sibling in the same strongly-connected component reads the
+  // callee's labels off the placeholder entry `prereg_def` installed for it,
+  // before either body is walked — so a definition's field map has to be
+  // installed with its value rather than ahead of every definition.
+  let source =
+    "pub fn even(n n: Int, tag tag: String) -> String {\n"
+    <> "  case n {\n    0 -> tag\n    _ -> odd(tag: tag, n: n - 1)\n  }\n"
+    <> "}\n"
+    <> "pub fn odd(n n: Int, tag tag: String) -> String {\n"
+    <> "  case n {\n    0 -> tag\n    _ -> even(tag: tag, n: n - 1)\n  }\n"
+    <> "}"
+  signature(source, "even")
+  |> should.equal("fn(Int, String) -> String")
+}
+
 pub fn spread_pattern_test() {
   let source =
     "pub type User { User(name: String, age: Int) }\n"
@@ -2199,6 +2215,109 @@ pub fn skipped_definition_has_no_references_test() {
     list.key_find(analysis.skipped, "bad")
   list.map(analysis.resolutions, fn(r) { r.span })
   |> should.equal([span_of(source, "p.name")])
+}
+
+pub fn skipped_definition_restores_the_shadowed_import_labels_test() {
+  // A definition girard declines takes its labels with it, as it takes its
+  // scheme and its identity: the three are one entry, and discarding the
+  // component restores the import whole rather than two thirds of it. `uses` is
+  // typed against `imported`'s `g`, so `imported`'s label is the one it may
+  // call with. girard used to leave the declined definition's `local:` behind
+  // and reject the call with `UnknownLabel`.
+  let source =
+    "import imported.{g}\n"
+    <> "pub fn g(local v: Int) -> Int { 1 + \"oops\" }\n"
+    <> "pub fn uses() { g(imported: 1) }"
+  let modules = [#("imported", "pub fn g(imported v: Int) -> Int { v }")]
+  let assert Ok(result) =
+    dict.get(
+      girard.annotate_package(
+        parse_package([#("app/m", source)]),
+        options_with(modules),
+      ),
+      "app/m",
+    )
+
+  list.key_find(result.skipped, "g") |> should.be_ok
+  list.key_find(result.skipped, "uses") |> should.be_error
+  package_signature(result, "uses") |> should.equal("fn() -> Int")
+}
+
+pub fn skipped_constant_restores_the_shadowed_import_labels_test() {
+  // A constant declares no labels at all, so the definition girard declines
+  // used to leave the name with an empty field map and the call was
+  // `AmbiguousCall` rather than `UnknownLabel`. Same entry, same restoration.
+  let source =
+    "import imported.{g}\n"
+    <> "pub const g: fn(Int) -> Int = missing\n"
+    <> "pub fn uses() { g(imported: 1) }"
+  let modules = [#("imported", "pub fn g(imported v: Int) -> Int { v }")]
+  let assert Ok(result) =
+    dict.get(
+      girard.annotate_package(
+        parse_package([#("app/m", source)]),
+        options_with(modules),
+      ),
+      "app/m",
+    )
+
+  let assert Ok(girard.UnboundVariable("missing")) =
+    list.key_find(result.skipped, "g")
+  list.key_find(result.skipped, "uses") |> should.be_error
+  package_signature(result, "uses") |> should.equal("fn() -> Int")
+}
+
+pub fn skipped_definition_exports_the_shadowed_import_labels_test() {
+  // The labels cross the module boundary with the entry, as the identity does:
+  // `b` is typed against the `g` that survived in `a`, which is the import's,
+  // so the import's label is the one `b` may call with.
+  let sources = [
+    #("app/imported", "pub fn g(imported v: Int) -> Int { v }"),
+    #(
+      "app/a",
+      "import app/imported.{g}\n"
+        <> "pub fn g(local v: Int) -> Int { 1 + \"oops\" }\n"
+        <> "pub fn uses() { g(imported: 1) }",
+    ),
+    #("app/b", "import app/a\npub fn run() { a.g(imported: 2) }"),
+  ]
+  let assert Ok(result) =
+    dict.get(
+      girard.annotate_package(parse_package(sources), options_with([])),
+      "app/b",
+    )
+
+  result.skipped |> should.equal([])
+  package_signature(result, "run") |> should.equal("fn() -> Int")
+}
+
+pub fn skipped_definition_exports_the_shadowed_import_identity_test() {
+  // The package-level half of the test below. An interface exports whole scope
+  // entries, so the identity a declined definition leaves behind crosses the
+  // module boundary with the scheme it belongs to: `b` is typed against
+  // `imported`'s `g`, the value that survived in `a`, and has to be told so
+  // rather than be handed `a`'s own name for a member `a` never bound.
+  let b = "import app/a\npub fn run() { a.g() }"
+  let sources = [
+    #("app/imported", "pub fn g() -> String { \"x\" }"),
+    #(
+      "app/a",
+      "import app/imported.{g}\n"
+        <> "pub fn g() { 1 + \"oops\" }\n"
+        <> "pub fn uses() { g() }",
+    ),
+    #("app/b", b),
+  ]
+  let assert Ok(analysis) =
+    dict.get(
+      girard.analyse_package(parse_package(sources), options_with([])),
+      "app/b",
+    )
+
+  let assert Ok(reference) =
+    list.find(analysis.resolutions, fn(r) { r.span == span_of(b, "a.g") })
+  reference.resolution
+  |> should.equal(girard.ModuleFn("app/imported", "g"))
 }
 
 pub fn skipped_definition_keeps_the_shadowed_import_origin_test() {

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A skipped definition no longer breaks calls to the import it shadows. In
+  best-effort mode the skipped definition's argument labels outlived it, so a
+  later call using the import's own labels was wrongly rejected with
+  `UnknownLabel` or `AmbiguousCall`. Those calls now type.
+- `analyse*` now names the module a call was typed against. Where `a`'s own
+  `g` was skipped and shadowed an `import imported.{g}`, an importer calling
+  `a.g` was told it had called `a.g` rather than `imported.g`.
+
 ## [2.2.0] - 2026-09-04
 
 ### Added

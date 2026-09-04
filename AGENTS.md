@@ -120,13 +120,15 @@ variables are generalized explicitly. Type variables in a top-level signature
 are rigid while the definition is checked. Pending field and tuple accesses are
 revisited after inference fixes their container types.
 
-**Resolution.** `Env.origins` records where each module-level binding in scope
-was declared — canonical module path, the name it has there, and whether it is a
-function, a constant or a constructor — and `ModuleInterface.kinds` carries the
-same for a module's exports. Both are written at the sites that already write
-`env.field_maps`, and `bind_value` deletes an origin as it deletes a field map,
-so a local shadows a module-level name's identity as it shadows its labels.
-`infer_field_access` and `infer_callee` record a `Reference` into
+**Resolution.** `Env.values` holds one `ValueConstructor` per name in scope,
+as the compiler's `Environment.scope` does: the value's scheme and a variant
+saying local, function, constant or constructor, the module-level ones carrying
+the declaring module's canonical path, the declared name and, for a function or
+a constructor, its field map. `ModuleInterface.values` holds the same entry for
+each export, so an importer reads the identity a value was declared under
+rather than a reconstruction of it. A local shadows a module-level name's
+labels and identity by replacing its entry, which is all that binding a name
+does. `infer_field_access` and `infer_callee` record a `Reference` into
 `State.references` for every field access and every bare name in call position;
 `publish_references` zonks each accessed record, converts it and keeps one
 entry per span, which is what `Analysis.resolutions` promises: no walk produces
@@ -156,8 +158,9 @@ The public `Type` model has four variants:
 default disk resolver searches project sources and installed packages under
 `build/packages`; callers can inject an in-memory or otherwise custom resolver.
 
-An interface contains the public values, types, aliases, accessors and call
-metadata required by importing modules, plus the modules it resolved keyed two
+An interface contains the public values — one scope entry each, so a scheme,
+its labels and its identity travel together — plus the types, aliases and
+accessors required by importing modules, and the modules it resolved keyed two
 ways: by the alias each is reachable under here, for qualified lookup, and by
 real module name, which is how accessors are addressed and the only key a
 discard-aliased import has. The reusable cache avoids parsing and
