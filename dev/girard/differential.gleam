@@ -525,6 +525,11 @@ pub fn specs() -> List(Spec) {
       "the compiler rewrites `left |> fn(..) { .. }` as a call of the lambda on the piped value, so the parameter is seeded from that value's type before the body is walked"
         <> seeded,
     ),
+    solo(
+      "applied_lambda",
+      "a lambda in callee position is seeded from its own call's arguments: the compiler infers them speculatively, seeds the parameters from what it learned, and then infers them again for real"
+        <> seeded,
+    ),
     // Where the compiler keeps a narrowing
     //
     // Each row hands the receiver a value that is already known to be `Loud`,

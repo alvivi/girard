@@ -3272,26 +3272,65 @@ fn infer_fn(
   return_annotation: Option(glance.Type),
   body: List(glance.Statement),
 ) -> Result(#(ty.Type, State), Error) {
-  // Map each type-variable name written in the lambda's annotations to ONE
-  // fresh variable, shared across every parameter and the return. A name like
-  // `a` in `fn(msg: Message(a, b)) -> Next(_, Message(a, b))` denotes a single
-  // type within the signature; without this, each annotation hydrates its own
-  // `a` and the two stay distinct whenever the body does not tie them (an actor
-  // handler whose returned message type is otherwise free). The lambda itself
-  // stays monomorphic — only the names are shared, not generalized.
-  let #(names, st) =
-    list.fold(
-      list.unique(fn_annotation_var_names(params, return_annotation)),
-      #(dict.new(), st),
-      fn(acc, nm) {
-        let #(names, st) = acc
-        let #(id, st) = fresh_id(st)
-        #(dict.insert(names, nm, ty.Var(id)), st)
-      },
-    )
+  let #(names, st) = annotation_var_names(st, params, return_annotation)
   // No expected type: each parameter starts as a fresh variable.
   let #(seeds, st) = fresh_n(st, list.length(params))
   infer_lambda(env, st, params, return_annotation, body, seeds, None, names)
+}
+
+// Map each type-variable name written in a lambda's annotations to ONE fresh
+// variable, shared across every parameter and the return. A name like `a` in
+// `fn(msg: Message(a, b)) -> Next(_, Message(a, b))` denotes a single type
+// within the signature; without this, each annotation hydrates its own `a` and
+// the two stay distinct whenever the body does not tie them (an actor handler
+// whose returned message type is otherwise free). The lambda itself stays
+// monomorphic — only the names are shared, not generalized.
+//
+// Shared by every path that walks a lambda, seeded or not: the names a lambda
+// writes mean the same thing whether or not the type it will be called at is
+// already known, as they do in the compiler, which hydrates a lambda's
+// annotations in one scope either way.
+fn annotation_var_names(
+  st: State,
+  params: List(glance.FnParameter),
+  return_annotation: Option(glance.Type),
+) -> #(Dict(String, ty.Type), State) {
+  list.fold(
+    list.unique(fn_annotation_var_names(params, return_annotation)),
+    #(dict.new(), st),
+    fn(acc, nm) {
+      let #(names, st) = acc
+      let #(id, st) = fresh_id(st)
+      #(dict.insert(names, nm, ty.Var(id)), st)
+    },
+  )
+}
+
+// Infer a lambda whose parameters are seeded from the type it will be called
+// at, and record its span — which `infer_expr`'s wrapper does for a lambda
+// reached the ordinary way, and which every seeding caller bypasses.
+fn infer_seeded_lambda(
+  env: Env,
+  st: State,
+  span: glance.Span,
+  params: List(glance.FnParameter),
+  return_annotation: Option(glance.Type),
+  body: List(glance.Statement),
+  seeds: List(ty.Type),
+  expected_return: Option(ty.Type),
+) -> Result(#(ty.Type, State), Error) {
+  let #(names, st) = annotation_var_names(st, params, return_annotation)
+  use #(fn_type, st) <- result.try(infer_lambda(
+    env,
+    st,
+    params,
+    return_annotation,
+    body,
+    seeds,
+    expected_return,
+    names,
+  ))
+  Ok(#(fn_type, record(st, span, fn_type)))
 }
 
 // Infer a lambda whose parameters are seeded with `seed_params` (the expected
@@ -3410,7 +3449,19 @@ fn infer_call(
   function: glance.Expression,
   arguments: List(glance.Field(glance.Expression)),
 ) -> Result(#(ty.Type, State), Error) {
-  use #(fn_type, labels, st) <- result.try(infer_callee(env, st, function))
+  // A lambda in callee position has no signature its parameter types can be
+  // read from, so they are learned from the call's own arguments — the
+  // compiler's `infer_fn_with_call_context`. Only at matching arity, which is
+  // its guard too: at any other arity the call is an error, and pairing the
+  // arguments off against the parameters would be pairing the wrong ones.
+  let seeds_from_arguments = case function {
+    glance.Fn(_, params, _, _) -> list.length(params) == list.length(arguments)
+    _ -> False
+  }
+  use #(fn_type, labels, st) <- result.try(case seeds_from_arguments {
+    True -> infer_applied_lambda(env, st, function, arguments)
+    False -> infer_callee(env, st, function)
+  })
   use ordered <- result.try(
     order_fields(labels, arguments, fn(label, location) {
       glance.Variable(location, label)
@@ -3435,6 +3486,74 @@ fn infer_call(
   // variant a constructor's return was built with.
   let return = call_return(st, fn_type, result)
   Ok(#(return, record(st, span, return)))
+}
+
+// Seed a called lambda's parameters from the call's own arguments, then walk
+// its body — the callee half of `infer_call` for that one shape, answering
+// what `infer_callee` answers for every other. A lambda has no field map, so
+// the call accepts no labelled argument, exactly as it does today.
+//
+// `infer_call` goes on to infer the arguments again, for real, against the
+// parameters this seeded. That is the compiler's order as well as girard's:
+// the speculative pass exists only to learn the types.
+fn infer_applied_lambda(
+  env: Env,
+  st: State,
+  function: glance.Expression,
+  arguments: List(glance.Field(glance.Expression)),
+) -> Result(#(ty.Type, Option(FieldMap), State), Error) {
+  let #(seeds, st) = speculate(env, st, list.map(arguments, field_item))
+  case function {
+    glance.Fn(span, params, return_annotation, body) -> {
+      use #(fn_type, st) <- result.try(infer_seeded_lambda(
+        env,
+        st,
+        span,
+        params,
+        return_annotation,
+        body,
+        seeds,
+        None,
+      ))
+      Ok(#(fn_type, None, st))
+    }
+    // Unreachable: the caller only takes this path for a `glance.Fn`.
+    _ -> infer_callee(env, st, function)
+  }
+}
+
+// Infer each argument only to learn its type, keeping what unification learned
+// and putting back everything the pass *reported*. The compiler does the same
+// in `infer_fn_with_call_context`, where the restore is of the diagnostics the
+// speculative pass recorded rather than of the substitution: a binding this
+// pass makes to a variable already in the environment is one the real pass
+// would make too. `next_id` is kept for the mirror-image reason — reissuing an
+// id this pass spent would hand two different variables one name.
+//
+// Restoring the three lists is what keeps the pass invisible: no span is
+// annotated twice, no reference recorded twice, and no deferral is left behind
+// holding a result variable nothing will ever read.
+//
+// An argument this pass cannot type is left as a fresh variable rather than
+// failing the call. The real pass infers it again and reports it there, so
+// speculating never decides whether a program is accepted.
+fn speculate(
+  env: Env,
+  st: State,
+  arguments: List(glance.Expression),
+) -> #(List(ty.Type), State) {
+  case infer_each(env, st, arguments) {
+    Error(_) -> fresh_n(st, list.length(arguments))
+    Ok(#(types_, spent)) -> #(
+      types_,
+      State(
+        ..spent,
+        annotations: st.annotations,
+        references: st.references,
+        pending: st.pending,
+      ),
+    )
+  }
 }
 
 // A call's result: the callee's own return where the callee is known to be a
@@ -3814,17 +3933,16 @@ fn check(
   }
   case expr, seeded {
     glance.Fn(span, params, return_annotation, body), Ok(#(seeds, ret)) -> {
-      use #(fn_type, st) <- result.try(infer_lambda(
+      use #(fn_type, st) <- result.try(infer_seeded_lambda(
         env,
         st,
+        span,
         params,
         return_annotation,
         body,
         seeds,
         Some(ret),
-        dict.new(),
       ))
-      let st = record(st, span, fn_type)
       unify(st, fn_type, expected)
     }
     _, _ -> {

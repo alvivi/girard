@@ -2205,6 +2205,55 @@ pub fn piped_lambda_reads_field_test() {
   type_of(source, "x.value") |> should.equal("Int")
 }
 
+pub fn applied_lambda_reads_field_test() {
+  // `fn(x) { .. }(v)` has no signature its parameter types can be read from, so
+  // they are learned from the call's own arguments before the body is walked.
+  let source =
+    "pub type Box {\n  Box(value: Int)\n}\n"
+    <> "pub fn run(b: Box) {\n  fn(x) { x.value }(b)\n}"
+  resolution_at(source, [], span_of(source, "x.value"))
+  |> should.equal(girard.RecordField(girard.Named("", "Box", []), "value"))
+  type_of(source, "x.value") |> should.equal("Int")
+}
+
+pub fn applied_lambda_argument_is_inferred_once_test() {
+  // The pass that learns the argument types is invisible: it keeps what
+  // unification learned and puts back everything it reported. So a called
+  // lambda's argument leaves exactly what the same argument of an ordinary call
+  // leaves — a speculative pass whose annotations or deferrals leaked would
+  // report the argument twice over.
+  let prelude =
+    "pub type Box {\n  Box(value: Int)\n}\n"
+    <> "pub fn unwrap(b: Box) -> Box {\n  b\n}\n"
+    <> "pub fn id(x: Box) -> Box {\n  x\n}\n"
+  let applied = prelude <> "pub fn run(b: Box) {\n  fn(n) { n }(unwrap(b))\n}"
+  let ordinary = prelude <> "pub fn run(b: Box) {\n  id(unwrap(b))\n}"
+
+  annotations_at(applied, span_of(applied, "unwrap(b)"))
+  |> should.equal(annotations_at(ordinary, span_of(ordinary, "unwrap(b)")))
+
+  // And the bare name in call position inside the argument resolves once, to
+  // the member the real pass reached.
+  let callee = span_of(applied, "unwrap(b)")
+  list.filter(references(applied, []), fn(r) {
+    r.span
+    == glance.Span(callee.start, callee.start + string.byte_size("unwrap"))
+  })
+  |> list.map(fn(r) { r.resolution })
+  |> should.equal([girard.ModuleFn("", "unwrap")])
+}
+
+// Every type recorded at `span`, in the order girard reports them. A call span
+// already carries two — `infer_expr`'s wrapper records it and `infer_call`
+// records the callee's own return over it — so the count is only meaningful
+// against the same shape without the seeding.
+fn annotations_at(source: String, span: glance.Span) -> List(String) {
+  let assert Ok(analysis) = girard.analyse(source, girard.default_options())
+  analysis.annotated.expressions
+  |> list.filter(fn(a) { a.span == span })
+  |> list.map(fn(a) { girard.type_to_string(a.type_) })
+}
+
 pub fn seeded_receiver_takes_the_field_type_test() {
   // Seeding the receiver changes the inferred *type*, not only the member it is
   // reported under. An unbound receiver whose name is also a module in scope
