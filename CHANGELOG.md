@@ -9,21 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A definition girard declined no longer leaves its labels behind on the
-  unqualified import it shadows. Discarding a definition restores the whole
-  import — scheme, labels and identity — so a later call is checked against
-  the labels of the value it is actually typed against. Previously the
-  declined definition's field map outlived it, and a call written with the
-  import's own label was rejected: `UnknownLabel` where the declined
-  definition was a function declaring a different label, `AmbiguousCall` where
-  it was a constant, which declares none. This applies inside the defining
-  module and in any module importing it. Only best-effort inference is
-  affected; a module girard types in full never had a declined definition.
-- A public definition girard declined no longer exports the identity of the
-  unqualified import it shadows under its own module's name. An interface now
-  carries one entry per export — its scheme, its labels and the module it was
-  declared in, together — so an importer typed against the import resolves the
-  call to the import's module, as it already did inside the defining module.
+- A skipped definition no longer breaks calls to the import it shadows. In
+  best-effort mode the skipped definition's argument labels outlived it, so a
+  later call using the import's own labels was wrongly rejected with
+  `UnknownLabel` or `AmbiguousCall`. Those calls now type.
+- Such a call now resolves to the module it was typed against. An importer
+  calling `a.g`, where `a`'s own `g` was skipped and shadowed an
+  `import imported.{g}`, was told it had called `a.g` rather than
+  `imported.g`.
 
 ## [2.2.0] - 2026-09-04
 
