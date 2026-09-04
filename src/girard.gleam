@@ -1021,9 +1021,11 @@ fn mark_live(env: Env, names: List(String)) -> Env {
 }
 
 // The prelude value constructors (`True`, `False`, `Nil`, `Ok`, `Error`) as
-// named schemes, with `Ok`'s and `Error`'s type variables minted from `st`.
-// One table serves both the initial environment and the `gleam` interface.
-fn prelude_values(st: State) -> #(List(#(String, ty.Scheme)), State) {
+// named scope entries, with `Ok`'s and `Error`'s type variables minted from
+// `st`. Every one of them is a constructor of a prelude type, so the entries
+// are built here and one table serves both the initial environment and the
+// `gleam` interface — neither has to know how to wrap the other's.
+fn prelude_values(st: State) -> #(List(#(String, ValueConstructor)), State) {
   // Ok(a) -> Result(a, e), the prelude's first variant.
   let #(ok_a, st) = fresh_id(st)
   let #(ok_e, st) = fresh_id(st)
@@ -1048,13 +1050,23 @@ fn prelude_values(st: State) -> #(List(#(String, ty.Scheme)), State) {
       ),
     )
 
-  let values = [
-    #("True", ty.Scheme([], prelude_bool())),
-    #("False", ty.Scheme([], prelude_bool())),
-    #("Nil", ty.Scheme([], prelude_nil())),
-    #("Ok", ok),
-    #("Error", error),
-  ]
+  let values =
+    list.map(
+      [
+        #("True", ty.Scheme([], prelude_bool())),
+        #("False", ty.Scheme([], prelude_bool())),
+        #("Nil", ty.Scheme([], prelude_nil())),
+        #("Ok", ok),
+        #("Error", error),
+      ],
+      fn(value) {
+        let #(name, scheme) = value
+        #(
+          name,
+          ValueConstructor(scheme, ConstructorValue(prelude_module, name, None)),
+        )
+      },
+    )
   #(values, st)
 }
 
@@ -1064,12 +1076,7 @@ fn prelude() -> #(Env, State) {
   let #(values, st) = prelude_values(new_state())
   let env =
     list.fold(values, new_env(), fn(env, value) {
-      install(
-        env,
-        value.0,
-        value.1,
-        ConstructorValue(prelude_module, value.0, None),
-      )
+      install_entry(env, value.0, value.1)
     })
   #(env, st)
 }
@@ -1082,14 +1089,6 @@ fn prelude() -> #(Env, State) {
 fn prelude_interface() -> ModuleInterface {
   let module = prelude_module
   let #(values, _st) = prelude_values(new_state())
-  // Every prelude value is a constructor of a prelude type.
-  let values =
-    dict.from_list(
-      list.map(values, fn(value) {
-        let #(name, scheme) = value
-        #(name, ValueConstructor(scheme, ConstructorValue(module, name, None)))
-      }),
-    )
   let types_ =
     dict.from_list([
       #("Int", #(module, "Int", 0)),
@@ -1104,7 +1103,7 @@ fn prelude_interface() -> ModuleInterface {
     ])
   ModuleInterface(
     name: module,
-    values: values,
+    values: dict.from_list(values),
     types: types_,
     aliases: dict.new(),
     accessors: dict.new(),
