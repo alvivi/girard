@@ -2186,6 +2186,41 @@ pub fn references_are_unique_per_span_test() {
   ])
 }
 
+// Lambdas checked against a known function type
+//
+// Wherever the type a lambda will be called at is already known, it is pushed
+// into the lambda's parameters before its body is walked — as the compiler's
+// `infer_fn_with_known_types` does. A field access on such a parameter then
+// resolves at the access, instead of being deferred and read once later
+// inference has fixed the receiver's type.
+
+pub fn piped_lambda_reads_field_test() {
+  // `left |> fn(x) { .. }` calls the lambda on the piped value, so the piped
+  // type is the parameter's before the body is inferred.
+  let source =
+    "pub type Box {\n  Box(value: Int)\n}\n"
+    <> "pub fn run(b: Box) {\n  b |> fn(x) { x.value }\n}"
+  resolution_at(source, [], span_of(source, "x.value"))
+  |> should.equal(girard.RecordField(girard.Named("", "Box", []), "value"))
+  type_of(source, "x.value") |> should.equal("Int")
+}
+
+pub fn seeded_receiver_takes_the_field_type_test() {
+  // Seeding the receiver changes the inferred *type*, not only the member it is
+  // reported under. An unbound receiver whose name is also a module in scope
+  // falls through to that module's export; here the export and the field return
+  // different types, so reading the field is visible in the signature.
+  let io = "pub fn println(message: String) -> Nil { Nil }"
+  let source =
+    "import io\n"
+    <> "pub type Logger {\n  Logger(println: fn(String) -> Int)\n}\n"
+    <> "pub fn run(l: Logger) {\n  l |> fn(io) { io.println(\"hi\") }\n}"
+  signature_with(source, [#("io", io)], "run")
+  |> should.equal("fn(Logger) -> Int")
+  resolution_at(source, [#("io", io)], span_of(source, "io.println"))
+  |> should.equal(girard.RecordField(girard.Named("", "Logger", []), "println"))
+}
+
 pub fn every_visited_reference_is_recorded_test() {
   // The census: over a module mixing every recorded shape with several
   // unrecorded ones, the references girard reports are exactly the field

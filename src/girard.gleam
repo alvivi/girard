@@ -3767,10 +3767,26 @@ fn infer_pipe(
     // this shape has no arguments to use, so the type is unchanged.
     _ -> {
       use #(lt, st) <- result.try(infer_expr(env, st, left))
-      use #(ft, _labels, st) <- result.try(infer_callee(env, st, right))
       let #(result, st) = fresh(st)
-      use st <- result.try(unify(st, ft, ty.Fn([lt], result)))
-      Ok(#(result, record(st, span, result)))
+      case right {
+        // A lambda target is the one shape whose body can use what it is piped:
+        // `check` seeds its parameter from the piped value's type before the
+        // body is inferred, so a field access on that parameter resolves at the
+        // access. The compiler reaches the same place by rewriting the pipe
+        // into a call of the lambda on the piped value.
+        //
+        // A lambda of the wrong arity is not a `Fn` of this shape, so `check`
+        // falls back to infer-then-unify and fails exactly where it does today.
+        glance.Fn(..) -> {
+          use st <- result.try(check(env, st, right, ty.Fn([lt], result)))
+          Ok(#(result, record(st, span, result)))
+        }
+        _ -> {
+          use #(ft, _labels, st) <- result.try(infer_callee(env, st, right))
+          use st <- result.try(unify(st, ft, ty.Fn([lt], result)))
+          Ok(#(result, record(st, span, result)))
+        }
+      }
     }
   }
 }

@@ -1,6 +1,6 @@
 {
   "gleam": "1.18.0",
-  "generated": "2026-09-03",
+  "generated": "2026-09-04",
   "cases": [
     {
       "fixture": "greet",
@@ -1123,6 +1123,40 @@
       "expect_girard_error_variant": null,
       "divergent": false,
       "why": "an unbound receiver whose name is a module in scope that exports the label does not error: the compiler falls through to the module export, and girard's current behaviour is correct. A resolution row rather than a probe, so a regression that read some other type moves the ratchet instead of passing a status comparison"
+    },
+    {
+      "fixture": "pipe_lambda",
+      "function": "pipe_lambda",
+      "kind": "resolution",
+      "access": "call",
+      "syntax_site": "call",
+      "expect": "field",
+      "field_availability": "shared",
+      "narrowed_to": null,
+      "module_availability": "available",
+      "field_member": "fn(String) -> Nil",
+      "module_member": "fn(String) -> Int",
+      "field_return": "Nil",
+      "module_return": "Int",
+      "field_candidates": null,
+      "missing_variants": null,
+      "reason": null,
+      "derivable": true,
+      "forced_field": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
+      "forced_module": { "status": "ok", "return": "Int", "diagnostic": null, "at": null, "error_variant": null },
+      "target_import": { "module": "differential/io", "alias": null },
+      "label": "println",
+      "target_bindings": [{ "name": "io", "span": { "start": 118, "end": 120 } }],
+      "target_access": { "start": 124, "end": 134 },
+      "renamed_to": "rec_0",
+      "renamed_spans": [[118, 120]],
+      "inputs_hash": "273adf68fb73bbcf7d434c3e8f29171ecfcb0cc992abfe0cb28a2736a544aa94",
+      "evidence_hash": "7b7f82211262bc90a2e2c959f42d0e4275fbfabcb08b19aee4723d2de74d200e",
+      "compiler": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
+      "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
+      "expect_girard_error_variant": null,
+      "divergent": false,
+      "why": "the compiler rewrites `left |> fn(..) { .. }` as a call of the lambda on the piped value, so the parameter is seeded from that value's type before the body is walked. The parameter is bound before the body is walked, so the access reads the record it was seeded with rather than falling through to the module export of the parameter's name"
     },
     {
       "fixture": "tuple_pattern",
