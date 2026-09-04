@@ -13,12 +13,12 @@
 //// divergence count are pinned as literals *in this file* — so the manifest and
 //// the test have to change together, in one diff.
 ////
-//// All seven read the manifest through `manifest.decode`, which is where the
+//// All eight read the manifest through `manifest.decode`, which is where the
 //// enumerated fields are checked against their vocabularies — a typo in `kind`
 //// or `reason` is invisible to every assertion below, so the rejection itself
 //// is tested first.
 ////
-//// The seven assertions:
+//// The eight assertions:
 ////
 //// 1. `expect` is what the compiler actually says.
 //// 2. The discriminator is intact, at the right level.
@@ -27,7 +27,10 @@
 //// 5. The recorded compiler evidence still belongs to the source in the tree.
 //// 6. Divergence is recomputed per row, then counted.
 //// 7. The recomputed count equals the literal below.
+//// 8. girard's resolution at the contested access is the branch its type
+////    answer decodes to, and a module answer names the canonical module path.
 
+import girard
 import girard/differential
 import girard/differential/manifest.{
   type Manifest, type Outcome, type Row, type Span, Span,
@@ -1319,7 +1322,28 @@ fn check_error_position(
   let assert Some(at) = outcome.at
   let text = read_file(companion_source_path(companion, row.fixture))
   let offset = source.offset_of(text, at.line, at.column)
-  let target = case companion {
+  let target = companion_access(fixture, companion)
+  require(
+    row,
+    "the "
+      <> companion_name(companion)
+      <> " companion failed at "
+      <> int.to_string(at.line)
+      <> ":"
+      <> int.to_string(at.column)
+      <> ", outside the contested access",
+    offset >= target.start && offset < target.end,
+  )
+}
+
+// The contested access in a companion's own coordinates. Each companion edits
+// the base differently, so each has its own transform: the forced-field
+// companion deletes the colliding import above the access, and the forced-module
+// companion renames every binding occurrence of the receiver, none of which is
+// the one inside the access itself.
+fn companion_access(fixture: Fixture, companion: Companion) -> Span {
+  let row = fixture.row
+  case companion {
     ForcedField -> {
       let assert Some(import_) = row.target_import
       let assert Ok(#(_, _, removed)) =
@@ -1336,23 +1360,184 @@ fn check_error_position(
       )
     }
   }
-  require(
-    row,
-    "the "
-      <> companion_name(companion)
-      <> " companion failed at "
-      <> int.to_string(at.line)
-      <> ":"
-      <> int.to_string(at.column)
-      <> ", outside the contested access",
-    offset >= target.start && offset < target.end,
-  )
 }
 
 fn shift(position: Int, spans: List(Span), delta: Int) -> Int {
   position
   + delta
   * list.length(list.filter(spans, fn(span) { span.start < position }))
+}
+
+// Assertion 8
+//
+// girard's resolution at the contested access is the branch its own type answer
+// decodes to, and a module answer names the module's canonical path.
+//
+// The type reading stays the corpus's mechanism — a return type is what the
+// compiler can be asked — but girard now says which member it read, so the two
+// readings of girard's own behaviour must agree. Every row with a colliding
+// import in scope therefore also pins the canonical path, which no type answer
+// can distinguish from the alias: `aliased_import` is the row where the two
+// spellings differ, and this is the assertion that reads them apart.
+//
+// Both companions are checked too, where the compiler accepted them: each forces
+// one branch, so each pins the resolution it forces without decoding anything.
+
+pub fn girard_resolves_the_branch_it_returns_test() {
+  use row <- each_row()
+  case row.kind == manifest.kind_probe {
+    True -> Nil
+    False -> {
+      let fixture = read(row)
+      // One pass over the base fixture: the type answer names the branch, and
+      // the resolutions from the same inference are held to it.
+      let #(outcome, references) =
+        runner.girard_analysis(fixture.text, row.function)
+      case outcome.return {
+        // girard errored on the base fixture; assertion 4 owns that.
+        None -> Nil
+        Some(answer) ->
+          check_resolution(
+            fixture,
+            differential.base_path(row.fixture),
+            references,
+            row.target_access,
+            manifest.decode_branch(row, answer),
+          )
+      }
+      check_forced_resolution(fixture, ForcedField, row.forced_field)
+      check_forced_resolution(fixture, ForcedModule, row.forced_module)
+    }
+  }
+}
+
+// A companion the compiler accepted forces exactly one branch, so girard must
+// read that branch there. One the compiler rejected has no branch to force.
+fn check_forced_resolution(
+  fixture: Fixture,
+  companion: Companion,
+  outcome: Option(Outcome),
+) -> Nil {
+  case outcome {
+    Some(outcome) if outcome.status == manifest.status_ok -> {
+      let path = companion_source_path(companion, fixture.row.fixture)
+      let #(_outcome, references) =
+        runner.girard_analysis(read_file(path), fixture.row.function)
+      check_resolution(
+        fixture,
+        path,
+        references,
+        companion_access(fixture, companion),
+        case companion {
+          ForcedField -> manifest.expect_field
+          ForcedModule -> manifest.expect_module
+        },
+      )
+    }
+    _ -> Nil
+  }
+}
+
+fn check_resolution(
+  fixture: Fixture,
+  path: String,
+  references: List(girard.ResolvedReference),
+  access: Span,
+  branch: String,
+) -> Nil {
+  let row = fixture.row
+  let resolution = resolution_at(fixture, path, references, access)
+  case branch {
+    "field" ->
+      case resolution {
+        girard.RecordField(_, label) if label == row.label -> Nil
+        other ->
+          fail(
+            row,
+            "reads the field in "
+              <> path
+              <> " but resolves to "
+              <> describe_resolution(other),
+          )
+      }
+    "module" -> {
+      // Every module answer in the corpus reaches a module that an import put
+      // in scope, so the row names the path the answer must carry.
+      let assert Some(import_) = row.target_import
+      case module_export(resolution) {
+        Some(#(module, name)) if module == import_.module && name == row.label ->
+          Nil
+        _ ->
+          fail(
+            row,
+            "reads the module in "
+              <> path
+              <> " but resolves to "
+              <> describe_resolution(resolution)
+              <> ", not "
+              <> import_.module
+              <> "."
+              <> row.label,
+          )
+      }
+    }
+    // `unknown`: assertions 1 and 6 own a type answer that decodes to neither
+    // branch, and there is no branch here to hold the resolution to.
+    _ -> Nil
+  }
+}
+
+// The module and the declared name behind a module answer, whichever of the
+// three kinds of export it is. `differential/io` contests `println` with a
+// function and `n` and `y` with constants, so the kind is not fixed.
+fn module_export(resolution: girard.Resolution) -> Option(#(String, String)) {
+  case resolution {
+    girard.ModuleFn(module, name) -> Some(#(module, name))
+    girard.ModuleConstant(module, name) -> Some(#(module, name))
+    girard.Constructor(module, name) -> Some(#(module, name))
+    _ -> None
+  }
+}
+
+// There is at most one reference per span — `Analysis.resolutions` holds one
+// entry per span — so finding the first is finding the only one.
+fn resolution_at(
+  fixture: Fixture,
+  path: String,
+  references: List(girard.ResolvedReference),
+  access: Span,
+) -> girard.Resolution {
+  let found =
+    list.find(references, fn(reference) {
+      reference.span.start == access.start && reference.span.end == access.end
+    })
+  case found {
+    Ok(reference) -> reference.resolution
+    Error(_) ->
+      fail(
+        fixture.row,
+        "girard recorded no reference at "
+          <> path
+          <> " "
+          <> int.to_string(access.start)
+          <> "-"
+          <> int.to_string(access.end),
+      )
+  }
+}
+
+fn describe_resolution(resolution: girard.Resolution) -> String {
+  case resolution {
+    girard.RecordField(record, label) ->
+      "the " <> girard.type_to_string(record) <> " field `" <> label <> "`"
+    girard.ModuleFn(module, name) -> "the function " <> module <> "." <> name
+    girard.ModuleConstant(module, name) ->
+      "the constant " <> module <> "." <> name
+    girard.Constructor(module, name) ->
+      "the constructor " <> module <> "." <> name
+    girard.LocalVariable(name) -> "the local `" <> name <> "`"
+    girard.Unresolved(_) -> "no member at all"
+  }
 }
 
 // Assertion 5

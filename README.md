@@ -28,7 +28,8 @@ That makes it a building block for language tooling written in Gleam:
   example, a "wrap this element" refactor only makes sense when it knows the
   expression already has the element type it is wrapping.
 - **Linters and analyzers** — rules that depend on types rather than syntax
-  alone, without reimplementing inference.
+  alone, and on which member a call resolves to, without reimplementing
+  inference.
 - **Code generation and refactoring tools** — codemods that must know a
   binding's signature to rewrite call sites safely.
 
@@ -73,7 +74,9 @@ double: fn(Int) -> Int
 `constants`) and every expression's `Type` keyed by its source span (in
 `expressions`). These are structured [`girard`](src/girard.gleam) values —
 pattern-match on `Named`/`Fn`/`Var`/`Tuple`, or render one with
-`girard.type_to_string`.
+`girard.type_to_string`. `girard.analyse` returns the same annotations plus
+what every reference resolved to — see [Resolving
+references](#resolving-references).
 
 ### Command line
 
@@ -134,6 +137,67 @@ pub fn return_kind(source: String, name: String) -> String {
 
 (Imported modules are still parsed internally, via the resolver — only the
 module you pass is taken pre-parsed.)
+
+### Resolving references
+
+`girard.analyse` — and `analyse_module`, `analyse_with_cache` and
+`analyse_package`, the twins of the four `annotate*` functions — reports
+everything `annotate` does *and* which member each reference resolved to. This
+is the question a linter or a rename asks: given `printer.println(…)`, is
+`printer` a record in scope or the module the import bound?
+
+```gleam
+import gleam/io as printer
+
+pub type Logger {
+  Loud(println: fn(String) -> Nil)
+  Quiet(n: Int)
+}
+
+pub fn run(l: Logger) {
+  case l {
+    Loud(..) as printer -> printer.println("hi")   // RecordField(Logger, "println")
+    Quiet(..) -> printer.println("quiet")          // ModuleFn("gleam/io", "println")
+  }
+}
+```
+
+Each `ResolvedReference` carries the access's span — the same span the
+`Annotation` for it carries — the label's, the accessed value's, and a
+`Resolution`:
+
+```gleam
+import girard
+import gleam/list
+
+pub fn members(source: String) -> List(String) {
+  let assert Ok(analysis) = girard.analyse(source, girard.default_options())
+  list.map(analysis.resolutions, fn(reference) {
+    case reference.resolution {
+      girard.RecordField(record, label) ->
+        girard.type_to_string(record) <> "." <> label
+      girard.ModuleFn(module, name) -> module <> "." <> name <> "()"
+      girard.ModuleConstant(module, name) -> module <> "." <> name
+      girard.Constructor(module, name) -> module <> "." <> name <> "{}"
+      girard.LocalVariable(name) -> name
+      girard.Unresolved(_) -> "?"
+    }
+  })
+}
+```
+
+A module is always named by its canonical path, never the alias it was imported
+under, and a constructor by the name it is declared with — `Near`, even where it
+was imported `as Close`.
+
+The contract is exact: an entry is recorded for **every field access**, wherever
+it sits, and for **every bare name in call position** — the callee of a call, a
+capture or a `use`, and a bare pipe target. Nothing else, so a name read outside
+call position (`let g = greet`), the constructor of a record update or of a
+pattern, and a tuple index have no entry. A span with no entry was therefore
+either not a recorded position or never walked: a definition `analyse_package`
+reports as `skipped` contributes none, and neither does one dropped for the
+other build target.
 
 ### Options: resolver and target
 

@@ -106,6 +106,100 @@ pub type AnnotatedModule {
   )
 }
 
+/// Which member a reference resolved to. The variants are named after the
+/// compiler's `ValueConstructorVariant`, which is where the same distinction
+/// lives there, plus `RecordField` for the case the compiler reaches through
+/// `RecordAccess` rather than through a scope entry.
+pub type Resolution {
+  /// A field of the record's nominal type — the compiler's `RecordAccess`,
+  /// whose accessed value it likewise calls the `record`.
+  RecordField(record: Type, label: String)
+  /// A module's function, under the module's canonical path.
+  ModuleFn(module: String, name: String)
+  /// A module's constant, under the module's canonical path.
+  ModuleConstant(module: String, name: String)
+  /// A custom-type constructor, under its defining module's canonical path and
+  /// its declared name — `Near`, even where it was imported `as Close`. The
+  /// compiler calls this variant `Record`; `Constructor` is the name it uses
+  /// for the same thing wherever it faces outwards.
+  Constructor(module: String, name: String)
+  /// A local binding: a `let`, a parameter, or a pattern's binding.
+  LocalVariable(name: String)
+  /// girard reached no member *at* the reference. The reason says why.
+  Unresolved(reason: UnresolvedReason)
+}
+
+/// Why girard reached no member at a reference.
+pub type UnresolvedReason {
+  /// The record's type was unknown at the access and no module of its name
+  /// exported the label, so girard deferred the access and read the field only
+  /// once later inference had fixed the type — after the point where a member
+  /// could be named. The [`Annotation`](#Annotation) at the span is still
+  /// girard's answer for the field's type; only the member is unreported.
+  ///
+  /// Named for the compiler error covering the same ground,
+  /// `RecordAccessUnknownType`. Where the compiler's inference had not fixed
+  /// the record's type at the access either, it rejects the program there
+  /// (`Unknown type for record access`) and girard is the more permissive of
+  /// the two. Where it had, girard merely reached the answer later than the
+  /// compiler did.
+  RecordAccessUnknownType
+}
+
+/// One reference and what it resolved to.
+///
+/// `span` is the whole access — the same span [`Annotation`](#Annotation)
+/// carries for it — while `label_span` and `container_span` are the member and
+/// the accessed value, named as the compiler names the two spans it computes
+/// for a field access. For a bare name in call position the three are the same
+/// span.
+///
+/// Note that the compiler's own `Reference` is a different notion: it records
+/// the *syntax* a use took — qualified, unqualified, aliased — for renaming and
+/// find-references. A `ResolvedReference` says which member the use reached,
+/// and says nothing about how it was spelled.
+pub type ResolvedReference {
+  ResolvedReference(
+    span: glance.Span,
+    label_span: glance.Span,
+    container_span: glance.Span,
+    resolution: Resolution,
+  )
+}
+
+/// Everything girard inferred for one module — its
+/// [`AnnotatedModule`](#AnnotatedModule) — plus what every field access and
+/// every bare name in call position resolved to, and which definitions girard
+/// declined.
+///
+/// `resolutions` is sorted by span, with one entry per span. The contract is
+/// exact: an entry is recorded for every `glance.FieldAccess` girard walked,
+/// wherever it sits, and for every bare name in call position — the callee of
+/// a call, a capture or a `use`, and a bare pipe target. Nothing else is
+/// recorded, so a name read outside call position (`let g = greet`), the
+/// constructor of a record update or of a pattern, and a tuple index have no
+/// entry. A span with no entry was therefore either not a recorded position or
+/// never walked: a definition in `skipped` contributes none, and neither does
+/// one dropped for the other build [`Target`](#Target).
+///
+/// A resolution names a module by its canonical path, never the alias it was
+/// imported under. The module under analysis is named as girard was given it:
+/// its path under [`analyse_package`](#analyse_package), and `""` for a module
+/// analysed on its own — the same name its own types carry in `Named`.
+///
+/// `skipped` names each top-level function or constant girard declined, with
+/// the error that declined it. It is always empty from
+/// [`analyse`](#analyse), [`analyse_module`](#analyse_module) and
+/// [`analyse_with_cache`](#analyse_with_cache), which fail the whole module
+/// instead; see [`analyse_package`](#analyse_package) for the best-effort rule.
+pub type Analysis {
+  Analysis(
+    annotated: AnnotatedModule,
+    resolutions: List(ResolvedReference),
+    skipped: List(#(String, Error)),
+  )
+}
+
 /// Resolves an imported module path (e.g. `"gleam/list"`) to its source.
 pub type Resolver =
   fn(String) -> Result(String, Nil)
@@ -213,8 +307,16 @@ pub fn annotate(
   source: String,
   options: Options,
 ) -> Result(AnnotatedModule, Error) {
+  analyse(source, options) |> result.map(fn(analysis) { analysis.annotated })
+}
+
+/// Analyse a Gleam source string: parse it with `glance`, then analyse as
+/// [`analyse_module`](#analyse_module). This is [`annotate`](#annotate) plus
+/// what every field access and every bare name in call position resolved to —
+/// see [`Analysis`](#Analysis) for the exact contract.
+pub fn analyse(source: String, options: Options) -> Result(Analysis, Error) {
   use module <- result.try(parse(source))
-  annotate_module(module, options)
+  analyse_module(module, options)
 }
 
 /// Annotate an already-parsed `glance.Module`. Use this when you have parsed the
@@ -227,7 +329,22 @@ pub fn annotate_module(
   module: glance.Module,
   options: Options,
 ) -> Result(AnnotatedModule, Error) {
-  use #(#(env, st), _interface, _cache, _skipped) <- result.try(infer_module(
+  analyse_module(module, options)
+  |> result.map(fn(analysis) { analysis.annotated })
+}
+
+/// Analyse an already-parsed `glance.Module`, as
+/// [`annotate_module`](#annotate_module) annotates one, and additionally report
+/// what every field access and every bare name in call position resolved to.
+/// The spans in [`ResolvedReference`](#ResolvedReference) are glance's, so they
+/// line up with your own AST's nodes. See [`Analysis`](#Analysis) for the exact
+/// contract; `skipped` is always empty here, because a module that does not
+/// type is an error rather than a partial result.
+pub fn analyse_module(
+  module: glance.Module,
+  options: Options,
+) -> Result(Analysis, Error) {
+  use #(#(env, st), _interface, _cache, skipped) <- result.try(infer_module(
     options,
     set.new(),
     dict.new(),
@@ -235,7 +352,7 @@ pub fn annotate_module(
     module,
     best_effort: False,
   ))
-  Ok(render(module, env, st))
+  Ok(Analysis(render(module, env, st), publish_references(st), skipped))
 }
 
 fn parse(source: String) -> Result(glance.Module, Error) {
@@ -285,6 +402,19 @@ pub fn annotate_with_cache(
   options: Options,
   cache: Cache,
 ) -> #(Result(AnnotatedModule, Error), Cache) {
+  let #(analysis, cache) = analyse_with_cache(source, options, cache)
+  #(result.map(analysis, fn(analysis) { analysis.annotated }), cache)
+}
+
+/// Analyse a source string like [`analyse`](#analyse), but reuse and extend
+/// `cache` exactly as [`annotate_with_cache`](#annotate_with_cache) does. The
+/// cache holds imported modules' interfaces, which the resolutions of the
+/// module under analysis are read from; it carries no resolutions of its own.
+pub fn analyse_with_cache(
+  source: String,
+  options: Options,
+  cache: Cache,
+) -> #(Result(Analysis, Error), Cache) {
   case parse(source) {
     Error(error) -> #(Error(error), cache)
     Ok(module) ->
@@ -299,8 +429,8 @@ pub fn annotate_with_cache(
         )
       {
         Error(error) -> #(Error(error), cache)
-        Ok(#(#(env, st), _interface, interfaces, _skipped)) -> #(
-          Ok(render(module, env, st)),
+        Ok(#(#(env, st), _interface, interfaces, skipped)) -> #(
+          Ok(Analysis(render(module, env, st), publish_references(st), skipped)),
           Cache(interfaces),
         )
       }
@@ -357,6 +487,26 @@ pub fn annotate_package(
   modules: List(#(String, glance.Module)),
   options: Options,
 ) -> dict.Dict(String, ModuleResult) {
+  analyse_package(modules, options)
+  |> dict.map_values(fn(_, analysis) {
+    ModuleResult(analysis.annotated, analysis.skipped)
+  })
+}
+
+/// Analyse every module in a package in one pass, as
+/// [`annotate_package`](#annotate_package) annotates one, and additionally
+/// report what every field access and every bare name in call position
+/// resolved to — see [`Analysis`](#Analysis) for the exact contract.
+///
+/// Best-effort per definition, on the same rule: a top-level function or
+/// constant that does not type — along with any that depend on it — is reported
+/// in that module's `skipped` rather than failing the module. A skipped
+/// definition contributes no resolutions, so no reference falls inside its
+/// span, while every other definition is still analysed.
+pub fn analyse_package(
+  modules: List(#(String, glance.Module)),
+  options: Options,
+) -> dict.Dict(String, Analysis) {
   let #(results, _cache) =
     list.fold(modules, #(dict.new(), dict.new()), fn(acc, entry) {
       let #(results, cache) = acc
@@ -372,7 +522,8 @@ pub fn annotate_package(
           // Seed this module's own interface so a later module that imports it
           // hits the cache instead of re-resolving it through the resolver.
           let cache = dict.insert(cache, path, interface)
-          let result = ModuleResult(render(module, env, st), skipped)
+          let result =
+            Analysis(render(module, env, st), publish_references(st), skipped)
           #(dict.insert(results, path, result), cache)
         }
       }
@@ -550,6 +701,10 @@ type State {
     // Inferred type recorded for each annotated source span, in reverse order
     // of discovery. Types are stored "live" and zonked at the end.
     annotations: List(#(glance.Span, ty.Type)),
+    // What every field access and every called bare name resolved to, in
+    // reverse order of discovery. An accessed record is stored "live" and
+    // zonked at the end, as an annotation's type is.
+    references: List(Reference),
     // Field accesses and tuple indexes whose container type was not yet known
     // when encountered; resolved by `resolve_pending` once inference has fixed
     // the container type (deferred resolution, like the real compiler).
@@ -569,6 +724,48 @@ type Pending {
   PendingField(container: ty.Type, label: String, result: ty.Type)
   // `tuple.index` — the element type goes in `result`.
   PendingIndex(container: ty.Type, index: Int, result: ty.Type)
+}
+
+// A reference and what it resolved to, live. The accessed record is an
+// inference-side type that later unification may still refine, so it is kept
+// as one and `publish_reference` zonks and converts it at the end, exactly as
+// `render` does for an annotation. The public `Resolution` cannot be built
+// here — it holds the public `Type`, and one module cannot give two types the
+// same constructor names.
+type Reference {
+  Reference(spans: Spans, resolved: Resolved)
+}
+
+type Resolved {
+  ResolvedField(record: ty.Type, label: String)
+  // Published as `ModuleFn`, `ModuleConstant` or `Constructor`, by kind.
+  ResolvedOrigin(origin: Origin)
+  ResolvedLocal(name: String)
+  // Published as `Unresolved(RecordAccessUnknownType)`.
+  ResolvedDeferred
+}
+
+// The three spans the compiler records for a reference: the whole access, its
+// label and its container (`type_/expression.rs:1362-1379`). For a bare name
+// in call position the three coincide.
+type Spans {
+  Spans(span: glance.Span, label: glance.Span, container: glance.Span)
+}
+
+// What kind of module-level value a name is: the part of the compiler's
+// `ValueConstructorVariant` that says which member a reference resolved to.
+type ValueKind {
+  FunctionKind
+  ConstantKind
+  ConstructorKind
+}
+
+// Where a module-level value was declared: its defining module's canonical
+// path, the name it has *there*, and what kind of value it is. An
+// `import kinds.{Near as Close}` is in scope as `Close` and has origin
+// `Origin("kinds", "Near", ConstructorKind)`.
+type Origin {
+  Origin(module: String, name: String, kind: ValueKind)
 }
 
 // A record type's field accessors: the labels every variant declares
@@ -616,6 +813,12 @@ type Env {
     // label of each positional parameter (`None` where unlabelled). Used to
     // reorder labelled and shorthand arguments at call/pattern sites.
     field_maps: Dict(String, List(Option(String))),
+    // The module-level bindings in scope — this module's own functions,
+    // constants and constructors, and the values unqualified imports bring in
+    // — by the name each is in scope under. **An absent name is a local**: a
+    // `let`, a parameter or a pattern binding, which `bind_value` clears here
+    // as it clears the name's field map.
+    origins: Dict(String, Origin),
     // The name of the module currently being inferred. Local types are minted
     // with this module so they stay distinct from imported types.
     current_module: String,
@@ -652,6 +855,10 @@ type ModuleInterface {
     aliases: Dict(String, #(List(Int), ty.Type)),
     accessors: Dict(String, Accessors),
     field_maps: Dict(String, List(Option(String))),
+    // What kind of value each public export is, so an importer can say which
+    // member a qualified reference resolved to. Built over the keys of
+    // `values`, so it holds no kind for a value the interface does not.
+    kinds: Dict(String, ValueKind),
     // The modules this one imports, so a type it exposes from another module
     // (e.g. a `glance.Span` field) keeps its accessors reachable transitively.
     // Keyed by the alias they are reachable under *here*, which is why a
@@ -670,6 +877,7 @@ fn new_state() -> State {
     next_id: 0,
     subst: dict.new(),
     annotations: [],
+    references: [],
     pending: [],
     rigid: set.new(),
   )
@@ -692,6 +900,7 @@ fn new_env() -> Env {
     accessors: dict.new(),
     local_types: dict.new(),
     field_maps: dict.new(),
+    origins: dict.new(),
     current_module: "",
     modules: dict.new(),
     module_index: dict.new(),
@@ -719,6 +928,13 @@ fn register_field_map(
     True -> Env(..env, field_maps: dict.insert(env.field_maps, name, labels))
     False -> Env(..env, field_maps: dict.delete(env.field_maps, name))
   }
+}
+
+// Record where a module-level value came from, replacing whatever the name
+// held before. Written wherever `register_field_map` is: the two say different
+// things about the same scope entry, which the compiler keeps as one.
+fn register_origin(env: Env, name: String, origin: Origin) -> Env {
+  Env(..env, origins: dict.insert(env.origins, name, origin))
 }
 
 // Declare a local type name (and arity) so references to it during hydration
@@ -829,6 +1045,10 @@ fn prelude() -> #(Env, State) {
   let env =
     list.fold(values, new_env(), fn(env, value) {
       insert_value(env, value.0, value.1)
+      |> register_origin(
+        value.0,
+        Origin(prelude_module, value.0, ConstructorKind),
+      )
     })
   #(env, st)
 }
@@ -861,6 +1081,8 @@ fn prelude_interface() -> ModuleInterface {
     aliases: dict.new(),
     accessors: dict.new(),
     field_maps: dict.new(),
+    // Every prelude value is a constructor of a prelude type.
+    kinds: dict.map_values(values, fn(_, _) { ConstructorKind }),
     modules: dict.new(),
     reachable: dict.new(),
   )
@@ -868,14 +1090,16 @@ fn prelude_interface() -> ModuleInterface {
 
 // Bind a local value: a `let`, a parameter, a pattern's binding. The labels a
 // call may use are read off whatever the callee's name resolves to, and a local
-// value has none of its own, so the binding takes the name's field map with it.
-// The compiler needs no such line because a name's type and its field map are
-// one scope entry there; here they are two dictionaries, and this is what keeps
-// them written together.
+// value has none of its own, so the binding takes the name's field map with it
+// — and its origin, since a local shadows a module-level name's identity as it
+// shadows its labels. The compiler needs no such line because a name's type,
+// its field map and its constructor variant are one scope entry there; here
+// they are three dictionaries, and this is what keeps them written together.
 fn bind_value(env: Env, name: String, scheme: ty.Scheme) -> Env {
   Env(
     ..insert_value(env, name, scheme),
     field_maps: dict.delete(env.field_maps, name),
+    origins: dict.delete(env.origins, name),
   )
 }
 
@@ -934,6 +1158,26 @@ fn lookup(env: Env, name: String) -> Result(ty.Scheme, Nil) {
 type Def {
   FunctionDef(glance.Function)
   ConstantDef(glance.Constant)
+}
+
+// Install a top-level definition's value and its identity together. The
+// compiler keeps them as one scope entry; splitting them is what would let them
+// disagree, and best-effort mode is where that shows. A definition whose
+// component fails to type has that component's whole environment discarded, so
+// a name it shadowed reverts — an unqualified import of the same name keeps its
+// scheme, and has to keep its origin with it, or a caller typed against the
+// import would be published under the local definition's identity.
+fn define_def(env: Env, def: Def, scheme: ty.Scheme) -> Env {
+  let name = def_name(def)
+  define(env, name, scheme)
+  |> register_origin(name, Origin(env.current_module, name, def_kind(def)))
+}
+
+fn def_kind(def: Def) -> ValueKind {
+  case def {
+    FunctionDef(_) -> FunctionKind
+    ConstantDef(_) -> ConstantKind
+  }
 }
 
 fn def_name(def: Def) -> String {
@@ -1213,13 +1457,9 @@ fn infer_group(
     list.fold(items, env, fn(env, item) {
       case item {
         AnnotatedDef(def, _, params, return_type) ->
-          define(
-            env,
-            def_name(def),
-            function_scheme(env, st, params, return_type),
-          )
+          define_def(env, def, function_scheme(env, st, params, return_type))
         PlaceholderDef(def, var) ->
-          define(env, def_name(def), generalize(st, env, var))
+          define_def(env, def, generalize(st, env, var))
       }
     })
   Ok(#(env, st))
@@ -1248,7 +1488,7 @@ fn placeholder(
 ) -> #(Env, List(GroupItem), State) {
   let #(var, st) = fresh_var(st)
   #(
-    define(env, def_name(def), ty.Scheme([], var)),
+    define_def(env, def, ty.Scheme([], var)),
     [PlaceholderDef(def, var), ..items],
     st,
   )
@@ -1276,7 +1516,7 @@ fn prereg_def(
     Ok(f) -> {
       let #(params, return_type, rigid_ids, st) = signature_skeleton(env, st, f)
       #(
-        define(env, def_name(def), rigid_scheme(rigid_ids, params, return_type)),
+        define_def(env, def, rigid_scheme(rigid_ids, params, return_type)),
         [AnnotatedDef(def, f, params, return_type), ..items],
         st,
       )
@@ -1434,15 +1674,29 @@ fn build_interface(
   type_names: List(String),
   accessor_type_names: List(String),
 ) -> ModuleInterface {
+  let values = take(env.values, value_names)
   ModuleInterface(
     name: name,
-    values: take(env.values, value_names),
+    values: values,
     types: take(env.local_types, type_names),
     aliases: resolve_aliases(env, st, type_names),
     // Only non-opaque public types expose their field accessors: an opaque
     // type's fields are private to its defining module.
     accessors: take(env.accessors, accessor_type_names),
     field_maps: take(env.field_maps, value_names),
+    // Over the keys `values` actually kept, not over `value_names`: in
+    // best-effort mode a skipped public definition keeps the origin step 2
+    // registered while `best_effort_group` drops its value, and a kind for a
+    // value the interface does not export would be a key with nothing behind
+    // it. The other direction is a writer invariant: every public value is one
+    // of this module's own functions, constants or constructors, each of which
+    // registers its origin before this runs.
+    kinds: dict.fold(values, dict.new(), fn(kinds, name, _scheme) {
+      case dict.get(env.origins, name) {
+        Ok(origin) -> dict.insert(kinds, name, origin.kind)
+        Error(_) -> kinds
+      }
+    }),
     modules: env.modules,
     reachable: env.module_index,
   )
@@ -1546,6 +1800,15 @@ fn import_value(
 ) -> Env {
   let env = case dict.get(interface.values, original) {
     Ok(scheme) -> insert_value(env, local, scheme)
+    Error(_) -> env
+  }
+  // The origin is the module's real path and the name the value has *there*,
+  // never the alias it reached this module under. A value with no kind is
+  // absent from `origins` rather than given a guessed one; `module_access` is
+  // the reader that turns that broken invariant into a structured error.
+  let env = case dict.get(interface.kinds, original) {
+    Ok(kind) ->
+      register_origin(env, local, Origin(interface.name, original, kind))
     Error(_) -> env
   }
   case dict.get(interface.field_maps, original) {
@@ -2294,6 +2557,12 @@ fn register_custom_type(
         }
         let env = register_field_map(env, variant.name, labels)
         let env =
+          register_origin(
+            env,
+            variant.name,
+            Origin(env.current_module, variant.name, ConstructorKind),
+          )
+        let env =
           insert_value(env, variant.name, ty.Scheme(param_ids, ctor_type))
         #(env, st, [fields, ..variant_fields])
       },
@@ -2641,10 +2910,11 @@ fn infer_expr_inner(
         None -> Ok(#(prelude_nil(), st))
       }
 
-    glance.FieldAccess(_, container, label) -> {
+    glance.FieldAccess(access, container, label) -> {
       use #(type_, _, st) <- result.try(infer_field_access(
         env,
         st,
+        access,
         container,
         label,
       ))
@@ -2720,18 +2990,66 @@ fn infer_bit_segment(
 }
 
 // Which branch a `name.label` access took. A call reads it to pick the
-// callee's field map, which is a property of the branch, not of the alias.
+// callee's field map, which is a property of the branch, not of the alias, and
+// the resolver reads it to record which member the access resolved to.
 type Access {
   // A record field: the compiler's `RecordAccess`, which has no field map.
-  Field
-  // A module export, with its own field map when the export has one.
-  Export(labels: Result(List(Option(String)), Nil))
+  // Carries the accessed record's nominal type, live — the reference publishes it
+  // zonked, so later unification still refines it.
+  Field(record: ty.Type)
+  // A module export, with its own field map when the export has one, and the
+  // identity it was read under.
+  Export(labels: Result(List(Option(String)), Nil), origin: Origin)
+  // Neither yet: the container's type is still a variable and no module of its
+  // name exports the label, so a `PendingField` was queued and no member was
+  // decided here.
+  Deferred
 }
 
-// A module export a `name.label` access may fall through to: its scheme and
-// its field map, both read from the interface while it is in hand.
-type ModuleExport =
-  #(ty.Scheme, Result(List(Option(String)), Nil))
+// A module export a `name.label` access may fall through to: its scheme, its
+// field map and where it was declared, all read from the interface while it is
+// in hand.
+type ModuleExport {
+  ModuleExport(
+    scheme: ty.Scheme,
+    labels: Result(List(Option(String)), Nil),
+    origin: Origin,
+  )
+}
+
+// The export `name.label` reaches when `name` is an imported module, in three
+// states rather than two: `Ok(None)` for no such module or no such export,
+// `Ok(Some(export))` for a valid export with its kind, and `Error` for a value
+// the interface exports with no kind recorded for it. That last is girard's own
+// broken invariant (see `build_interface`), and it ends the definition with a
+// structured error rather than falling through to the record branch or
+// publishing a plausible-but-false identity for it.
+fn module_access(
+  env: Env,
+  name: String,
+  label: String,
+) -> Result(Option(ModuleExport), Error) {
+  case dict.get(env.modules, name) {
+    Error(_) -> Ok(None)
+    Ok(interface) ->
+      case dict.get(interface.values, label) {
+        Error(_) -> Ok(None)
+        Ok(scheme) ->
+          case dict.get(interface.kinds, label) {
+            Error(_) ->
+              Error(Unsupported("kind of " <> interface.name <> "." <> label))
+            Ok(kind) ->
+              Ok(
+                Some(ModuleExport(
+                  scheme: scheme,
+                  labels: dict.get(interface.field_maps, label),
+                  origin: Origin(interface.name, label, kind),
+                )),
+              )
+          }
+      }
+  }
+}
 
 // The one resolver for `name.label`, in projection and in call position
 // alike. The compiler's rule: a valid record access wins unconditionally, a
@@ -2742,28 +3060,57 @@ type ModuleExport =
 fn infer_field_access(
   env: Env,
   st: State,
+  access: glance.Span,
   container: glance.Expression,
   label: String,
 ) -> Result(#(ty.Type, Access, State), Error) {
-  case container {
+  let spans = access_spans(access, container, label)
+  use #(type_, branch, st) <- result.try(case container {
     // Only a bare name can also denote a module, so only there is there a
     // module export for a failing record access to fall through to.
     glance.Variable(_, name) -> {
-      let module_access = case dict.get(env.modules, name) {
-        Ok(interface) ->
-          dict.get(interface.values, label)
-          |> result.map(fn(scheme) {
-            #(scheme, dict.get(interface.field_maps, label))
-          })
-        Error(_) -> Error(Nil)
-      }
+      use export <- result.try(module_access(env, name, label))
       case dict.has_key(env.values, name) {
-        True -> value_field(env, st, container, label, module_access)
-        False -> module_or_record(env, st, container, label, module_access)
+        True -> value_field(env, st, container, label, export)
+        False -> module_or_record(env, st, container, label, export)
       }
     }
-    _ -> module_or_record(env, st, container, label, Error(Nil))
+    _ -> module_or_record(env, st, container, label, None)
+  })
+  Ok(#(type_, branch, record_access(st, spans, label, branch)))
+}
+
+// Record the branch the access took, once, wherever it was reached from. A
+// deferred access is recorded here too, at the point the deferral is decided:
+// the field type it later resolves to is girard's answer, but no member was
+// named *at* the access, and a deferral that never resolves fails its whole
+// component, whose state — this record included — is discarded with it.
+fn record_access(
+  st: State,
+  spans: Spans,
+  label: String,
+  access: Access,
+) -> State {
+  case access {
+    Field(record) -> reference(st, spans, ResolvedField(record, label))
+    Export(_, origin) -> reference(st, spans, ResolvedOrigin(origin))
+    Deferred -> reference(st, spans, ResolvedDeferred)
   }
+}
+
+// The three spans of a field access. glance builds one as
+// `Span(container.start, label_start + byte_size(label))`, so the label is the
+// access's last token and its span is exactly the tail of the access.
+fn access_spans(
+  access: glance.Span,
+  container: glance.Expression,
+  label: String,
+) -> Spans {
+  Spans(
+    span: access,
+    label: glance.Span(access.end - string.byte_size(label), access.end),
+    container: span(container),
+  )
 }
 
 // Instantiate a module export: the branch a record access fell through to.
@@ -2771,9 +3118,8 @@ fn module_export(
   st: State,
   export: ModuleExport,
 ) -> Result(#(ty.Type, Access, State), Error) {
-  let #(scheme, labels) = export
-  let #(type_, st) = instantiate(st, scheme)
-  Ok(#(type_, Export(labels), st))
+  let #(type_, st) = instantiate(st, export.scheme)
+  Ok(#(type_, Export(export.labels, export.origin), st))
 }
 
 // Defer `container.label` until inference fixes the container's type.
@@ -2788,7 +3134,7 @@ fn pending_field(
       PendingField(container_type, label, field),
       ..st.pending
     ])
-  Ok(#(field, Field, st))
+  Ok(#(field, Deferred, st))
 }
 
 // Field access where the container names a bound value: prefer a record field
@@ -2798,7 +3144,7 @@ fn value_field(
   st: State,
   container: glance.Expression,
   label: String,
-  module_access: Result(ModuleExport, Nil),
+  export: Option(ModuleExport),
 ) -> Result(#(ty.Type, Access, State), Error) {
   use #(container_type, st) <- result.try(infer_expr(env, st, container))
   case resolve(st, container_type) {
@@ -2806,26 +3152,26 @@ fn value_field(
       case accessor(env, record, label) {
         Ok(_) -> {
           use #(field, st) <- result.try(field_type(env, st, record, label))
-          Ok(#(field, Field, st))
+          Ok(#(field, Field(record), st))
         }
         // Not a field of this record; a same-named module may export it.
         Error(field_error) ->
-          case module_access {
-            Ok(export) -> module_export(st, export)
-            Error(_) -> Error(field_error)
+          case export {
+            Some(export) -> module_export(st, export)
+            None -> Error(field_error)
           }
       }
     // The record type is not known yet. Prefer a same-named module export;
     // otherwise defer until inference fixes the type.
     ty.Var(_) ->
-      case module_access {
-        Ok(export) -> module_export(st, export)
-        Error(_) -> pending_field(st, container_type, label)
+      case export {
+        Some(export) -> module_export(st, export)
+        None -> pending_field(st, container_type, label)
       }
     _ ->
-      case module_access {
-        Ok(export) -> module_export(st, export)
-        Error(_) -> Error(NotARecord)
+      case export {
+        Some(export) -> module_export(st, export)
+        None -> Error(NotARecord)
       }
   }
 }
@@ -2837,16 +3183,16 @@ fn module_or_record(
   st: State,
   container: glance.Expression,
   label: String,
-  module_access: Result(ModuleExport, Nil),
+  export: Option(ModuleExport),
 ) -> Result(#(ty.Type, Access, State), Error) {
-  case module_access {
-    Ok(export) -> module_export(st, export)
-    Error(_) -> {
+  case export {
+    Some(export) -> module_export(st, export)
+    None -> {
       use #(container_type, st) <- result.try(infer_expr(env, st, container))
       case resolve(st, container_type) {
         ty.Named(_, _, _, _) as record -> {
           use #(field, st) <- result.try(field_type(env, st, record, label))
-          Ok(#(field, Field, st))
+          Ok(#(field, Field(record), st))
         }
         ty.Var(_) -> pending_field(st, container_type, label)
         _ -> Error(NotARecord)
@@ -3085,27 +3431,49 @@ fn infer_callee(
   case function {
     // Resolved here rather than through `infer_expr`, which would drop the
     // branch; the callee's span is recorded once, as `infer_expr` would.
-    glance.FieldAccess(_, container, label) -> {
+    glance.FieldAccess(access_span, container, label) -> {
       use #(type_, access, st) <- result.try(infer_field_access(
         env,
         st,
+        access_span,
         container,
         label,
       ))
       let labels = case access {
-        Export(labels) -> labels
-        Field -> Error(Nil)
+        Export(labels, _) -> labels
+        Field(_) | Deferred -> Error(Nil)
       }
       Ok(#(type_, labels, record(st, span(function), type_)))
     }
     _ -> {
       use #(type_, st) <- result.try(infer_expr(env, st, function))
-      let labels = case function {
-        glance.Variable(_, name) -> dict.get(env.field_maps, name)
-        _ -> Error(Nil)
-      }
-      Ok(#(type_, labels, st))
+      Ok(bare_callee(env, st, function, type_))
     }
+  }
+}
+
+// A callee that is not a `name.label` access. A bare name takes the field map
+// registered for it and records what it resolved to: it is bound, or
+// `infer_expr` would have failed, so it is a module-level value where
+// `env.origins` holds it and a local where it does not. All three of its spans
+// are the variable's. Anything else — a lambda, another call's result — is
+// neither a name nor a reference.
+fn bare_callee(
+  env: Env,
+  st: State,
+  function: glance.Expression,
+  type_: ty.Type,
+) -> #(ty.Type, Result(List(Option(String)), Nil), State) {
+  case function {
+    glance.Variable(name_span, name) -> {
+      let resolved = case dict.get(env.origins, name) {
+        Ok(origin) -> ResolvedOrigin(origin)
+        Error(_) -> ResolvedLocal(name)
+      }
+      let st = reference(st, Spans(name_span, name_span, name_span), resolved)
+      #(type_, dict.get(env.field_maps, name), st)
+    }
+    _ -> #(type_, Error(Nil), st)
   }
 }
 
@@ -3435,8 +3803,14 @@ fn infer_pipe(
       // than is supplied. But if `f(args)` is already a saturated call that
       // returns a function, the pipe applies `left` to that result:
       // `f(args)(left)`. Distinguish on the callee's arity.
-      use #(ft, st) <- result.try(infer_expr(env, st, function))
-      let saturated = case resolve(st, ft) {
+      //
+      // The probe's state is thrown away and `st` carries on: `infer_call`
+      // infers the callee again, properly, and keeping the probe's work would
+      // annotate and resolve the callee's span twice over — the second time
+      // with the instantiation the call actually constrained. An ill-typed
+      // callee still fails here, as it did before.
+      use #(ft, probe) <- result.try(infer_expr(env, st, function))
+      let saturated = case resolve(probe, ft) {
         ty.Fn(params, _) -> list.length(params) == list.length(arguments)
         _ -> False
       }
@@ -3462,10 +3836,12 @@ fn infer_pipe(
           ])
       }
     }
-    // `left |> f` becomes `f(left)`.
+    // `left |> f` becomes `f(left)`. The target is a callee, so it resolves
+    // through `infer_callee` — which is `infer_expr` plus a field-map lookup
+    // this shape has no arguments to use, so the type is unchanged.
     _ -> {
       use #(lt, st) <- result.try(infer_expr(env, st, left))
-      use #(ft, st) <- result.try(infer_expr(env, st, right))
+      use #(ft, _labels, st) <- result.try(infer_callee(env, st, right))
       let #(result, st) = fresh(st)
       use st <- result.try(unify(st, ft, ty.Fn([lt], result)))
       Ok(#(result, record(st, span, result)))
@@ -3582,8 +3958,11 @@ fn infer_use(
   use #(return, st) <- result.try(case function {
     glance.Call(_, callee, arguments) ->
       infer_use_call(env, st, callee, arguments, callback_type, result)
+    // A `use` callee with no argument list is still a callee, so it resolves
+    // through `infer_callee`; the callback is its only argument and needs no
+    // field map, so the type is what `infer_expr` gave before.
     other -> {
-      use #(callee_type, st) <- result.try(infer_expr(env, st, other))
+      use #(callee_type, _labels, st) <- result.try(infer_callee(env, st, other))
       use st <- result.try(unify(
         st,
         callee_type,
@@ -4600,6 +4979,65 @@ fn render(module: glance.Module, env: Env, st: State) -> AnnotatedModule {
   )
 }
 
+// Publish the references recorded during inference: keep one per span, zonk
+// each accessed record through the final substitution and convert it, then sort by
+// span as annotations are sorted.
+fn publish_references(st: State) -> List(ResolvedReference) {
+  st.references
+  |> one_per_span
+  |> list.map(publish_reference(st, _))
+  |> sort_references
+}
+
+// `Analysis.resolutions` promises one entry per span, so this is where that
+// promise is kept, whoever produces a duplicate. No inference path does today
+// — `infer_pipe`'s arity probe used to, and now runs on a state it throws away
+// — but the guarantee is the API's, not one walk's, so it is enforced rather
+// than assumed. The survivor is the **last recorded**: `st.references` is in
+// reverse discovery order, where the last recorded is the first met.
+//
+// Two *different* references never share a whole span: a bare callee's is its
+// variable, and a field access's includes its container.
+fn one_per_span(references: List(Reference)) -> List(Reference) {
+  list.fold(references, #([], set.new()), fn(acc, reference) {
+    let #(kept, seen) = acc
+    case set.contains(seen, reference.spans.span) {
+      True -> acc
+      False -> #([reference, ..kept], set.insert(seen, reference.spans.span))
+    }
+  }).0
+}
+
+fn publish_reference(st: State, reference: Reference) -> ResolvedReference {
+  ResolvedReference(
+    span: reference.spans.span,
+    label_span: reference.spans.label,
+    container_span: reference.spans.container,
+    resolution: publish_resolution(st, reference.resolved),
+  )
+}
+
+fn publish_resolution(st: State, resolved: Resolved) -> Resolution {
+  case resolved {
+    ResolvedField(record, label) ->
+      RecordField(to_public(zonk(st, record)), label)
+    ResolvedOrigin(Origin(module, name, kind)) ->
+      case kind {
+        FunctionKind -> ModuleFn(module, name)
+        ConstantKind -> ModuleConstant(module, name)
+        ConstructorKind -> Constructor(module, name)
+      }
+    ResolvedLocal(name) -> LocalVariable(name)
+    ResolvedDeferred -> Unresolved(RecordAccessUnknownType)
+  }
+}
+
+fn sort_references(
+  references: List(ResolvedReference),
+) -> List(ResolvedReference) {
+  list.sort(references, fn(a, b) { compare_spans(a.span, b.span) })
+}
+
 // The inferred (generalized) scheme of each definition, in source order.
 // Best-effort inference leaves skipped definitions unbound, so omit them here.
 fn collect_schemes(defs: List(Def), env: Env) -> List(#(String, Scheme)) {
@@ -4639,12 +5077,14 @@ fn recursive_type(id: Int, type_: ty.Type) -> Error {
 }
 
 fn sort_by_span(annotations: List(Annotation)) -> List(Annotation) {
-  list.sort(annotations, fn(a, b) {
-    case int.compare(a.span.start, b.span.start) {
-      order.Eq -> int.compare(a.span.end, b.span.end)
-      other -> other
-    }
-  })
+  list.sort(annotations, fn(a, b) { compare_spans(a.span, b.span) })
+}
+
+// The order both published lists carry: by where a span starts, then by where
+// it ends. One comparator, so "sorted by span" cannot come to mean two things.
+fn compare_spans(a: glance.Span, b: glance.Span) -> order.Order {
+  int.compare(a.start, b.start)
+  |> order.break_tie(int.compare(a.end, b.end))
 }
 
 // Small helpers
@@ -4654,6 +5094,11 @@ fn sort_by_span(annotations: List(Annotation)) -> List(Annotation) {
 
 fn record(st: State, span: glance.Span, type_: ty.Type) -> State {
   State(..st, annotations: [#(span, type_), ..st.annotations])
+}
+
+// Record which member a reference resolved to.
+fn reference(st: State, spans: Spans, resolved: Resolved) -> State {
+  State(..st, references: [Reference(spans, resolved), ..st.references])
 }
 
 fn span(expr: glance.Expression) -> glance.Span {

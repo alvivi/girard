@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `analyse`, `analyse_module`, `analyse_with_cache` and `analyse_package`:
+  the `annotate*` results plus, for every field access and every bare name in
+  call position, what it resolved to. Each `ResolvedReference` gives the spans
+  of the access, its label and the accessed value, and a `Resolution`: a
+  record field and the record's type, a module function, constant or
+  constructor under the module's canonical path (not the import alias), a local
+  variable, or `Unresolved`. The variants are named after the compiler's
+  `ValueConstructorVariant`. `annotate*` keep their signatures — they are these
+  functions with the resolutions dropped.
+
 ### Fixed
 
+- A piped call's callee is no longer annotated twice. `left |> f(args)` infers
+  `f` once to measure its arity and once as part of the call; the arity probe
+  now runs on a state that is thrown away, so `expressions` has a single entry
+  for the callee's span, holding the type the call gave it.
 - Variant narrowing now follows the value, not the name it was bound under.
   After `let assert Loud(..) = l`, `let io = l` still reads `io.println` as the
   field, and so do a tuple pattern, a closure's return, a record update, a

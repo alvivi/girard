@@ -19,6 +19,7 @@
 //// cannot be its own expectation.
 
 import argv
+import girard
 import girard/differential/manifest.{
   type Binding, type Candidate, type Outcome, type Row, type Span,
   type TargetImport, Binding, Candidate, Manifest, Row, Span, TargetImport,
@@ -454,7 +455,7 @@ pub fn specs() -> List(Spec) {
         "aliased_import",
         "the collision is with an import alias rather than a module path's final segment: "
           <> field_first
-          <> ". The row pins only the type answer for now - telling an alias from the canonical module path needs a resolution API girard does not yet expose, and would extend this row rather than add one",
+          <> ". Assertion 8 is that extension: girard now reports the resolution itself, and every row with a colliding import in scope pins the canonical module path - here `differential/shadow`, which no type answer can tell apart from the alias `printer`",
       ),
       receiver: "printer",
     ),
@@ -1103,9 +1104,36 @@ fn aggregate() -> Nil {
 // no colliding module is in scope, and girard's answer says whether the field
 // is in reach at all — an error there means the receiver's type never carried
 // the variant, so the narrowing is lost upstream of the resolution.
+//
+// The return type comes first, because it is what the corpus compares; the
+// resolution at every reference follows, so a divergence can be read directly
+// rather than decoded from a type.
 fn answer(path: String, function: String) -> Nil {
   let assert Ok(text) = simplifile.read(path)
-  io.println(describe(runner.girard_outcome(text, function)))
+  let #(outcome, references) = runner.girard_analysis(text, function)
+  io.println(describe(outcome))
+  list.each(references, fn(reference) {
+    io.println(
+      "  "
+      <> int.to_string(reference.span.start)
+      <> "-"
+      <> int.to_string(reference.span.end)
+      <> " "
+      <> describe_resolution(reference.resolution),
+    )
+  })
+}
+
+fn describe_resolution(resolution: girard.Resolution) -> String {
+  case resolution {
+    girard.RecordField(record, label) ->
+      girard.type_to_string(record) <> "." <> label
+    girard.ModuleFn(module, name) -> module <> "." <> name <> "()"
+    girard.ModuleConstant(module, name) -> module <> "." <> name
+    girard.Constructor(module, name) -> module <> "." <> name <> "{}"
+    girard.LocalVariable(name) -> "local " <> name
+    girard.Unresolved(_) -> "unresolved"
+  }
 }
 
 fn report(rows: List(Row)) -> Nil {

@@ -986,7 +986,7 @@
       "girard": { "status": "ok", "return": "Nil", "diagnostic": null, "at": null, "error_variant": null },
       "expect_girard_error_variant": null,
       "divergent": false,
-      "why": "the collision is with an import alias rather than a module path's final segment: narrowing carried on the value's type, read field-first in call position since `infer_callee` resolves through `infer_field_access`. The row pins only the type answer for now - telling an alias from the canonical module path needs a resolution API girard does not yet expose, and would extend this row rather than add one"
+      "why": "the collision is with an import alias rather than a module path's final segment: narrowing carried on the value's type, read field-first in call position since `infer_callee` resolves through `infer_field_access`. Assertion 8 is that extension: girard now reports the resolution itself, and every row with a colliding import in scope pins the canonical module path - here `differential/shadow`, which no type answer can tell apart from the alias `printer`"
     },
     {
       "fixture": "imported_narrowed",

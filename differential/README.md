@@ -4,12 +4,20 @@ The corpus that measures where girard and the real compiler disagree about
 **which `x.label` a name resolves to** — a record field, or a same-named
 module's export.
 
-girard has no API that reports a resolution decision, so each fixture makes the
-decision visible *in a type*: the shadow module's export has a **different
-return type** from the field, and the contested access sits in return position
-of an **unannotated** function. The decision is then the function's inferred
-return type — reported by the compiler in `package-interface`, and by girard in
-`annotate(...).functions`.
+The compiler has no API that reports a resolution decision, so each fixture
+makes the decision visible *in a type*: the shadow module's export has a
+**different return type** from the field, and the contested access sits in
+return position of an **unannotated** function. The decision is then the
+function's inferred return type — reported by the compiler in
+`package-interface`, and by girard in `annotate(...).functions`. That type
+reading is the corpus's mechanism, because it is the only question both sides
+answer.
+
+girard *does* report the decision directly, in `analyse(...).resolutions`, and
+the suite asserts it beside the type: the resolution at each contested access
+must be the branch girard's own return type decodes to, and a module answer must
+name the module's canonical path. That last is the one thing no type answer can
+show, since an alias and the path it stands for read identically in a type.
 
 Both readings must type-check wherever the row contests a genuine choice.
 Argument types stay identical and only the return differs; otherwise the
@@ -178,8 +186,6 @@ resolver closed and nothing should reopen.
   narrowed and un-narrowed forms, so the pair discriminates nothing, and its one
   divergent direction — rejecting an unsafe update — is a diagnostic rather than
   an inference result, which is outside girard's remit.
-- **Alias-vs-canonical module identity**, which needs a resolution API girard
-  does not yet expose. `aliased_import` pins only the type answer for now.
 - **Narrowing to more than one variant at once.** `narrowed_to` names a single
   variant by schema, so `alternatives_agree` uses two alternatives of the *same*
   variant; an alternative pattern narrowing to two different declaring variants

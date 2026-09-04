@@ -6,7 +6,10 @@
 import girard
 import glance
 import gleam/dict
+import gleam/int
 import gleam/list
+import gleam/option
+import gleam/order
 import gleam/string
 import gleeunit
 import gleeunit/should
@@ -72,12 +75,11 @@ fn constant_type(source: String, name: String) -> String {
 // The inferred type of the first occurrence of `snippet` in `source`, matched
 // by its exact byte span.
 fn type_of(source: String, snippet: String) -> String {
-  let assert Ok(start) = first_index(source, snippet)
-  let end = start + string.byte_size(snippet)
+  let span = span_of(source, snippet)
   let assert Ok(annotated) = girard.annotate(source, girard.default_options())
   let matches =
     list.filter_map(annotated.expressions, fn(a) {
-      case a.span.start == start && a.span.end == end {
+      case a.span == span {
         True -> Ok(a.type_)
         False -> Error(Nil)
       }
@@ -85,6 +87,26 @@ fn type_of(source: String, snippet: String) -> String {
   case matches {
     [type_, ..] -> girard.type_to_string(type_)
     [] -> panic as { "no expression with span for: " <> snippet }
+  }
+}
+
+// The span of the first occurrence of `snippet` in `source`.
+fn span_of(source: String, snippet: String) -> glance.Span {
+  let assert Ok(start) = first_index(source, snippet)
+  glance.Span(start, start + string.byte_size(snippet))
+}
+
+// The span of the *last* occurrence of `snippet`, which is how a name that also
+// appears in its own declaration or import is pinned at its use.
+fn last_span(source: String, snippet: String) -> glance.Span {
+  let assert Ok(tail) = list.last(string.split(source, snippet))
+  let start =
+    string.byte_size(source)
+    - string.byte_size(tail)
+    - string.byte_size(snippet)
+  case start >= 0 {
+    True -> glance.Span(start, start + string.byte_size(snippet))
+    False -> panic as { "not in the source: " <> snippet }
   }
 }
 
@@ -300,6 +322,21 @@ pub fn pipe_into_saturated_call_test() {
     <> "pub fn go(x: String) -> String { x |> make(\"a\") }"
   signature(source, "go")
   |> should.equal("fn(String) -> String")
+}
+
+pub fn piped_call_annotates_its_callee_once_test() {
+  // `left |> f(args)` infers `f` once to measure its arity and again as part of
+  // the call. The probe runs on a state that is thrown away, so the callee's
+  // span carries one type rather than the same one twice.
+  let source =
+    "fn add(a: Int, b: Int) -> Int { a + b }\n" <> "pub fn go() { 1 |> add(2) }"
+  let assert Ok(annotated) = girard.annotate(source, girard.default_options())
+
+  list.filter(annotated.expressions, fn(a) {
+    a.span == last_span(source, "add")
+  })
+  |> list.map(fn(a) { girard.type_to_string(a.type_) })
+  |> should.equal(["fn(Int, Int) -> Int"])
 }
 
 // Panic and todo
@@ -1884,6 +1921,540 @@ pub fn accessor_shared_at_same_position_test() {
     <> "pub fn f(io: Rec) { io.y }"
   signature_with(source, [#("io", io_y_float)], "f")
   |> should.equal("fn(Rec) -> String")
+}
+
+// Resolved references
+//
+// What every field access, and every bare name in call position, resolved to:
+// a record field, a module export under its canonical path, a local value, or
+// an answer the compiler would not have reached.
+
+// The resolved references `source` reports, resolving imports from the given
+// in-memory modules (path -> source).
+fn references(
+  source: String,
+  modules: List(#(String, String)),
+) -> List(girard.ResolvedReference) {
+  let assert Ok(analysis) = girard.analyse(source, options_with(modules))
+  analysis.resolutions
+}
+
+// The one reference recorded at `span`. There is at most one — `resolutions`
+// holds one entry per span, which `references_are_unique_per_span_test` pins.
+fn reference_at(
+  source: String,
+  modules: List(#(String, String)),
+  span: glance.Span,
+) -> girard.ResolvedReference {
+  case list.find(references(source, modules), fn(r) { r.span == span }) {
+    Ok(reference) -> reference
+    Error(_) -> panic as "no reference at that span"
+  }
+}
+
+fn resolution_at(
+  source: String,
+  modules: List(#(String, String)),
+  span: glance.Span,
+) -> girard.Resolution {
+  reference_at(source, modules, span).resolution
+}
+
+pub fn field_projection_resolves_to_record_field_test() {
+  // A projection resolves to the field of the receiver's nominal type, and the
+  // three spans are the whole access, its label and its receiver.
+  let source =
+    "pub type Person {\n  Person(name: String)\n}\n"
+    <> "pub fn f(p: Person) { p.name }"
+  let access = last_span(source, "p.name")
+  let reference = reference_at(source, [], access)
+
+  reference.resolution
+  |> should.equal(girard.RecordField(girard.Named("", "Person", []), "name"))
+  reference.label_span
+  |> should.equal(glance.Span(access.end - 4, access.end))
+  reference.container_span
+  |> should.equal(glance.Span(access.start, access.start + 1))
+}
+
+pub fn narrowed_call_resolves_to_record_field_test() {
+  // `Loud(..) as io` narrows `io` to the variant with a `println` field, so the
+  // call resolves to that field and not to the `io` module's `println` — the
+  // resolution twin of `narrowed_receiver_call_beats_module_test`.
+  let source =
+    "import io\n"
+    <> logger_type
+    <> "pub fn run(l: Logger) {\n"
+    <> "  case l {\n"
+    <> "    Loud(..) as io -> io.println(\"hi\")\n"
+    <> "    Quiet(..) -> panic\n"
+    <> "  }\n"
+    <> "}"
+  resolution_at(source, [#("io", io_println)], span_of(source, "io.println"))
+  |> should.equal(girard.RecordField(girard.Named("", "Logger", []), "println"))
+}
+
+pub fn module_call_resolves_to_canonical_path_test() {
+  // A module answer names the module's canonical path, never the alias the
+  // import bound it under.
+  let source =
+    "import gleam/io as printer\n" <> "pub fn run() { printer.println(\"hi\") }"
+  resolution_at(
+    source,
+    [#("gleam/io", io_println)],
+    span_of(source, "printer.println"),
+  )
+  |> should.equal(girard.ModuleFn("gleam/io", "println"))
+}
+
+pub fn module_constant_resolves_to_module_constant_test() {
+  // A qualified read of a `pub const` is a constant, not a function.
+  let source = "import cfg\npub fn run() { cfg.port }"
+  resolution_at(
+    source,
+    [#("cfg", "pub const port = 1")],
+    span_of(source, "cfg.port"),
+  )
+  |> should.equal(girard.ModuleConstant("cfg", "port"))
+}
+
+pub fn qualified_constructor_resolves_to_constructor_test() {
+  let source = "import kinds\npub fn run() { kinds.Box(1) }"
+  resolution_at(source, [#("kinds", box_type)], span_of(source, "kinds.Box"))
+  |> should.equal(girard.Constructor("kinds", "Box"))
+}
+
+pub fn local_constructor_resolves_to_constructor_test() {
+  // A constructor of a type declared here: `register_custom_type` is an origin
+  // writer of its own. The call comes first in the source, so the callee is the
+  // first occurrence of the name.
+  let source = "pub fn run() { Box(1) }\n" <> box_type
+  resolution_at(source, [], span_of(source, "Box"))
+  |> should.equal(girard.Constructor("", "Box"))
+}
+
+pub fn renamed_import_resolves_to_declared_name_test() {
+  // An unqualified import carries the name the value has in its own module,
+  // not the one it was renamed to here.
+  let source = "import kinds.{Near as Close}\npub fn run() { Close(1) }"
+  resolution_at(source, [#("kinds", box_type)], last_span(source, "Close"))
+  |> should.equal(girard.Constructor("kinds", "Near"))
+}
+
+pub fn prelude_constructor_resolves_to_gleam_test() {
+  let source = "pub fn run() { Ok(1) }"
+  resolution_at(source, [], span_of(source, "Ok"))
+  |> should.equal(girard.Constructor("gleam", "Ok"))
+}
+
+pub fn top_level_callee_resolves_to_module_function_test() {
+  // A bare call on this module's own function names it under the module girard
+  // was given, which is `""` for a module analysed on its own.
+  let source = "pub fn run() { helper(1) }\npub fn helper(n) { n }"
+  resolution_at(source, [], span_of(source, "helper"))
+  |> should.equal(girard.ModuleFn("", "helper"))
+
+  // A constant holding a function is a constant when it is called.
+  let called_constant =
+    "pub fn run() { apply(1) }\n"
+    <> "fn plain(n: Int) -> Int { n }\n"
+    <> "pub const apply: fn(Int) -> Int = plain"
+  resolution_at(called_constant, [], span_of(called_constant, "apply"))
+  |> should.equal(girard.ModuleConstant("", "apply"))
+}
+
+pub fn local_callee_resolves_to_local_value_test() {
+  // A `let`-bound function, and the three spans of a bare name coincide.
+  let bound = "pub fn run() {\n  let apply = fn(n) { n }\n  apply(1)\n}"
+  let reference = reference_at(bound, [], last_span(bound, "apply"))
+  reference.resolution |> should.equal(girard.LocalVariable("apply"))
+  reference.label_span |> should.equal(reference.span)
+  reference.container_span |> should.equal(reference.span)
+
+  // A parameter.
+  let parameter = "pub fn run(apply) { apply(1) }"
+  resolution_at(parameter, [], last_span(parameter, "apply"))
+  |> should.equal(girard.LocalVariable("apply"))
+
+  // A `let` shadowing a top-level function of the same name: the local wins,
+  // as it does for the labels the name may be called with.
+  let shadowed =
+    "pub fn helper(n) { n }\n"
+    <> "pub fn run() {\n  let helper = fn(n) { n }\n  helper(1)\n}"
+  resolution_at(shadowed, [], last_span(shadowed, "helper"))
+  |> should.equal(girard.LocalVariable("helper"))
+}
+
+pub fn deferred_receiver_is_unresolved_test() {
+  // girard defers `x.name` while `x`'s type is unknown and reads it once `g(x)`
+  // has fixed it. gleam 1.18.0 rejects the program at the access itself
+  // ("Unknown type for record access"), so the resolution says so — while the
+  // annotation at the span is still girard's answer for the type.
+  let source =
+    "pub type Person {\n  Person(name: String)\n}\n"
+    <> "pub fn g(_p: Person) -> Nil {\n  Nil\n}\n"
+    <> "pub fn deferred(x) {\n"
+    <> "  let y = x.name\n"
+    <> "  let _ = g(x)\n"
+    <> "  y\n"
+    <> "}"
+  resolution_at(source, [], span_of(source, "x.name"))
+  |> should.equal(girard.Unresolved(girard.RecordAccessUnknownType))
+  type_of(source, "x.name") |> should.equal("String")
+}
+
+pub fn receiver_type_is_final_test() {
+  // The receiver is recorded live and published zonked: at `let v = b.value`
+  // the box holds `List(a)`, and the list literal below fixes it to
+  // `List(Int)`.
+  let source =
+    "pub type Box(a) {\n  Box(value: a)\n}\n"
+    <> "pub fn run() {\n"
+    <> "  let b = Box([])\n"
+    <> "  let v = b.value\n"
+    <> "  [1, ..b.value]\n"
+    <> "}"
+  resolution_at(source, [], span_of(source, "b.value"))
+  |> should.equal(girard.RecordField(
+    girard.Named("", "Box", [
+      girard.Named("gleam", "List", [girard.Named("gleam", "Int", [])]),
+    ]),
+    "value",
+  ))
+}
+
+pub fn pipe_and_use_targets_are_recorded_test() {
+  // A bare pipe target and a bare `use` callee are calls too, so each records
+  // what its callee resolved to.
+  let piped = "import io\npub fn run() { \"hi\" |> io.println }"
+  resolution_at(piped, [#("io", io_println)], span_of(piped, "io.println"))
+  |> should.equal(girard.ModuleFn("io", "println"))
+
+  let bare_pipe = "pub fn run() { 1 |> double }\npub fn double(n) { n + n }"
+  resolution_at(bare_pipe, [], span_of(bare_pipe, "double"))
+  |> should.equal(girard.ModuleFn("", "double"))
+
+  let used =
+    "pub fn run() {\n  use n <- each\n  n\n}\n"
+    <> "pub fn each(f: fn(Int) -> Int) -> Int { f(1) }"
+  resolution_at(used, [], span_of(used, "each"))
+  |> should.equal(girard.ModuleFn("", "each"))
+}
+
+pub fn references_are_unique_per_span_test() {
+  // `infer_pipe` infers a piped call's callee twice — once to test saturation,
+  // once as part of the call — and the span carries one resolution.
+  let modules = [#("m", "pub fn add(a: Int, b: Int) -> Int { a + b }")]
+  let piped = "import m\npub fn run() { 1 |> m.add(2) }"
+  list.filter(references(piped, modules), fn(r) {
+    r.span == span_of(piped, "m.add")
+  })
+  |> list.map(fn(r) { r.resolution })
+  |> should.equal([girard.ModuleFn("m", "add")])
+
+  // And it is the real callee's, not the arity probe's: applying `run` to the
+  // piped `1` fixes the box's parameter to `Int`, where the probe's
+  // instantiation leaves it unconstrained.
+  let generic =
+    "pub type Box(a) {\n  Box(run: fn(a) -> a)\n}\n"
+    <> "pub fn go() { 1 |> Box(fn(x) { x }).run() }"
+  list.filter(references(generic, []), fn(r) {
+    r.span == span_of(generic, "Box(fn(x) { x }).run")
+  })
+  |> list.map(fn(r) { r.resolution })
+  |> should.equal([
+    girard.RecordField(
+      girard.Named("", "Box", [girard.Named("gleam", "Int", [])]),
+      "run",
+    ),
+  ])
+}
+
+pub fn every_visited_reference_is_recorded_test() {
+  // The census: over a module mixing every recorded shape with several
+  // unrecorded ones, the references girard reports are exactly the field
+  // accesses and call-position bare names its syntax contains.
+  let assert Ok(module) = glance.module(census_source)
+  references(census_source, [#("io", io_println), #("kinds", box_type)])
+  |> list.map(fn(r) { r.span })
+  |> should.equal(sorted_spans(reference_spans(module)))
+}
+
+pub fn skipped_definition_has_no_references_test() {
+  // A definition girard declines contributes nothing: its state is discarded
+  // with the rest of its component, while its well-typed sibling keeps its own.
+  let source =
+    "pub type Person {\n  Person(name: String)\n}\n"
+    <> "pub fn good(p: Person) { p.name }\n"
+    <> "pub fn bad(p: Person) { p.name + 1 }"
+  let options =
+    girard.default_options() |> girard.with_resolver(fn(_) { Error(Nil) })
+  let assert Ok(analysis) =
+    dict.get(
+      girard.analyse_package(parse_package([#("app/m", source)]), options),
+      "app/m",
+    )
+
+  let assert Ok(girard.TypeMismatch(_, _)) =
+    list.key_find(analysis.skipped, "bad")
+  list.map(analysis.resolutions, fn(r) { r.span })
+  |> should.equal([span_of(source, "p.name")])
+}
+
+pub fn skipped_definition_keeps_the_shadowed_import_origin_test() {
+  // A definition registers its identity when its value is installed, not before
+  // it, so a definition girard declines leaves the unqualified import it
+  // shadows holding both. `uses` is typed against the import that survived, so
+  // the reference has to name the import — publishing the local definition
+  // would name a member the call was never typed against.
+  //
+  // (That the import's scheme survives at all is a separate, older gap: the
+  // compiler rejects the module outright. This pins only that the identity
+  // follows the type.)
+  let source =
+    "import imported.{g}\n"
+    <> "pub fn g() { 1 + \"oops\" }\n"
+    <> "pub fn uses() { g() }"
+  let modules = [#("imported", "pub fn g() -> String { \"x\" }")]
+  let assert Ok(analysis) =
+    dict.get(
+      girard.analyse_package(
+        parse_package([#("app/m", source)]),
+        options_with(modules),
+      ),
+      "app/m",
+    )
+
+  list.key_find(analysis.skipped, "g") |> should.be_ok
+  let assert Ok(reference) =
+    list.find(analysis.resolutions, fn(r) { r.span == last_span(source, "g") })
+  reference.resolution
+  |> should.equal(girard.ModuleFn("imported", "g"))
+}
+
+pub fn off_target_definition_has_no_references_test() {
+  // A definition compiled only for the other target is dropped before
+  // inference: it is not skipped, and nothing walks its spans.
+  let source =
+    "pub type Person {\n  Person(name: String)\n}\n"
+    <> "@target(javascript)\n"
+    <> "pub fn js(p: Person) { p.name }\n"
+    <> "pub fn erl(p: Person) { p.name }"
+  let assert Ok(analysis) = girard.analyse(source, girard.default_options())
+
+  analysis.skipped |> should.equal([])
+  list.map(analysis.resolutions, fn(r) { r.span })
+  |> should.equal([last_span(source, "p.name")])
+}
+
+pub fn annotate_matches_analyse_test() {
+  // `annotate*` are `analyse*` with the resolutions taken off, so the two
+  // families cannot drift.
+  let source =
+    "pub type Person {\n  Person(name: String)\n}\n"
+    <> "pub fn f(p: Person) { p.name }"
+  let assert Ok(analysis) = girard.analyse(source, girard.default_options())
+  girard.annotate(source, girard.default_options())
+  |> should.equal(Ok(analysis.annotated))
+
+  let #(cached, _) =
+    girard.analyse_with_cache(
+      source,
+      girard.default_options(),
+      girard.new_cache(),
+    )
+  let #(annotated, _) =
+    girard.annotate_with_cache(
+      source,
+      girard.default_options(),
+      girard.new_cache(),
+    )
+  let assert Ok(cached) = cached
+  annotated |> should.equal(Ok(cached.annotated))
+
+  let sources = [
+    #("app/m", "pub fn good() -> Int { 1 }\npub fn bad() { 1 + \"oops\" }"),
+  ]
+  let options =
+    girard.default_options() |> girard.with_resolver(fn(_) { Error(Nil) })
+  let parsed = parse_package(sources)
+  girard.annotate_package(parsed, options)
+  |> should.equal(
+    dict.map_values(girard.analyse_package(parsed, options), fn(_, analysis) {
+      girard.ModuleResult(analysis.annotated, analysis.skipped)
+    }),
+  )
+}
+
+// The census
+//
+// Every span a reference must be recorded at, read straight off the glance AST:
+// every field access, wherever it sits, and every bare name in call position —
+// the callee of a call, a capture or a `use`, and a bare pipe target. Nothing
+// else, which is what makes "no entry at this span" mean "girard never walked
+// it".
+//
+// The walk mirrors girard's own traversal choices — an `assert`'s message and
+// an `echo`'s are not walked, and a shorthand field names no expression — so
+// this pins what girard *records*, not what it *walks*: a change to the latter
+// moves both sides together.
+
+const box_type = "pub type Box {\n  Box(n: Int)\n  Near(m: Int)\n}\n"
+
+const census_source = "import io\n"
+  <> "import kinds.{Near}\n"
+  <> "pub type Logger {\n  Logger(println: fn(String) -> Nil, tag: Int)\n}\n"
+  <> "pub fn run(l: Logger) {\n"
+  <> // A field read outside call position is still a field access.
+"  let printer = l.println\n"
+  <> // A local called by name, and the same name read without calling it.
+"  printer(\"direct\")\n"
+  <> "  let again = printer\n"
+  <> // A field, a module export and a qualified constructor in call position.
+"  l.println(\"field\")\n"
+  <> "  io.println(\"module\")\n"
+  <> "  kinds.Box(1)\n"
+  <> // An unqualified imported constructor, and one declared here, with a field
+// access as an argument.
+"  Near(2)\n"
+  <> "  let logger = Logger(again, l.tag)\n"
+  <> // A tuple index is not a name; a record update's constructor is not an
+// expression.\n
+"  let pair = #(l.tag, 1)\n"
+  <> "  let _ = pair.0\n"
+  <> "  let updated = Logger(..logger, tag: 1)\n"
+  <> "  let _ = updated.tag\n"
+  <> // A capture, a bare pipe target, and a piped call.
+"  let _ = add(_, 2)\n"
+  <> "  let _ = \"piped\" |> l.println\n"
+  <> "  let _ = 1 |> add(2)\n"
+  <> // A `use` whose callee is a bare name, and a nested access in its body.
+"  use n <- each\n"
+  <> "  add(n, logger.tag)\n"
+  <> "}\n"
+  <> "fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n"
+  <> "fn each(f: fn(Int) -> Int) -> Int {\n  f(1)\n}\n"
+
+fn sorted_spans(spans: List(glance.Span)) -> List(glance.Span) {
+  list.sort(spans, fn(a, b) {
+    int.compare(a.start, b.start) |> order.break_tie(int.compare(a.end, b.end))
+  })
+}
+
+fn reference_spans(module: glance.Module) -> List(glance.Span) {
+  let from_functions =
+    list.flat_map(module.functions, fn(d) {
+      list.flat_map(d.definition.body, statement_spans)
+    })
+  let from_constants =
+    list.flat_map(module.constants, fn(d) {
+      expression_spans(d.definition.value)
+    })
+  list.append(from_functions, from_constants)
+}
+
+fn statement_spans(statement: glance.Statement) -> List(glance.Span) {
+  case statement {
+    glance.Use(_, _, function) -> callee_spans(function)
+    glance.Assignment(_, _, _, _, value) -> expression_spans(value)
+    // girard checks an `assert`'s subject and ignores its message, as the
+    // walk below does.
+    glance.Assert(_, expression, _message) -> expression_spans(expression)
+    glance.Expression(expression) -> expression_spans(expression)
+  }
+}
+
+// A callee: a bare name is a reference, anything else is walked as usual.
+fn callee_spans(function: glance.Expression) -> List(glance.Span) {
+  case function {
+    glance.Variable(location, _) -> [location]
+    other -> expression_spans(other)
+  }
+}
+
+fn expression_spans(expression: glance.Expression) -> List(glance.Span) {
+  case expression {
+    glance.Int(..)
+    | glance.Float(..)
+    | glance.String(..)
+    | glance.Variable(..) -> []
+    glance.NegateInt(_, value) | glance.NegateBool(_, value) ->
+      expression_spans(value)
+    glance.Block(_, statements) -> list.flat_map(statements, statement_spans)
+    glance.Panic(_, message) | glance.Todo(_, message) ->
+      optional_spans(message)
+    glance.Tuple(_, elements) -> list.flat_map(elements, expression_spans)
+    glance.List(_, elements, rest) ->
+      list.append(
+        list.flat_map(elements, expression_spans),
+        optional_spans(rest),
+      )
+    glance.Fn(_, _, _, body) -> list.flat_map(body, statement_spans)
+    // A record update's constructor is not an expression and glance records no
+    // span for it, so only the record and the new values are walked.
+    glance.RecordUpdate(_, _, _, record, fields) ->
+      list.append(
+        expression_spans(record),
+        list.flat_map(fields, fn(field) { optional_spans(field.item) }),
+      )
+    glance.FieldAccess(location, container, _) -> [
+      location,
+      ..expression_spans(container)
+    ]
+    glance.Call(_, function, arguments) ->
+      list.append(callee_spans(function), field_spans(arguments))
+    // A tuple index is not a name.
+    glance.TupleIndex(_, tuple, _) -> expression_spans(tuple)
+    glance.FnCapture(_, _, function, before, after) ->
+      list.flatten([
+        callee_spans(function),
+        field_spans(before),
+        field_spans(after),
+      ])
+    glance.BitString(_, segments) ->
+      list.flat_map(segments, fn(segment) { expression_spans(segment.0) })
+    glance.Case(_, subjects, clauses) ->
+      list.append(
+        list.flat_map(subjects, expression_spans),
+        list.flat_map(clauses, fn(clause) {
+          list.append(
+            optional_spans(clause.guard),
+            expression_spans(clause.body),
+          )
+        }),
+      )
+    // A pipe's right-hand side is a callee: `x |> f` calls `f`, and
+    // `x |> f(a)` is the call it looks like.
+    glance.BinaryOperator(_, glance.Pipe, left, right) ->
+      list.append(expression_spans(left), callee_spans(right))
+    glance.BinaryOperator(_, _, left, right) ->
+      list.append(expression_spans(left), expression_spans(right))
+    // girard walks an `echo`'s subject and ignores its message.
+    glance.Echo(_, expression, _message) -> optional_spans(expression)
+  }
+}
+
+fn field_spans(
+  fields: List(glance.Field(glance.Expression)),
+) -> List(glance.Span) {
+  list.flat_map(fields, fn(field) {
+    case field {
+      glance.UnlabelledField(item) -> expression_spans(item)
+      glance.LabelledField(_, _, item) -> expression_spans(item)
+      // A shorthand field names a variable in argument position, which is not
+      // a recorded reference.
+      glance.ShorthandField(..) -> []
+    }
+  })
+}
+
+fn optional_spans(
+  expression: option.Option(glance.Expression),
+) -> List(glance.Span) {
+  case expression {
+    option.Some(expression) -> expression_spans(expression)
+    option.None -> []
+  }
 }
 
 // Package annotation
