@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.2.0] - 2026-09-04
 
 ### Added
 
@@ -149,6 +149,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   describe why a module could not be typed.
 - A command-line interface that annotates a file or standard input.
 
+[2.2.0]: https://github.com/alvivi/girard/releases/tag/v2.2.0
 [2.1.1]: https://github.com/alvivi/girard/releases/tag/v2.1.1
 [2.1.0]: https://github.com/alvivi/girard/releases/tag/v2.1.0
 [2.0.0]: https://github.com/alvivi/girard/releases/tag/v2.0.0
