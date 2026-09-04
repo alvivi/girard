@@ -799,7 +799,7 @@ type FieldMap =
 // compiler's `FieldMap` is optional for the same reason. The one place that
 // normalisation happens, so no reader has to ask whether an all-`None` list
 // means "no labels".
-fn field_map_of(labels: List(Option(String))) -> Option(FieldMap) {
+fn field_map_of(labels: FieldMap) -> Option(FieldMap) {
   use <- bool.guard(when: list.all(labels, fn(l) { l == None }), return: None)
   Some(labels)
 }
@@ -809,10 +809,9 @@ fn field_map_of(labels: List(Option(String))) -> Option(FieldMap) {
 // the variant rather than a table of its own.
 fn field_map(variant: ValueVariant) -> Result(FieldMap, Nil) {
   case variant {
-    FunctionValue(field_map: Some(labels), ..)
-    | ConstructorValue(field_map: Some(labels), ..) -> Ok(labels)
-    FunctionValue(..) | ConstructorValue(..) | ConstantValue(..) | LocalValue ->
-      Error(Nil)
+    FunctionValue(field_map:, ..) | ConstructorValue(field_map:, ..) ->
+      option.to_result(field_map, Nil)
+    ConstantValue(..) | LocalValue -> Error(Nil)
   }
 }
 
@@ -1131,8 +1130,8 @@ fn install_entry(env: Env, name: String, entry: ValueConstructor) -> Env {
   )
 }
 
-// Install a name at a scheme and a variant: the whole entry at once, which is
-// the only way a name is written.
+// Install a name at a scheme and a variant, building the entry for a caller
+// that does not already hold one.
 fn install(
   env: Env,
   name: String,
@@ -1144,8 +1143,7 @@ fn install(
 
 // Bind a local value: a `let`, a parameter, a pattern's binding. Replacing the
 // entry is what shadows a module-level name's labels and identity along with
-// its type, which is the compiler's behaviour and needs no line of its own
-// here beyond this one.
+// its type.
 fn bind_local(env: Env, name: String, scheme: ty.Scheme) -> Env {
   install(env, name, scheme, LocalValue)
 }
@@ -1155,11 +1153,17 @@ fn bind_local(env: Env, name: String, scheme: ty.Scheme) -> Env {
 // narrowed), not a new one. A name with no entry yet can only be a local, so
 // that is what it becomes.
 fn retype(env: Env, name: String, scheme: ty.Scheme) -> Env {
-  let variant = case dict.get(env.values, name) {
+  install(env, name, scheme, variant_at(env, name))
+}
+
+// What kind of value a name is bound at. A name bound to no entry is not bound
+// at all, which no caller of this is looking at; a local is the only thing it
+// could be.
+fn variant_at(env: Env, name: String) -> ValueVariant {
+  case dict.get(env.values, name) {
     Ok(entry) -> entry.variant
     Error(_) -> LocalValue
   }
-  install(env, name, scheme, variant)
 }
 
 // Whether a scheme can never contribute a free variable to the environment:
@@ -1184,10 +1188,7 @@ fn all_vars_bound(type_: ty.Type, bound: Set(Int)) -> Bool {
 
 // Look up a value's scheme in the environment.
 fn lookup(env: Env, name: String) -> Result(ty.Scheme, Nil) {
-  case dict.get(env.values, name) {
-    Ok(entry) -> Ok(entry.scheme)
-    Error(_) -> Error(Nil)
-  }
+  dict.get(env.values, name) |> result.map(fn(entry) { entry.scheme })
 }
 
 // Module inference
@@ -3287,49 +3288,27 @@ fn infer_record_update(
   }
 }
 
-// The per-position labels of a constructor, looked up locally or in the module
-// that defines it.
+// The per-position labels of a callable, at a call site or in a pattern. A
+// qualified name takes its field map from the entries of the module that
+// defines it; a bare one from the entry in scope, which is where the labels of
+// a local name live. A callable with no labelled position has none, and so has
+// a name that is bound to no entry at all.
 fn constructor_field_map(
   env: Env,
   module: Option(String),
   constructor: String,
-) -> List(Option(String)) {
-  case qualified_field_map(env, module, constructor) {
-    Ok(labels) -> labels
-    Error(_) -> []
-  }
-}
-
-// The labels of a callable named locally or in an imported module. A qualified
-// name takes its field map from the module that defines it; a bare one from
-// the entry in scope, which is where the labels of a local name live.
-fn qualified_field_map(
-  env: Env,
-  module: Option(String),
-  name: String,
-) -> Result(FieldMap, Nil) {
-  case module {
+) -> FieldMap {
+  let entries = case module {
     Some(alias) ->
       case dict.get(env.modules, alias) {
-        Ok(interface) -> entry_field_map(interface.values, name)
-        Error(_) -> local_field_map(env, name)
+        Ok(interface) -> interface.values
+        Error(_) -> env.values
       }
-    None -> local_field_map(env, name)
+    None -> env.values
   }
-}
-
-fn local_field_map(env: Env, name: String) -> Result(FieldMap, Nil) {
-  entry_field_map(env.values, name)
-}
-
-fn entry_field_map(
-  entries: Dict(String, ValueConstructor),
-  name: String,
-) -> Result(FieldMap, Nil) {
-  case dict.get(entries, name) {
-    Ok(entry) -> field_map(entry.variant)
-    Error(_) -> Error(Nil)
-  }
+  dict.get(entries, constructor)
+  |> result.try(fn(entry) { field_map(entry.variant) })
+  |> result.unwrap([])
 }
 
 fn is_upper(name: String) -> Bool {
@@ -3445,7 +3424,7 @@ fn infer_callee(
   env: Env,
   st: State,
   function: glance.Expression,
-) -> Result(#(ty.Type, Result(List(Option(String)), Nil), State), Error) {
+) -> Result(#(ty.Type, Result(FieldMap, Nil), State), Error) {
   case function {
     // Resolved here rather than through `infer_expr`, which would drop the
     // branch; the callee's span is recorded once, as `infer_expr` would.
@@ -3480,13 +3459,10 @@ fn bare_callee(
   st: State,
   function: glance.Expression,
   type_: ty.Type,
-) -> #(ty.Type, Result(List(Option(String)), Nil), State) {
+) -> #(ty.Type, Result(FieldMap, Nil), State) {
   case function {
     glance.Variable(name_span, name) -> {
-      let variant = case dict.get(env.values, name) {
-        Ok(entry) -> entry.variant
-        Error(_) -> LocalValue
-      }
+      let variant = variant_at(env, name)
       let st =
         reference(
           st,
@@ -3561,7 +3537,7 @@ fn field_item(field: glance.Field(glance.Expression)) -> glance.Expression {
 // using the callee's field map. If every argument is positional we don't need
 // the field map (this also covers calls to anonymous functions).
 fn order_fields(
-  labels: Result(List(Option(String)), Nil),
+  labels: Result(FieldMap, Nil),
   fields: List(glance.Field(t)),
   shorthand: fn(String, glance.Span) -> t,
 ) -> Result(List(t), Error) {
@@ -3582,7 +3558,7 @@ fn order_fields(
   }
 }
 
-fn label_indices(labels: List(Option(String))) -> Dict(String, Int) {
+fn label_indices(labels: FieldMap) -> Dict(String, Int) {
   list.index_fold(labels, dict.new(), fn(acc, label, index) {
     case label {
       Some(name) -> dict.insert(acc, name, index)
@@ -3600,7 +3576,7 @@ fn is_unlabelled(field: glance.Field(t)) -> Bool {
 
 fn reorder(
   fields: List(glance.Field(t)),
-  labels: List(Option(String)),
+  labels: FieldMap,
   shorthand: fn(String, glance.Span) -> t,
 ) -> Result(List(t), Error) {
   let index_of = label_indices(labels)
@@ -4732,12 +4708,7 @@ fn order_pattern_args(
   arguments: List(glance.Field(glance.Pattern)),
   arity: Int,
 ) -> Result(List(glance.Pattern), Error) {
-  // A qualified constructor pattern takes its field map from the module that
-  // defines the constructor, not the local environment.
-  let labels = case qualified_field_map(env, module, constructor) {
-    Ok(labels) -> labels
-    Error(_) -> []
-  }
+  let labels = constructor_field_map(env, module, constructor)
   let index_of =
     list.index_fold(labels, dict.new(), fn(acc, label, index) {
       case label {

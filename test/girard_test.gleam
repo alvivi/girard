@@ -2234,10 +2234,11 @@ pub fn skipped_definition_exports_the_shadowed_import_identity_test() {
     ),
     #("app/b", b),
   ]
-  let options =
-    girard.default_options() |> girard.with_resolver(fn(_) { Error(Nil) })
   let assert Ok(analysis) =
-    dict.get(girard.analyse_package(parse_package(sources), options), "app/b")
+    dict.get(
+      girard.analyse_package(parse_package(sources), options_with([])),
+      "app/b",
+    )
 
   let assert Ok(reference) =
     list.find(analysis.resolutions, fn(r) { r.span == span_of(b, "a.g") })
