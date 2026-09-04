@@ -16,10 +16,10 @@
 
 import argv
 import girard
+import girard/packages
 import gleam/int
 import gleam/io
 import gleam/list
-import gleam/string
 import simplifile
 
 // Census
@@ -35,102 +35,26 @@ pub fn main() -> Nil {
   }
 }
 
-// Resolve an imported module's source from a packages root (the directory
-// holding `<pkg>/src/...`), instead of girard's own `build/packages` — so the
-// swept closure never collides with girard's own compile dependencies. The
-// same resolver `girard/diff` uses.
-fn dir_resolver(root: String) -> girard.Resolver {
-  fn(path: String) -> Result(String, Nil) {
-    case simplifile.read_directory(root) {
-      Ok(pkgs) ->
-        first_readable(
-          list.map(pkgs, fn(pkg) {
-            root <> "/" <> pkg <> "/src/" <> path <> ".gleam"
-          }),
-        )
-      Error(_) -> Error(Nil)
-    }
-  }
-}
-
-fn first_readable(paths: List(String)) -> Result(String, Nil) {
-  case paths {
-    [] -> Error(Nil)
-    [path, ..rest] ->
-      case simplifile.read(path) {
-        Ok(source) -> Ok(source)
-        Error(_) -> first_readable(rest)
-      }
-  }
-}
-
-// Read the package's build target from its `gleam.toml`, defaulting to `Erlang`
-// when unset or unreadable, as `girard/diff` does.
-fn target_of(toml_path: String) -> girard.Target {
-  case simplifile.read(toml_path) {
-    Ok(toml) ->
-      case string.contains(toml, "target = \"javascript\"") {
-        True -> girard.JavaScript
-        False -> girard.Erlang
-      }
-    Error(_) -> girard.Erlang
-  }
-}
-
-// Every `.gleam` module under a source root, as a module path (the path under
-// the root, without the extension). `girard/diff` takes its module list from
-// the compiler's oracle JSON; there is no oracle here, so the sources are the
-// list.
-fn modules(root: String, prefix: String) -> List(String) {
-  case simplifile.read_directory(root <> "/" <> prefix) {
-    Error(_) -> []
-    Ok(entries) ->
-      list.sort(entries, string.compare)
-      |> list.flat_map(fn(entry) {
-        let path = join(prefix, entry)
-        case simplifile.is_directory(root <> "/" <> path) {
-          Ok(True) -> modules(root, path)
-          _ ->
-            case string.ends_with(entry, ".gleam") {
-              True -> [drop_extension(path)]
-              False -> []
-            }
-        }
-      })
-  }
-}
-
-fn join(prefix: String, entry: String) -> String {
-  case prefix {
-    "" -> entry
-    _ -> prefix <> "/" <> entry
-  }
-}
-
-fn drop_extension(path: String) -> String {
-  string.drop_end(path, string.length(".gleam"))
-}
-
 fn census(package: String, pkg_root: String) -> Nil {
-  let resolver = dir_resolver(pkg_root)
-  let target = target_of(pkg_root <> "/" <> package <> "/gleam.toml")
   let src = pkg_root <> "/" <> package <> "/src"
 
   let options =
     girard.default_options()
-    |> girard.with_resolver(resolver)
-    |> girard.with_target(target)
+    |> girard.with_resolver(packages.dir_resolver(pkg_root))
+    |> girard.with_target(packages.target_of(
+      pkg_root <> "/" <> package <> "/gleam.toml",
+    ))
 
   // One interface cache across the package's modules, as `girard/diff` threads
   // one: a shared import is inferred once for the package rather than once per
   // importing module. Per-module semantics are unchanged.
   let #(checked, references, unresolved, errored, _cache) =
     list.fold(
-      modules(src, ""),
+      packages.modules(src),
       #(0, 0, 0, 0, girard.new_cache()),
-      fn(acc, module_name) {
+      fn(acc, module) {
         let #(checked, references, unresolved, errored, cache) = acc
-        let path = src <> "/" <> module_name <> ".gleam"
+        let #(module_name, path) = module
         case simplifile.read(path) {
           Error(_) -> acc
           Ok(source) -> {

@@ -32,8 +32,8 @@
 #   meta.txt                 patched-compiler git rev the oracles were built with
 #
 # Env overrides:
-#   RESULTS       where resweep/census write their .tsv (default $GIRARD_CACHE/<cmd>.tsv)
 #   GIRARD_CACHE  cache root (default ~/.cache/girard-sweep)
+#   RESULTS       where resweep/census write their .tsv (default $GIRARD_CACHE/<cmd>.tsv)
 #   GLEAM         patched compiler for the oracle (default ../gleam/target/debug/gleam)
 #   HEXGLEAM      stock gleam used to resolve/download/run (default first on PATH)
 #   For build-batch pacing: SWEEP_DELAY / SWEEP_RETRIES / SWEEP_BACKOFF (see batch_sweep.sh)
@@ -277,11 +277,10 @@ cmd_census() {
   for pkg in $pkgs; do
     pkg="$(printf '%s' "$pkg" | tr -d '[:space:]')"
     [ -z "$pkg" ] && continue
-    if [ ! -f "$manifest_dir/$pkg.txt" ]; then
+    if ! pkgroot="$(stage_closure "$pkg" "$stage")"; then
       printf '%s\tmissing\tnot in cache\n' "$pkg" >>"$results"
       continue
     fi
-    pkgroot="$(stage_closure "$pkg" "$stage")"
 
     out="$( cd "$root" && gleam run -m girard/census "$pkg" "$pkgroot" 2>/dev/null )"
     summary="$(echo "$out" | grep -E '^census ' | tail -1)"

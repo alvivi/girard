@@ -17,6 +17,7 @@
 
 import argv
 import girard
+import girard/packages
 import gleam/float
 import gleam/int
 import gleam/io
@@ -125,8 +126,9 @@ fn parse_spec(raw: String) -> List(PkgSpec) {
 // — the way a package-walking tool (or an editor across sibling files) uses
 // girard.
 fn bench_package(spec: PkgSpec) -> Tally {
-  let resolver = dir_resolver(spec.root)
-  let target = target_of(spec.root <> "/" <> spec.package <> "/gleam.toml")
+  let resolver = packages.dir_resolver(spec.root)
+  let target =
+    packages.target_of(spec.root <> "/" <> spec.package <> "/gleam.toml")
   let options =
     girard.default_options()
     |> girard.with_resolver(resolver)
@@ -134,16 +136,20 @@ fn bench_package(spec: PkgSpec) -> Tally {
 
   let src = spec.root <> "/" <> spec.package <> "/src"
   let #(tally, _cache) =
-    list.fold(gleam_sources(src), #(empty(), girard.new_cache()), fn(acc, path) {
-      let #(tally, cache) = acc
-      case simplifile.read(path) {
-        Error(_) -> #(tally, cache)
-        Ok(source) -> {
-          let #(t, cache) = time_annotate(source, options, cache)
-          #(add(tally, t), cache)
+    list.fold(
+      packages.sources(src),
+      #(empty(), girard.new_cache()),
+      fn(acc, path) {
+        let #(tally, cache) = acc
+        case simplifile.read(path) {
+          Error(_) -> #(tally, cache)
+          Ok(source) -> {
+            let #(t, cache) = time_annotate(source, options, cache)
+            #(add(tally, t), cache)
+          }
         }
-      }
-    })
+      },
+    )
   tally
 }
 
@@ -196,69 +202,4 @@ fn report(total: Tally, rounds: Int) -> Nil {
 
 fn float_to_string(f: Float) -> String {
   int.to_string(float.round(f))
-}
-
-// Resolver and target
-//
-// Resolve a package's imports from its staged dependency root, mirroring the
-// on-disk resolver a real sweep uses (see `dev/girard/diff.gleam`).
-
-fn dir_resolver(root: String) -> girard.Resolver {
-  fn(path: String) -> Result(String, Nil) {
-    case simplifile.read_directory(root) {
-      Ok(pkgs) ->
-        first_readable(
-          list.map(pkgs, fn(pkg) {
-            root <> "/" <> pkg <> "/src/" <> path <> ".gleam"
-          }),
-        )
-      Error(_) -> Error(Nil)
-    }
-  }
-}
-
-fn target_of(toml_path: String) -> girard.Target {
-  case simplifile.read(toml_path) {
-    Ok(toml) ->
-      case string.contains(toml, "target = \"javascript\"") {
-        True -> girard.JavaScript
-        False -> girard.Erlang
-      }
-    Error(_) -> girard.Erlang
-  }
-}
-
-fn first_readable(paths: List(String)) -> Result(String, Nil) {
-  case paths {
-    [] -> Error(Nil)
-    [path, ..rest] ->
-      case simplifile.read(path) {
-        Ok(source) -> Ok(source)
-        Error(_) -> first_readable(rest)
-      }
-  }
-}
-
-// Recursive module walk
-//
-// List every `.gleam` source under a directory, so a package's modules can be
-// discovered without a manifest.
-
-// Every `.gleam` file under `dir`, recursively, as full paths.
-fn gleam_sources(dir: String) -> List(String) {
-  case simplifile.read_directory(dir) {
-    Error(_) -> []
-    Ok(entries) ->
-      list.flat_map(entries, fn(entry) {
-        let path = dir <> "/" <> entry
-        case simplifile.is_directory(path) {
-          Ok(True) -> gleam_sources(path)
-          _ ->
-            case string.ends_with(path, ".gleam") {
-              True -> [path]
-              False -> []
-            }
-        }
-      })
-  }
 }
