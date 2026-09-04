@@ -738,9 +738,10 @@ type Reference {
 
 type Resolved {
   ResolvedField(record: ty.Type, label: String)
-  // Published as `ModuleFn`, `ModuleConstant` or `Constructor`, by kind.
-  ResolvedOrigin(origin: Origin)
-  ResolvedLocal(name: String)
+  // A name and the scope entry's variant it was read at, which is what says
+  // which member it resolved to. Published as `ModuleFn`, `ModuleConstant`,
+  // `Constructor` or `LocalVariable`, one arm per variant.
+  ResolvedValue(name: String, variant: ValueVariant)
   // Published as `Unresolved(RecordAccessUnknownType)`.
   ResolvedDeferred
 }
@@ -750,22 +751,6 @@ type Resolved {
 // in call position the three coincide.
 type Spans {
   Spans(span: glance.Span, label: glance.Span, container: glance.Span)
-}
-
-// What kind of module-level value a name is: the part of the compiler's
-// `ValueConstructorVariant` that says which member a reference resolved to.
-type ValueKind {
-  FunctionKind
-  ConstantKind
-  ConstructorKind
-}
-
-// Where a module-level value was declared: its defining module's canonical
-// path, the name it has *there*, and what kind of value it is. An
-// `import kinds.{Near as Close}` is in scope as `Close` and has origin
-// `Origin("kinds", "Near", ConstructorKind)`.
-type Origin {
-  Origin(module: String, name: String, kind: ValueKind)
 }
 
 // One scope entry per name, as the compiler's `ValueConstructor`
@@ -812,19 +797,6 @@ fn field_map(variant: ValueVariant) -> Result(FieldMap, Nil) {
     FunctionValue(field_map:, ..) | ConstructorValue(field_map:, ..) ->
       option.to_result(field_map, Nil)
     ConstantValue(..) | LocalValue -> Error(Nil)
-  }
-}
-
-// Where a module-level value was declared. `None` for a local: a `let`, a
-// parameter or a pattern binding has no module-level identity to publish.
-fn origin(variant: ValueVariant) -> Option(Origin) {
-  case variant {
-    LocalValue -> None
-    FunctionValue(module:, name:, ..) ->
-      Some(Origin(module, name, FunctionKind))
-    ConstantValue(module:, name:) -> Some(Origin(module, name, ConstantKind))
-    ConstructorValue(module:, name:, ..) ->
-      Some(Origin(module, name, ConstructorKind))
   }
 }
 
@@ -3063,17 +3035,8 @@ fn record_access(
 ) -> State {
   case access {
     Field(record) -> reference(st, spans, ResolvedField(record, label))
-    Export(variant) -> reference(st, spans, resolved_value(label, variant))
+    Export(variant) -> reference(st, spans, ResolvedValue(label, variant))
     Deferred -> reference(st, spans, ResolvedDeferred)
-  }
-}
-
-// What a reference to a value bound under `name` resolved to: the member its
-// entry names, or the local it is when the entry names none.
-fn resolved_value(name: String, variant: ValueVariant) -> Resolved {
-  case origin(variant) {
-    Some(origin) -> ResolvedOrigin(origin)
-    None -> ResolvedLocal(name)
   }
 }
 
@@ -3435,13 +3398,13 @@ fn bare_callee(
         Ok(entry) -> #(
           type_,
           field_map(entry.variant),
-          reference(st, spans, resolved_value(name, entry.variant)),
+          reference(st, spans, ResolvedValue(name, entry.variant)),
         )
         // Bound, or `infer_expr` would have failed before reaching this.
         Error(_) -> #(
           type_,
           Error(Nil),
-          reference(st, spans, ResolvedLocal(name)),
+          reference(st, spans, ResolvedValue(name, LocalValue)),
         )
       }
     }
@@ -4970,13 +4933,16 @@ fn publish_resolution(st: State, resolved: Resolved) -> Resolution {
   case resolved {
     ResolvedField(record, label) ->
       RecordField(to_public(zonk(st, record)), label)
-    ResolvedOrigin(Origin(module, name, kind)) ->
-      case kind {
-        FunctionKind -> ModuleFn(module, name)
-        ConstantKind -> ModuleConstant(module, name)
-        ConstructorKind -> Constructor(module, name)
-      }
-    ResolvedLocal(name) -> LocalVariable(name)
+    // The declaring module's canonical path and the name the value has
+    // *there*, never the alias it was read under: an
+    // `import kinds.{Near as Close}` publishes `Constructor("kinds", "Near")`.
+    ResolvedValue(_, FunctionValue(module:, name:, ..)) ->
+      ModuleFn(module, name)
+    ResolvedValue(_, ConstantValue(module:, name:)) ->
+      ModuleConstant(module, name)
+    ResolvedValue(_, ConstructorValue(module:, name:, ..)) ->
+      Constructor(module, name)
+    ResolvedValue(name, LocalValue) -> LocalVariable(name)
     ResolvedDeferred -> Unresolved(RecordAccessUnknownType)
   }
 }
