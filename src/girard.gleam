@@ -738,10 +738,10 @@ type Reference {
 
 type Resolved {
   ResolvedField(record: ty.Type, label: String)
-  // A name and the scope entry's variant it was read at, which is what says
-  // which member it resolved to. Published as `ModuleFn`, `ModuleConstant`,
-  // `Constructor` or `LocalVariable`, one arm per variant.
-  ResolvedValue(name: String, variant: ValueVariant)
+  // The scope entry's variant the name was read at, which is what says which
+  // member it resolved to and under what name. Published as `ModuleFn`,
+  // `ModuleConstant`, `Constructor` or `LocalVariable`, one arm per variant.
+  ResolvedValue(variant: ValueVariant)
   // Published as `Unresolved(RecordAccessUnknownType)`.
   ResolvedDeferred
 }
@@ -764,11 +764,13 @@ type ValueConstructor {
 // canonical path of the module that declared it and the name it has there, so
 // an entry imported under an alias keeps its identity; and the two kinds that
 // can take labelled arguments carry their field map, because a constant and a
-// local have none and the shape says so. Names are prefixed because
+// local have none and the shape says so. Every variant carries the name the
+// value is published under, so a reference needs nothing but the variant.
+// Names are prefixed because
 // `ModuleFn`, `ModuleConstant`, `Constructor` and `LocalVariable` are already
 // the public `Resolution`'s constructors.
 type ValueVariant {
-  LocalValue
+  LocalValue(name: String)
   FunctionValue(module: String, name: String, field_map: Option(FieldMap))
   ConstantValue(module: String, name: String)
   ConstructorValue(module: String, name: String, field_map: Option(FieldMap))
@@ -796,7 +798,7 @@ fn field_map(variant: ValueVariant) -> Result(FieldMap, Nil) {
   case variant {
     FunctionValue(field_map:, ..) | ConstructorValue(field_map:, ..) ->
       option.to_result(field_map, Nil)
-    ConstantValue(..) | LocalValue -> Error(Nil)
+    ConstantValue(..) | LocalValue(..) -> Error(Nil)
   }
 }
 
@@ -1116,7 +1118,7 @@ fn install(
 // entry is what shadows a module-level name's labels and identity along with
 // its type.
 fn bind_local(env: Env, name: String, scheme: ty.Scheme) -> Env {
-  install(env, name, scheme, LocalValue)
+  install(env, name, scheme, LocalValue(name))
 }
 
 // Whether a scheme can never contribute a free variable to the environment:
@@ -3030,7 +3032,7 @@ fn record_access(
 ) -> State {
   case access {
     Field(record) -> reference(st, spans, ResolvedField(record, label))
-    Export(variant) -> reference(st, spans, ResolvedValue(label, variant))
+    Export(variant) -> reference(st, spans, ResolvedValue(variant))
     Deferred -> reference(st, spans, ResolvedDeferred)
   }
 }
@@ -3393,13 +3395,13 @@ fn bare_callee(
         Ok(entry) -> #(
           type_,
           field_map(entry.variant),
-          reference(st, spans, ResolvedValue(name, entry.variant)),
+          reference(st, spans, ResolvedValue(entry.variant)),
         )
         // Bound, or `infer_expr` would have failed before reaching this.
         Error(_) -> #(
           type_,
           Error(Nil),
-          reference(st, spans, ResolvedValue(name, LocalValue)),
+          reference(st, spans, ResolvedValue(LocalValue(name))),
         )
       }
     }
@@ -4931,13 +4933,11 @@ fn publish_resolution(st: State, resolved: Resolved) -> Resolution {
     // The declaring module's canonical path and the name the value has
     // *there*, never the alias it was read under: an
     // `import kinds.{Near as Close}` publishes `Constructor("kinds", "Near")`.
-    ResolvedValue(_, FunctionValue(module:, name:, ..)) ->
-      ModuleFn(module, name)
-    ResolvedValue(_, ConstantValue(module:, name:)) ->
-      ModuleConstant(module, name)
-    ResolvedValue(_, ConstructorValue(module:, name:, ..)) ->
+    ResolvedValue(FunctionValue(module:, name:, ..)) -> ModuleFn(module, name)
+    ResolvedValue(ConstantValue(module:, name:)) -> ModuleConstant(module, name)
+    ResolvedValue(ConstructorValue(module:, name:, ..)) ->
       Constructor(module, name)
-    ResolvedValue(name, LocalValue) -> LocalVariable(name)
+    ResolvedValue(LocalValue(name:)) -> LocalVariable(name)
     ResolvedDeferred -> Unresolved(RecordAccessUnknownType)
   }
 }
