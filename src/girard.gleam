@@ -3225,15 +3225,15 @@ fn infer_record_update(
   // what lets an update change a type parameter, as in
   // `Request(..req, body:)` : `fn(Request(a), b) -> Request(b)` — the kept
   // fields tie only the parameters they share, not all of them.
-  use scheme <- result.try(constructor_scheme(env, module, constructor))
-  let #(ctor_type, st) = instantiate(st, scheme)
+  use entry <- result.try(constructor_entry(env, module, constructor))
+  let #(ctor_type, st) = instantiate(st, entry.scheme)
   let #(field_types, return_type) = case ctor_type {
     ty.Fn(arguments, return) -> #(arguments, return)
     other -> #([], other)
   }
   case return_type {
     ty.Named(type_module, type_name, type_parameters, variant) -> {
-      let labels = constructor_field_map(env, module, constructor)
+      let labels = positional_labels(entry.variant)
       let label_types =
         list.fold(list.zip(labels, field_types), dict.new(), fn(acc, pair) {
           case pair.0 {
@@ -3288,27 +3288,11 @@ fn infer_record_update(
   }
 }
 
-// The per-position labels of a callable, at a call site or in a pattern. A
-// qualified name takes its field map from the entries of the module that
-// defines it; a bare one from the entry in scope, which is where the labels of
-// a local name live. A callable with no labelled position has none, and so has
-// a name that is bound to no entry at all.
-fn constructor_field_map(
-  env: Env,
-  module: Option(String),
-  constructor: String,
-) -> FieldMap {
-  let entries = case module {
-    Some(alias) ->
-      case dict.get(env.modules, alias) {
-        Ok(interface) -> interface.values
-        Error(_) -> env.values
-      }
-    None -> env.values
-  }
-  dict.get(entries, constructor)
-  |> result.try(fn(entry) { field_map(entry.variant) })
-  |> result.unwrap([])
+// The per-position labels a callable declares, as a list: the positions of a
+// callable with no labelled position at all, which is the empty list because
+// there is nothing to reorder against.
+fn positional_labels(variant: ValueVariant) -> FieldMap {
+  result.unwrap(field_map(variant), [])
 }
 
 fn is_upper(name: String) -> Bool {
@@ -4488,8 +4472,8 @@ fn infer_pattern(
     }
 
     glance.PatternVariant(_, module, constructor, arguments, _spread) -> {
-      use scheme <- result.try(constructor_scheme(env, module, constructor))
-      let #(ctor_type, st) = instantiate(st, scheme)
+      use entry <- result.try(constructor_entry(env, module, constructor))
+      let #(ctor_type, st) = instantiate(st, entry.scheme)
       // A constructor with fields is a function; one without is the value.
       let #(field_types, ret) = case ctor_type {
         ty.Fn(args, ret) -> #(args, ret)
@@ -4504,9 +4488,7 @@ fn infer_pattern(
         _, _ -> env
       }
       use arg_patterns <- result.try(order_pattern_args(
-        env,
-        module,
-        constructor,
+        positional_labels(entry.variant),
         arguments,
         list.length(field_types),
       ))
@@ -4653,27 +4635,27 @@ fn with_env(
   result.map(st, fn(st) { #(env, st) })
 }
 
-// Resolve a constructor name (optionally module-qualified) to its scheme.
-fn constructor_scheme(
+// Resolve a constructor name (optionally module-qualified) to its scope entry.
+// The whole entry, because every caller wants the scheme *and* the labels, and
+// resolving the name once is what keeps the two answers about the same
+// constructor: a second lookup for the labels would have to re-decide which
+// module the name came from, and could only disagree.
+fn constructor_entry(
   env: Env,
   module: Option(String),
   constructor: String,
-) -> Result(ty.Scheme, Error) {
+) -> Result(ValueConstructor, Error) {
   case module {
     Some(alias) ->
       case dict.get(env.modules, alias) {
         Ok(interface) ->
-          case dict.get(interface.values, constructor) {
-            Ok(entry) -> Ok(entry.scheme)
-            Error(_) -> Error(NoSuchExport(alias, constructor))
-          }
+          dict.get(interface.values, constructor)
+          |> result.replace_error(NoSuchExport(alias, constructor))
         Error(_) -> Error(UnknownModule(alias))
       }
     None ->
-      case lookup(env, constructor) {
-        Ok(scheme) -> Ok(scheme)
-        Error(_) -> Error(UnknownConstructor(constructor))
-      }
+      dict.get(env.values, constructor)
+      |> result.replace_error(UnknownConstructor(constructor))
   }
 }
 
@@ -4702,13 +4684,10 @@ fn segment_value_type(
 // Place constructor-pattern arguments into positional order, reordering by the
 // constructor's field map and filling positions omitted via `..` with discards.
 fn order_pattern_args(
-  env: Env,
-  module: Option(String),
-  constructor: String,
+  labels: FieldMap,
   arguments: List(glance.Field(glance.Pattern)),
   arity: Int,
 ) -> Result(List(glance.Pattern), Error) {
-  let labels = constructor_field_map(env, module, constructor)
   let index_of =
     list.index_fold(labels, dict.new(), fn(acc, label, index) {
       case label {
