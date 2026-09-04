@@ -13,10 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   best-effort mode the skipped definition's argument labels outlived it, so a
   later call using the import's own labels was wrongly rejected with
   `UnknownLabel` or `AmbiguousCall`. Those calls now type.
-- Such a call now resolves to the module it was typed against. An importer
-  calling `a.g`, where `a`'s own `g` was skipped and shadowed an
-  `import imported.{g}`, was told it had called `a.g` rather than
-  `imported.g`.
+- `analyse*` now names the module a call was typed against. Where `a`'s own
+  `g` was skipped and shadowed an `import imported.{g}`, an importer calling
+  `a.g` was told it had called `a.g` rather than `imported.g`.
 
 ## [2.2.0] - 2026-09-04
 
