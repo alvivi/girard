@@ -3580,6 +3580,19 @@ fn field_item(field: glance.Field(glance.Expression)) -> glance.Expression {
   }
 }
 
+// Re-wrap a field's item, keeping the label the reorder places it by. A
+// shorthand field carries no item to wrap and is left as one, for
+// `order_fields`' materializer to resolve to the in-scope name.
+fn map_field(field: glance.Field(a), wrap: fn(a) -> b) -> glance.Field(b) {
+  case field {
+    glance.UnlabelledField(item) -> glance.UnlabelledField(wrap(item))
+    glance.LabelledField(label, location, item) ->
+      glance.LabelledField(label, location, wrap(item))
+    glance.ShorthandField(label, location) ->
+      glance.ShorthandField(label, location)
+  }
+}
+
 // Reorder labelled/shorthand call or pattern arguments into positional order
 // using the callee's field map. If every argument is positional we don't need
 // the field map (this also covers calls to anonymous functions).
@@ -3686,62 +3699,69 @@ fn infer_capture(
   before: List(glance.Field(glance.Expression)),
   after: List(glance.Field(glance.Expression)),
 ) -> Result(#(ty.Type, State), Error) {
-  // `f(a, _, b)` becomes `fn(x) { f(a, x, b) }`. The hole and the surrounding
-  // arguments are reordered into the callee's positional order exactly as a
-  // direct call would be — labels (including the hole's own, `value: _`) move
-  // each argument to its declared slot, so a labelled hole lands in the right
-  // parameter even when it is written out of order.
-  let #(hole, st) = fresh(st)
+  // `f(a, _, b)` becomes `fn(x) { f(a, x, b) }`. The slots are built in source
+  // order — the hole under its own label where it has one, `value: _` — and
+  // `order_fields` is the one thing that moves them, so the hole and every
+  // argument are aligned into declared order by the same reorder a direct call
+  // would do. Source order in, declared order out.
   use #(fn_type, labels, st) <- result.try(infer_callee(env, st, function))
-  use #(before_typed, st) <- result.try(infer_fields_typed(env, st, before))
-  use #(after_typed, st) <- result.try(infer_fields_typed(env, st, after))
   let hole_field = case label {
-    Some(name) -> glance.LabelledField(name, span, hole)
-    None -> glance.UnlabelledField(hole)
+    Some(name) -> glance.LabelledField(name, span, Hole)
+    None -> glance.UnlabelledField(Hole)
   }
-  let fields = list.flatten([before_typed, [hole_field], after_typed])
-  // Fields are already typed, so the shorthand materializer is never invoked.
-  use arg_types <- result.try(order_fields(labels, fields, fn(_, _) { hole }))
+  let slots =
+    list.flatten([
+      list.map(before, map_field(_, Argument)),
+      [hole_field],
+      list.map(after, map_field(_, Argument)),
+    ])
+  use ordered <- result.try(
+    order_fields(labels, slots, fn(label, location) {
+      Argument(glance.Variable(location, label))
+    }),
+  )
+  // The callee's shape is fixed before any argument is typed, so an argument is
+  // checked against the parameter it was *placed* against rather than the one
+  // at its source position — which is what lets a lambda argument written out
+  // of declared order still see its parameter types.
+  let #(slot_types, st) = fresh_n(st, list.length(ordered))
   let #(result, st) = fresh(st)
-  use st <- result.try(unify(st, fn_type, ty.Fn(arg_types, result)))
+  use st <- result.try(unify(st, fn_type, ty.Fn(slot_types, result)))
+  let placed = list.zip(ordered, slot_types)
+  use st <- result.try(
+    list.try_fold(placed, st, fn(st, pair) {
+      case pair.0 {
+        Argument(expression) -> check(env, st, expression, pair.1)
+        Hole -> Ok(st)
+      }
+    }),
+  )
+  use hole <- result.try(capture_hole(placed))
   // A capture is a lambda whose body is the call, so its return is the
   // callee's own — `Loud(_)` returns a value known to be `Loud`.
   let captured = ty.Fn([hole], call_return(st, fn_type, result))
   Ok(#(captured, record(st, span, captured)))
 }
 
-// Infer each call field's value, keeping its label so the arguments can be
-// reordered into positional order. Shorthand fields (`label:`) are resolved to
-// the in-scope `label` and recorded as labelled.
-fn infer_fields_typed(
-  env: Env,
-  st: State,
-  fields: List(glance.Field(glance.Expression)),
-) -> Result(#(List(glance.Field(ty.Type)), State), Error) {
-  use #(rev, st) <- result.try(
-    list.try_fold(fields, #([], st), fn(acc, field) {
-      let #(typed, st) = acc
-      case field {
-        glance.UnlabelledField(item) -> {
-          use #(t, st) <- result.try(infer_expr(env, st, item))
-          Ok(#([glance.UnlabelledField(t), ..typed], st))
-        }
-        glance.LabelledField(label, location, item) -> {
-          use #(t, st) <- result.try(infer_expr(env, st, item))
-          Ok(#([glance.LabelledField(label, location, t), ..typed], st))
-        }
-        glance.ShorthandField(label, location) -> {
-          use #(t, st) <- result.try(infer_expr(
-            env,
-            st,
-            glance.Variable(location, label),
-          ))
-          Ok(#([glance.LabelledField(label, location, t), ..typed], st))
-        }
-      }
-    }),
-  )
-  Ok(#(list.reverse(rev), st))
+// A capture's arguments as the call it stands for sees them: the ones written
+// out, and the hole, which the field map may place anywhere among them. The
+// hole travels through the reorder as a marker because it is not an expression
+// — it is the capture's own parameter.
+type CaptureSlot {
+  Argument(expression: glance.Expression)
+  Hole
+}
+
+// The type the reorder aligned the hole with: the capture's parameter type.
+fn capture_hole(
+  placed: List(#(CaptureSlot, ty.Type)),
+) -> Result(ty.Type, Error) {
+  case list.find(placed, fn(pair) { pair.0 == Hole }) {
+    Ok(#(_, type_)) -> Ok(type_)
+    // Unreachable: the hole is one of the slots handed to the reorder, and
+    // `order_fields` returns every slot it was given or an error.
+    Error(_) -> Error(MissingArgument)
+  }
 }
 
 fn infer_binop(
@@ -3983,7 +4003,7 @@ fn infer_use(
   }
   use #(callee_type, labels, st) <- result.try(infer_callee(env, st, callee))
   let slots =
-    list.append(list.map(arguments, use_slot), [
+    list.append(list.map(arguments, map_field(_, Explicit)), [
       glance.UnlabelledField(Callback),
     ])
   use ordered <- result.try(
@@ -4006,19 +4026,6 @@ fn infer_use(
   // rather than the hole that was unified against it — only the callee's
   // carries the variant a constructor built.
   Ok(#(call_return(st, callee_type, result), st))
-}
-
-// One explicit `use` argument as a slot, keeping its label so the reorder can
-// place it. A shorthand field is left to `order_fields`' materializer, which
-// resolves it to the in-scope name.
-fn use_slot(field: glance.Field(glance.Expression)) -> glance.Field(UseSlot) {
-  case field {
-    glance.UnlabelledField(item) -> glance.UnlabelledField(Explicit(item))
-    glance.LabelledField(label, location, item) ->
-      glance.LabelledField(label, location, Explicit(item))
-    glance.ShorthandField(label, location) ->
-      glance.ShorthandField(label, location)
-  }
 }
 
 // Check a `use` callback against the parameter type its slot was given, the way

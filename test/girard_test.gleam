@@ -2308,6 +2308,32 @@ pub fn use_callback_before_labelled_argument_reads_field_test() {
   type_of(source, "x.value") |> should.equal("Int")
 }
 
+pub fn capture_lambda_reads_field_test() {
+  // A capture's callee is unified with its shape before any argument is typed,
+  // so a lambda argument beside the hole sees its parameter types.
+  let source =
+    "pub type Box {\n  Box(value: Int)\n}\n"
+    <> "pub fn apply2(b: Box, f: fn(Box) -> Int) -> Int {\n  f(b)\n}\n"
+    <> "pub fn run() {\n  apply2(_, fn(x) { x.value })\n}"
+  resolution_at(source, [], span_of(source, "x.value"))
+  |> should.equal(girard.RecordField(girard.Named("", "Box", []), "value"))
+  type_of(source, "x.value") |> should.equal("Int")
+}
+
+pub fn capture_labelled_lambda_reads_field_test() {
+  // The lambda is written first but declared second, so it must be checked
+  // against declared slot 1: the hole and the arguments are aligned by one
+  // reorder, and an argument checked at its source position would be handed the
+  // `Box` parameter instead of the callback's.
+  let source =
+    "pub type Box {\n  Box(value: Int)\n}\n"
+    <> "pub fn apply2(box b: Box, with f: fn(Box) -> Int) -> Int {\n  f(b)\n}\n"
+    <> "pub fn run() {\n  apply2(with: fn(x) { x.value }, box: _)\n}"
+  resolution_at(source, [], span_of(source, "x.value"))
+  |> should.equal(girard.RecordField(girard.Named("", "Box", []), "value"))
+  type_of(source, "x.value") |> should.equal("Int")
+}
+
 pub fn seeded_receiver_takes_the_field_type_test() {
   // Seeding the receiver changes the inferred *type*, not only the member it is
   // reported under. An unbound receiver whose name is also a module in scope
