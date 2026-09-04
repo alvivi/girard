@@ -16,8 +16,10 @@
 # Usage:
 #   scripts/cache.sh build <package>            populate the cache for one package
 #   scripts/cache.sh build-batch <listfile>     populate for a list (resumable, paced)
-#   scripts/cache.sh resweep [<listfile>|--all] [results.tsv]
+#   scripts/cache.sh resweep [<listfile>|--all|<pkg>...]
 #                                               offline diff from the cache
+#   scripts/cache.sh census  [<listfile>|--all|<pkg>...]
+#                                               count girard's unresolved refs
 #   scripts/cache.sh pack [out.tar.gz]          pack the cache into one artifact
 #   scripts/cache.sh unpack <in.tar.gz>         restore a packed cache
 #   scripts/cache.sh stats                      summarize cache contents
@@ -30,6 +32,7 @@
 #   meta.txt                 patched-compiler git rev the oracles were built with
 #
 # Env overrides:
+#   RESULTS       where resweep/census write their .tsv (default $GIRARD_CACHE/<cmd>.tsv)
 #   GIRARD_CACHE  cache root (default ~/.cache/girard-sweep)
 #   GLEAM         patched compiler for the oracle (default ../gleam/target/debug/gleam)
 #   HEXGLEAM      stock gleam used to resolve/download/run (default first on PATH)
@@ -180,27 +183,50 @@ cmd_build_batch() {
   cmd_stats
 }
 
+# Which packages a resweep or census runs over: every cached one (`--all`, the
+# default), the ones named in a listfile, or the ones named on the command line.
+select_pkgs() {
+  if [ "$#" -eq 0 ] || [ "${1:-}" = "--all" ]; then
+    ls "$manifest_dir" 2>/dev/null | sed 's/\.txt$//'
+  elif [ "$#" -eq 1 ] && [ -f "$1" ]; then
+    cat "$1"
+  else
+    printf '%s\n' "$@"
+  fi
+}
+
+# Reconstruct one cached package's closure under $stage as symlinks into the
+# pool (zero-copy), and print the packages-root. Empty if it is not cached.
+stage_closure() {
+  local pkg="$1" stage="$2" pkgroot member name
+  [ -f "$manifest_dir/$pkg.txt" ] || return 1
+  pkgroot="$stage/$pkg"
+  rm -rf "$pkgroot"
+  mkdir -p "$pkgroot"
+  while IFS= read -r member; do
+    [ -z "$member" ] && continue
+    name="${member%@*}"
+    [ -d "$pool/$member" ] && ln -sfn "$pool/$member" "$pkgroot/$name"
+  done <"$manifest_dir/$pkg.txt"
+  printf '%s' "$pkgroot"
+}
+
 # resweep: reconstruct each cached package's closure (symlinks into the pool)
 # and run girard's diff against the cached oracle. No hex, no oracle compile.
 cmd_resweep() {
-  local sel="${1:---all}"
-  local results="${2:-$cache/resweep.tsv}"
+  local results="${RESULTS:-$cache/resweep.tsv}"
   local flagged="${results%.tsv}.flagged.txt"
   : >"$results"
   : >"$flagged"
 
   local pkgs
-  if [ "$sel" = "--all" ]; then
-    pkgs="$(ls "$manifest_dir" 2>/dev/null | sed 's/\.txt$//')"
-  else
-    pkgs="$(cat "$sel")"
-  fi
+  pkgs="$(select_pkgs "$@")"
 
   local stage
   stage="$(mktemp -d)"
   trap 'rm -rf "$stage"' RETURN
 
-  local pkg member name ver pkgroot summary errored mism st detail
+  local pkg pkgroot summary errored mism st detail
   for pkg in $pkgs; do
     pkg="$(printf '%s' "$pkg" | tr -d '[:space:]')"
     [ -z "$pkg" ] && continue
@@ -208,15 +234,7 @@ cmd_resweep() {
       printf '%s\tmissing\tnot in cache\n' "$pkg" >>"$results"
       continue
     fi
-    # Reconstruct the packages-root with symlinks into the pool (zero-copy).
-    pkgroot="$stage/$pkg"
-    rm -rf "$pkgroot"
-    mkdir -p "$pkgroot"
-    while IFS= read -r member; do
-      [ -z "$member" ] && continue
-      name="${member%@*}"
-      [ -d "$pool/$member" ] && ln -sfn "$pool/$member" "$pkgroot/$name"
-    done <"$manifest_dir/$pkg.txt"
+    pkgroot="$(stage_closure "$pkg" "$stage")"
 
     summary="$( cd "$root" && gleam run -m girard/diff "$pkg" "$oracle_dir/$pkg.json" "$pkgroot" 2>/dev/null | grep -E '^diff ' | tail -1 )"
     if [ -n "$summary" ]; then
@@ -235,6 +253,53 @@ cmd_resweep() {
     printf '[%s] %s\n' "$st" "$pkg"
   done
   echo "resweep done -> $results (flagged: $flagged)"
+}
+
+# census: reconstruct each cached package's closure the same way and run
+# `girard/census` over it, counting the references girard published as
+# `Unresolved`. No oracle is read — the count is girard's own — so a package
+# needs only its manifest to be censused.
+cmd_census() {
+  local results="${RESULTS:-$cache/census.tsv}"
+  local sites="${results%.tsv}.sites.txt"
+  : >"$results"
+  : >"$sites"
+
+  local pkgs
+  pkgs="$(select_pkgs "$@")"
+
+  local stage
+  stage="$(mktemp -d)"
+  trap 'rm -rf "$stage"' RETURN
+
+  local pkg pkgroot out summary refs unres total
+  total=0
+  for pkg in $pkgs; do
+    pkg="$(printf '%s' "$pkg" | tr -d '[:space:]')"
+    [ -z "$pkg" ] && continue
+    if [ ! -f "$manifest_dir/$pkg.txt" ]; then
+      printf '%s\tmissing\tnot in cache\n' "$pkg" >>"$results"
+      continue
+    fi
+    pkgroot="$(stage_closure "$pkg" "$stage")"
+
+    out="$( cd "$root" && gleam run -m girard/census "$pkg" "$pkgroot" 2>/dev/null )"
+    summary="$(echo "$out" | grep -E '^census ' | tail -1)"
+    if [ -n "$summary" ]; then
+      refs="$(echo "$summary" | grep -oE '[0-9]+ references' | grep -oE '[0-9]+')"
+      unres="$(echo "$summary" | grep -oE '[0-9]+ unresolved' | grep -oE '[0-9]+')"
+      total=$((total + ${unres:-0}))
+      # Every unresolved site, prefixed with its package, for reading a residue
+      # off by shape rather than by count.
+      echo "$out" | grep -E 'RecordAccessUnknownType$' | sed "s/^/$pkg /" >>"$sites"
+      printf '%s\t%s\t%s\t%s\n' "$pkg" "${unres:-0}" "${refs:-0}" "$summary" >>"$results"
+      printf '[%s unresolved] %s\n' "${unres:-0}" "$pkg"
+    else
+      printf '%s\tcrash\t\tno census summary\n' "$pkg" >>"$results"
+      printf '[crash] %s\n' "$pkg"
+    fi
+  done
+  printf 'census done: %s unresolved -> %s (sites: %s)\n' "$total" "$results" "$sites"
 }
 
 record_meta() {
@@ -282,6 +347,7 @@ case "${1:-}" in
   build)        shift; cmd_build "$@" ;;
   build-batch)  shift; cmd_build_batch "$@" ;;
   resweep)      shift; cmd_resweep "$@" ;;
+  census)       shift; cmd_census "$@" ;;
   pack)         shift; cmd_pack "$@" ;;
   unpack)       shift; cmd_unpack "$@" ;;
   stats)        shift; cmd_stats "$@" ;;
