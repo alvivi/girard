@@ -530,6 +530,16 @@ pub fn specs() -> List(Spec) {
       "a lambda in callee position is seeded from its own call's arguments: the compiler infers them speculatively, seeds the parameters from what it learned, and then infers them again for real"
         <> seeded,
     ),
+    solo(
+      "use_callback",
+      "a `use` callback is an ordinary trailing argument to the call the `use` desugars to, so it is checked against the callee's parameter type like any other lambda argument — which means the callee is inferred before the block is walked, not after"
+        <> seeded,
+    ),
+    solo(
+      "use_callback_labelled",
+      "the callback is *not* the callee's final declared parameter here: a labelled `times:` occupies the later slot, so the reorder places the callback in slot 0 and the arguments are inferred in declared order. The row that separates seeding the callback from its declared parameter from seeding it from the last one"
+        <> seeded,
+    ),
     // Where the compiler keeps a narrowing
     //
     // Each row hands the receiver a value that is already known to be `Loud`,

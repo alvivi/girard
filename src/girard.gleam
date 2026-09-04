@@ -3677,37 +3677,6 @@ fn label_index(
   }
 }
 
-// Infer one call argument, accumulating labelled arguments by their position
-// index and positional ones (reversed) for the free slots.
-fn classify_call_arg(
-  env: Env,
-  index_of: Dict(String, Int),
-  acc: #(Dict(Int, ty.Type), List(ty.Type), State),
-  field: glance.Field(glance.Expression),
-) -> Result(#(Dict(Int, ty.Type), List(ty.Type), State), Error) {
-  let #(labelled, positional, st) = acc
-  case field {
-    glance.UnlabelledField(item) -> {
-      use #(t, st) <- result.try(infer_expr(env, st, item))
-      Ok(#(labelled, [t, ..positional], st))
-    }
-    glance.LabelledField(label, _, item) -> {
-      use index <- result.try(label_index(index_of, label))
-      use #(t, st) <- result.try(infer_expr(env, st, item))
-      Ok(#(dict.insert(labelled, index, t), positional, st))
-    }
-    glance.ShorthandField(label, location) -> {
-      use index <- result.try(label_index(index_of, label))
-      use #(t, st) <- result.try(infer_expr(
-        env,
-        st,
-        glance.Variable(location, label),
-      ))
-      Ok(#(dict.insert(labelled, index, t), positional, st))
-    }
-  }
-}
-
 fn infer_capture(
   env: Env,
   st: State,
@@ -3978,8 +3947,27 @@ fn infer_statements(
   }
 }
 
-// Desugar `use a, b <- rhs` followed by `rest` into `rhs(.., fn(a, b) { rest })`
-// and infer the resulting call.
+// A `use`'s arguments as the call it desugars to sees them: the explicit ones,
+// and the callback, which is pushed unlabelled and can therefore land anywhere
+// the field map puts it. The marker travels through the reorder in place of an
+// expression, because the callback is not one — its parameters are patterns and
+// its body is the rest of the block.
+type UseSlot {
+  Explicit(expression: glance.Expression)
+  Callback
+}
+
+// Desugar `use a, b <- rhs(args)` followed by `rest` into
+// `rhs(args, fn(a, b) { rest })` and infer the resulting call.
+//
+// The callee comes first, as it does for every other call, so the callback's
+// parameter types are known before the rest of the block is walked: a field
+// access on a `use` binding then resolves at the access instead of waiting for
+// unification to fix the receiver. The callback is pushed *unlabelled* and the
+// complete argument list is reordered through the callee's field map, so a
+// labelled explicit argument can leave the callback an earlier slot than the
+// last — and the slots are then walked in declared order, so an explicit
+// argument declared after the callback is inferred after it.
 fn infer_use(
   env: Env,
   st: State,
@@ -3987,107 +3975,98 @@ fn infer_use(
   function: glance.Expression,
   rest: List(glance.Statement),
 ) -> Result(#(ty.Type, State), Error) {
-  // Build the callback: its parameters are the use patterns, its body is the
-  // rest of the block.
-  use #(rev_param_types, callback_env, st) <- result.try(
-    list.try_fold(use_patterns, #([], env, st), fn(acc, use_pattern) {
-      let #(types_, env, st) = acc
-      let #(param, st) = case use_pattern.annotation {
-        Some(ann) -> hydrate(env, st, ann)
-        None -> fresh(st)
+  let #(callee, arguments) = case function {
+    glance.Call(_, callee, arguments) -> #(callee, arguments)
+    // A `use` callee with no argument list is still a callee: the callback is
+    // its only argument.
+    other -> #(other, [])
+  }
+  use #(callee_type, labels, st) <- result.try(infer_callee(env, st, callee))
+  let slots =
+    list.append(list.map(arguments, use_slot), [
+      glance.UnlabelledField(Callback),
+    ])
+  use ordered <- result.try(
+    order_fields(labels, slots, fn(label, location) {
+      Explicit(glance.Variable(location, label))
+    }),
+  )
+  let #(holes, st) = fresh_n(st, list.length(ordered))
+  let #(result, st) = fresh(st)
+  use st <- result.try(unify(st, callee_type, ty.Fn(holes, result)))
+  use st <- result.try(
+    list.try_fold(list.zip(ordered, holes), st, fn(st, pair) {
+      case pair.0 {
+        Explicit(expression) -> check(env, st, expression, pair.1)
+        Callback -> check_callback(env, st, use_patterns, rest, pair.1)
       }
+    }),
+  )
+  // A `use` is the fourth call shape, so its value is the callee's own return
+  // rather than the hole that was unified against it — only the callee's
+  // carries the variant a constructor built.
+  Ok(#(call_return(st, callee_type, result), st))
+}
+
+// One explicit `use` argument as a slot, keeping its label so the reorder can
+// place it. A shorthand field is left to `order_fields`' materializer, which
+// resolves it to the in-scope name.
+fn use_slot(field: glance.Field(glance.Expression)) -> glance.Field(UseSlot) {
+  case field {
+    glance.UnlabelledField(item) -> glance.UnlabelledField(Explicit(item))
+    glance.LabelledField(label, location, item) ->
+      glance.LabelledField(label, location, Explicit(item))
+    glance.ShorthandField(label, location) ->
+      glance.ShorthandField(label, location)
+  }
+}
+
+// Check a `use` callback against the parameter type its slot was given, the way
+// `check` checks a lambda against a known function type. A callback is not a
+// `glance.Fn` — its parameters are patterns and its body is the rest of the
+// block — so it cannot go through `check` itself, but the seeding rule is the
+// same: where the expected type is a function of the patterns' arity, each
+// pattern is inferred against its expected parameter type, so a field access on
+// a `use` binding sees the type it was bound at.
+fn check_callback(
+  env: Env,
+  st: State,
+  use_patterns: List(glance.UsePattern),
+  rest: List(glance.Statement),
+  expected: ty.Type,
+) -> Result(State, Error) {
+  let #(seeds, st) = case resolve(st, expected) {
+    ty.Fn(params, _) ->
+      case list.length(params) == list.length(use_patterns) {
+        True -> #(params, st)
+        False -> fresh_n(st, list.length(use_patterns))
+      }
+    _ -> fresh_n(st, list.length(use_patterns))
+  }
+  use #(rev_param_types, callback_env, st) <- result.try(
+    list.try_fold(list.zip(use_patterns, seeds), #([], env, st), fn(acc, pair) {
+      let #(types_, env, st) = acc
+      let #(use_pattern, seed) = pair
+      use st <- result.try(case use_pattern.annotation {
+        Some(ann) -> {
+          let #(annotated, st) = hydrate(env, st, ann)
+          unify(st, annotated, seed)
+        }
+        None -> Ok(st)
+      })
       use #(env, _, st) <- result.try(infer_pattern(
         env,
         st,
         use_pattern.pattern,
-        param,
+        seed,
         None,
       ))
-      Ok(#([param, ..types_], env, st))
+      Ok(#([seed, ..types_], env, st))
     }),
   )
   let param_types = list.reverse(rev_param_types)
   use #(body_type, st) <- result.try(infer_statements(callback_env, st, rest))
-  let callback_type = ty.Fn(param_types, body_type)
-
-  // The right-hand side is called with the callback as its final argument. A
-  // `use` is the fourth call shape, so its value is the callee's own return
-  // rather than the hole that was unified against it — only the callee's
-  // carries the variant a constructor built.
-  let #(result, st) = fresh(st)
-  use #(return, st) <- result.try(case function {
-    glance.Call(_, callee, arguments) ->
-      infer_use_call(env, st, callee, arguments, callback_type, result)
-    // A `use` callee with no argument list is still a callee, so it resolves
-    // through `infer_callee`; the callback is its only argument and needs no
-    // field map, so the type is what `infer_expr` gave before.
-    other -> {
-      use #(callee_type, _labels, st) <- result.try(infer_callee(env, st, other))
-      use st <- result.try(unify(
-        st,
-        callee_type,
-        ty.Fn([callback_type], result),
-      ))
-      Ok(#(call_return(st, callee_type, result), st))
-    }
-  })
-  Ok(#(return, st))
-}
-
-// Infer `use ... <- callee(args)`: the callback is the final positional
-// argument. When the explicit arguments are all positional we simply append
-// the callback; when some are labelled we place them by their field map and
-// the callback fills the remaining slot (e.g. the `otherwise` of `bool.guard`).
-fn infer_use_call(
-  env: Env,
-  st: State,
-  callee: glance.Expression,
-  arguments: List(glance.Field(glance.Expression)),
-  callback_type: ty.Type,
-  result: ty.Type,
-) -> Result(#(ty.Type, State), Error) {
-  use #(callee_type, labels, st) <- result.try(infer_callee(env, st, callee))
-  use st <- result.try(case list.all(arguments, is_unlabelled) {
-    True -> {
-      use #(arg_types, st) <- result.try(infer_each(
-        env,
-        st,
-        list.map(arguments, field_item),
-      ))
-      unify(
-        st,
-        callee_type,
-        ty.Fn(list.append(arg_types, [callback_type]), result),
-      )
-    }
-    False -> {
-      use labels <- result.try(option.to_result(labels, AmbiguousCall))
-      let index_of = label_indices(labels)
-      // Infer the explicit arguments, splitting labelled (placed by index) from
-      // positional (which, with the trailing callback, fill the free slots).
-      use #(labelled, rev_positional, st) <- result.try(
-        list.try_fold(arguments, #(dict.new(), [], st), fn(acc, field) {
-          classify_call_arg(env, index_of, acc, field)
-        }),
-      )
-      let trailing = list.append(list.reverse(rev_positional), [callback_type])
-      let free =
-        list.filter(indices(list.length(labels)), fn(i) {
-          !dict.has_key(labelled, i)
-        })
-      let placed =
-        list.fold(list.zip(free, trailing), labelled, fn(placed, pair) {
-          dict.insert(placed, pair.0, pair.1)
-        })
-      use arg_types <- result.try(
-        list.try_map(indices(list.length(labels)), fn(index) {
-          result.replace_error(dict.get(placed, index), MissingArgument)
-        }),
-      )
-      unify(st, callee_type, ty.Fn(arg_types, result))
-    }
-  })
-  Ok(#(call_return(st, callee_type, result), st))
+  unify(st, ty.Fn(param_types, body_type), expected)
 }
 
 // Infer one statement, returning its type and the (possibly extended)

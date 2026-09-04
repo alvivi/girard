@@ -2254,6 +2254,60 @@ fn annotations_at(source: String, span: glance.Span) -> List(String) {
   |> list.map(fn(a) { girard.type_to_string(a.type_) })
 }
 
+pub fn use_callback_reads_field_test() {
+  // The callee is inferred before the rest of the block, so the `use` binding
+  // is bound at the callee's parameter type rather than at a fresh variable the
+  // call fixes afterwards.
+  let source =
+    "pub type Box {\n  Box(value: Int)\n}\n"
+    <> "pub fn with_box(b: Box, f: fn(Box) -> a) -> a {\n  f(b)\n}\n"
+    <> "pub fn run(b: Box) {\n  use x <- with_box(b)\n  x.value\n}"
+  resolution_at(source, [], span_of(source, "x.value"))
+  |> should.equal(girard.RecordField(girard.Named("", "Box", []), "value"))
+  type_of(source, "x.value") |> should.equal("Int")
+}
+
+pub fn use_generic_callback_reads_field_test() {
+  // The callee's callback parameter is generic, so the binding's type exists
+  // only because the explicit argument was checked first: the slots are walked
+  // in declared order, and `items` comes before `f`.
+  let source =
+    "pub type Box {\n  Box(value: Int)\n}\n"
+    <> "pub fn each(items: List(a), f: fn(a) -> b) -> Nil {\n  todo\n}\n"
+    <> "pub fn run(boxes: List(Box)) {\n  use x <- each(boxes)\n  x.value\n}"
+  resolution_at(source, [], span_of(source, "x.value"))
+  |> should.equal(girard.RecordField(girard.Named("", "Box", []), "value"))
+  type_of(source, "x.value") |> should.equal("Int")
+}
+
+pub fn use_tuple_pattern_reads_field_test() {
+  // A `use` binds patterns, not parameters, so the seeding is by pattern: the
+  // tuple pattern is inferred against the expected parameter type and the name
+  // inside it binds at the element's own.
+  let source =
+    "pub type Box {\n  Box(value: Int)\n}\n"
+    <> "pub fn with_pair(p: #(Box, Int), f: fn(#(Box, Int)) -> a) -> a {\n"
+    <> "  f(p)\n}\n"
+    <> "pub fn run(p: #(Box, Int)) {\n  use #(x, _) <- with_pair(p)\n  x.value\n}"
+  resolution_at(source, [], span_of(source, "x.value"))
+  |> should.equal(girard.RecordField(girard.Named("", "Box", []), "value"))
+  type_of(source, "x.value") |> should.equal("Int")
+}
+
+pub fn use_callback_before_labelled_argument_reads_field_test() {
+  // The callback is not the callee's last declared parameter here: a labelled
+  // `times:` takes the later slot, so the reorder leaves the callback slot 0.
+  // Seeding it from the *last* parameter would hand the binding an `Int`.
+  let source =
+    "pub type Box {\n  Box(value: Int)\n}\n"
+    <> "pub fn with_box_then(f: fn(Box) -> Int, times times: Int) -> Int {\n"
+    <> "  f(Box(times))\n}\n"
+    <> "pub fn run() {\n  use x <- with_box_then(times: 1)\n  x.value\n}"
+  resolution_at(source, [], span_of(source, "x.value"))
+  |> should.equal(girard.RecordField(girard.Named("", "Box", []), "value"))
+  type_of(source, "x.value") |> should.equal("Int")
+}
+
 pub fn seeded_receiver_takes_the_field_type_test() {
   // Seeding the receiver changes the inferred *type*, not only the member it is
   // reported under. An unbound receiver whose name is also a module in scope
