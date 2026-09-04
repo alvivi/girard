@@ -1147,24 +1147,6 @@ fn bind_local(env: Env, name: String, scheme: ty.Scheme) -> Env {
   install(env, name, scheme, LocalValue)
 }
 
-// Re-type an existing binding, keeping what kind of value it is: the same
-// binding at a different scheme (a rigid self-reference, a variant erased or
-// narrowed), not a new one. A name with no entry yet can only be a local, so
-// that is what it becomes.
-fn retype(env: Env, name: String, scheme: ty.Scheme) -> Env {
-  install(env, name, scheme, variant_at(env, name))
-}
-
-// What kind of value a name is bound at. A name bound to no entry is not bound
-// at all, which no caller of this is looking at; a local is the only thing it
-// could be.
-fn variant_at(env: Env, name: String) -> ValueVariant {
-  case dict.get(env.values, name) {
-    Ok(entry) -> entry.variant
-    Error(_) -> LocalValue
-  }
-}
-
 // Whether a scheme can never contribute a free variable to the environment:
 // every type variable in its type is bound by its own quantifier. This is
 // purely syntactic and so substitution-independent — `scheme_free_vars`
@@ -1465,10 +1447,11 @@ fn infer_group(
           // function's name shadows it (as in the source).
           let body_env =
             bind_params(
-              retype(
+              install(
                 group_env,
                 def_name(def),
                 rigid_self_scheme(params, return_type),
+                def_variant(group_env, def),
               ),
               f,
               params,
@@ -3447,14 +3430,20 @@ fn bare_callee(
 ) -> #(ty.Type, Result(FieldMap, Nil), State) {
   case function {
     glance.Variable(name_span, name) -> {
-      let variant = variant_at(env, name)
-      let st =
-        reference(
-          st,
-          Spans(name_span, name_span, name_span),
-          resolved_value(name, variant),
+      let spans = Spans(name_span, name_span, name_span)
+      case dict.get(env.values, name) {
+        Ok(entry) -> #(
+          type_,
+          field_map(entry.variant),
+          reference(st, spans, resolved_value(name, entry.variant)),
         )
-      #(type_, field_map(variant), st)
+        // Bound, or `infer_expr` would have failed before reaching this.
+        Error(_) -> #(
+          type_,
+          Error(Nil),
+          reference(st, spans, ResolvedLocal(name)),
+        )
+      }
     }
     _ -> #(type_, Error(Nil), st)
   }
@@ -4279,9 +4268,14 @@ fn bound_variant(st: State, env: Env, name: String) -> Option(Int) {
 // Rebind `name` to its own type with the variant forgotten: the same binding,
 // less what the alternatives disagreed on.
 fn erase_binding(st: State, env: Env, name: String) -> Env {
-  case lookup(env, name) {
-    Ok(ty.Scheme(vars, type_)) ->
-      retype(env, name, ty.Scheme(vars, erase_variant(resolve(st, type_))))
+  case dict.get(env.values, name) {
+    Ok(ValueConstructor(ty.Scheme(vars, type_), variant)) ->
+      install(
+        env,
+        name,
+        ty.Scheme(vars, erase_variant(resolve(st, type_))),
+        variant,
+      )
     Error(_) -> env
   }
 }
@@ -4340,10 +4334,11 @@ fn subject_variable(
 // or a tuple stamps to itself and is left alone, which is what excludes a
 // top-level function used as a subject.
 fn narrow(env: Env, st: State, name: String, variant: Int) -> Env {
-  case lookup(env, name) {
-    Ok(ty.Scheme(vars, type_)) ->
+  case dict.get(env.values, name) {
+    Ok(ValueConstructor(ty.Scheme(vars, type_), value)) ->
       case stamp(st, type_, variant) {
-        ty.Named(..) as stamped -> retype(env, name, ty.Scheme(vars, stamped))
+        ty.Named(..) as stamped ->
+          install(env, name, ty.Scheme(vars, stamped), value)
         _ -> env
       }
     Error(_) -> env
