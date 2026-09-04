@@ -1419,12 +1419,7 @@ fn infer_group(
           // function's name shadows it (as in the source).
           let body_env =
             bind_params(
-              install(
-                group_env,
-                def_name(def),
-                rigid_self_scheme(params, return_type),
-                def_variant(group_env, def),
-              ),
+              define_def(group_env, def, rigid_self_scheme(params, return_type)),
               f,
               params,
             )
