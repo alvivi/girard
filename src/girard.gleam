@@ -793,12 +793,16 @@ fn field_map_of(labels: FieldMap) -> Option(FieldMap) {
 
 // The labels a call on this entry may use: the compiler's
 // `ValueConstructor::field_map()` (`type_.rs:1611`), which is a projection off
-// the variant rather than a table of its own.
-fn field_map(variant: ValueVariant) -> Result(FieldMap, Nil) {
+// the variant rather than a table of its own. `None` all the way from where it
+// was stored — a callable that labels no position, a value that takes no
+// arguments at all, and a call the reader could not attribute to any entry are
+// one answer, and the readers turn it into `AmbiguousCall` or an empty list at
+// the one place each cares.
+fn field_map(variant: ValueVariant) -> Option(FieldMap) {
   case variant {
     FunctionValue(field_map:, ..) | ConstructorValue(field_map:, ..) ->
-      option.to_result(field_map, Nil)
-    ConstantValue(..) | LocalValue(..) -> Error(Nil)
+      field_map
+    ConstantValue(..) | LocalValue(..) -> None
   }
 }
 
@@ -3236,7 +3240,7 @@ fn infer_record_update(
 // callable with no labelled position at all, which is the empty list because
 // there is nothing to reorder against.
 fn positional_labels(variant: ValueVariant) -> FieldMap {
-  result.unwrap(field_map(variant), [])
+  option.unwrap(field_map(variant), [])
 }
 
 fn is_upper(name: String) -> Bool {
@@ -3352,7 +3356,7 @@ fn infer_callee(
   env: Env,
   st: State,
   function: glance.Expression,
-) -> Result(#(ty.Type, Result(FieldMap, Nil), State), Error) {
+) -> Result(#(ty.Type, Option(FieldMap), State), Error) {
   case function {
     // Resolved here rather than through `infer_expr`, which would drop the
     // branch; the callee's span is recorded once, as `infer_expr` would.
@@ -3366,7 +3370,7 @@ fn infer_callee(
       ))
       let labels = case access {
         Export(variant) -> field_map(variant)
-        Field(_) | Deferred -> Error(Nil)
+        Field(_) | Deferred -> None
       }
       Ok(#(type_, labels, record(st, span(function), type_)))
     }
@@ -3387,7 +3391,7 @@ fn bare_callee(
   st: State,
   function: glance.Expression,
   type_: ty.Type,
-) -> #(ty.Type, Result(FieldMap, Nil), State) {
+) -> #(ty.Type, Option(FieldMap), State) {
   case function {
     glance.Variable(name_span, name) -> {
       let spans = Spans(name_span, name_span, name_span)
@@ -3400,12 +3404,12 @@ fn bare_callee(
         // Bound, or `infer_expr` would have failed before reaching this.
         Error(_) -> #(
           type_,
-          Error(Nil),
+          None,
           reference(st, spans, ResolvedValue(LocalValue(name))),
         )
       }
     }
-    _ -> #(type_, Error(Nil), st)
+    _ -> #(type_, None, st)
   }
 }
 
@@ -3471,7 +3475,7 @@ fn field_item(field: glance.Field(glance.Expression)) -> glance.Expression {
 // using the callee's field map. If every argument is positional we don't need
 // the field map (this also covers calls to anonymous functions).
 fn order_fields(
-  labels: Result(FieldMap, Nil),
+  labels: Option(FieldMap),
   fields: List(glance.Field(t)),
   shorthand: fn(String, glance.Span) -> t,
 ) -> Result(List(t), Error) {
@@ -3487,8 +3491,8 @@ fn order_fields(
     )
   })
   case labels {
-    Ok(labels) -> reorder(fields, labels, shorthand)
-    Error(_) -> Error(AmbiguousCall)
+    Some(labels) -> reorder(fields, labels, shorthand)
+    None -> Error(AmbiguousCall)
   }
 }
 
@@ -3933,7 +3937,7 @@ fn infer_use_call(
       )
     }
     False -> {
-      use labels <- result.try(result.replace_error(labels, AmbiguousCall))
+      use labels <- result.try(option.to_result(labels, AmbiguousCall))
       let index_of = label_indices(labels)
       // Infer the explicit arguments, splitting labelled (placed by index) from
       // positional (which, with the trailing callback, fill the free slots).
