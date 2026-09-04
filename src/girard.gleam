@@ -3374,42 +3374,32 @@ fn infer_callee(
       }
       Ok(#(type_, labels, record(st, span(function), type_)))
     }
+    // A bare name, resolved here for the same reason: `infer_expr` would
+    // instantiate the scheme and drop the entry it came from, and the entry is
+    // what says which member this call resolved to and what labels it may use.
+    // Reading it once is also what makes an unbound name one answer — the
+    // error — rather than an answer here and an error there. All three of the
+    // reference's spans are the variable's.
+    glance.Variable(name_span, name) ->
+      case dict.get(env.values, name) {
+        Error(_) -> Error(UnboundVariable(name))
+        Ok(entry) -> {
+          let #(type_, st) = instantiate_in(env, st, name, entry.scheme)
+          let st = record(st, name_span, type_)
+          let spans = Spans(name_span, name_span, name_span)
+          Ok(#(
+            type_,
+            field_map(entry.variant),
+            reference(st, spans, ResolvedValue(entry.variant)),
+          ))
+        }
+      }
+    // A lambda, another call's result: neither a name nor a reference, and no
+    // labels to call it with.
     _ -> {
       use #(type_, st) <- result.try(infer_expr(env, st, function))
-      Ok(bare_callee(env, st, function, type_))
+      Ok(#(type_, None, st))
     }
-  }
-}
-
-// A callee that is not a `name.label` access. A bare name reads its scope
-// entry once: the variant says whether it is a module-level value or a local,
-// and carries the labels a call on it may use. It is bound, or `infer_expr`
-// would have failed. All three of its spans are the variable's. Anything else
-// — a lambda, another call's result — is neither a name nor a reference.
-fn bare_callee(
-  env: Env,
-  st: State,
-  function: glance.Expression,
-  type_: ty.Type,
-) -> #(ty.Type, Option(FieldMap), State) {
-  case function {
-    glance.Variable(name_span, name) -> {
-      let spans = Spans(name_span, name_span, name_span)
-      case dict.get(env.values, name) {
-        Ok(entry) -> #(
-          type_,
-          field_map(entry.variant),
-          reference(st, spans, ResolvedValue(entry.variant)),
-        )
-        // Bound, or `infer_expr` would have failed before reaching this.
-        Error(_) -> #(
-          type_,
-          None,
-          reference(st, spans, ResolvedValue(LocalValue(name))),
-        )
-      }
-    }
-    _ -> #(type_, None, st)
   }
 }
 
