@@ -4687,13 +4687,7 @@ fn order_pattern_args(
   arguments: List(glance.Field(glance.Pattern)),
   arity: Int,
 ) -> Result(List(glance.Pattern), Error) {
-  let index_of =
-    list.index_fold(labels, dict.new(), fn(acc, label, index) {
-      case label {
-        Some(name) -> dict.insert(acc, name, index)
-        None -> acc
-      }
-    })
+  let index_of = label_indices(labels)
   use labelled <- result.try(
     list.try_fold(arguments, dict.new(), fn(placed, field) {
       case field {
