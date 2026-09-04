@@ -9,23 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `analyse`, `analyse_module`, `analyse_with_cache` and `analyse_package`
-  report what every field access, and every bare name in call position,
-  resolved to, alongside the types `annotate*` already report. Each
-  `ResolvedReference` carries the access's span, the label's and the
-  receiver's, and a `Resolution`: a record field with its receiver's type, a
-  module function, constant or constructor under the module's canonical path
-  (never the import alias), a local value, or `Unresolved` where girard reached
-  the type but no member. `annotate*` keep their signatures: they are these
-  functions with the resolutions taken off.
+- `analyse`, `analyse_module`, `analyse_with_cache` and `analyse_package`:
+  the `annotate*` results plus, for every field access and every bare name in
+  call position, what it resolved to. Each `ResolvedReference` gives the spans
+  of the access, its label and its receiver, and a `Resolution`: a record field
+  and its receiver's type, a module function, constant or constructor under the
+  module's canonical path (not the import alias), a local value, or
+  `Unresolved`. `annotate*` keep their signatures — they are these functions
+  with the resolutions dropped.
 
 ### Fixed
 
 - A piped call's callee is no longer annotated twice. `left |> f(args)` infers
-  `f` once to measure its arity and again as part of the call; the arity probe
-  now runs on an inference state that is thrown away, so `expressions` holds one
-  entry for the callee's span rather than two — and for a generic callee, the
-  instantiation the call constrained rather than the probe's unconstrained one.
+  `f` once to measure its arity and once as part of the call; the arity probe
+  now runs on a state that is thrown away, so `expressions` has a single entry
+  for the callee's span, holding the type the call gave it.
 - Variant narrowing now follows the value, not the name it was bound under.
   After `let assert Loud(..) = l`, `let io = l` still reads `io.println` as the
   field, and so do a tuple pattern, a closure's return, a record update, a
