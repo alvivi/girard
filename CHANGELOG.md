@@ -16,6 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `analyse*` now names the module a call was typed against. Where `a`'s own
   `g` was skipped and shadowed an `import imported.{g}`, an importer calling
   `a.g` was told it had called `a.g` rather than `imported.g`.
+- A lambda that is piped into, called directly, given as a `use` callback or
+  passed to a capture now sees its parameter types before its body is
+  inferred, as the compiler does. A field access on such a parameter resolves
+  at the access instead of being deferred and published as `Unresolved`. With
+  a module of the parameter's name in scope it now reads the field where it
+  previously took the module's export, which changes the inferred type when
+  the two differ.
+- A `use`'s callback and a capture's hole are placed by the same reorder as
+  the arguments around them, so a labelled argument taking a later declared
+  slot no longer leaves either in the wrong one, and an argument written out
+  of declared order is checked against the parameter it was placed against.
+- A lambda checked against a known function type shares the type-variable
+  names its own annotations write, as one inferred without a known type
+  already did: in `fn(m: Msg(a)) -> Next(Msg(a))` the two `a`s are one type
+  wherever the lambda is checked.
 
 ## [2.2.0] - 2026-09-04
 

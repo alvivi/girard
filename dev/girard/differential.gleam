@@ -517,9 +517,10 @@ pub fn specs() -> List(Spec) {
     // supplies. The compiler fixes every parameter type before it walks the
     // body — `infer_fn_with_known_types` opens the scope with the arguments
     // already typed — so the receiver is a bound `Solo` at the access and the
-    // field is in reach. Where girard walks the body first, the receiver is
-    // still an unbound variable and the module export of its name wins, which
-    // is the over-permissive direction: the compiler *can* type this receiver.
+    // field is in reach. These are the rows that keep girard doing the same:
+    // a receiver whose type only arrives after the body is walked is unbound
+    // at the access, and the module export of its name wins instead, which is
+    // the over-permissive direction — the compiler *can* type this receiver.
     solo(
       "pipe_lambda",
       "the compiler rewrites `left |> fn(..) { .. }` as a call of the lambda on the piped value, so the parameter is seeded from that value's type before the body is walked"

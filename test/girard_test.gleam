@@ -2194,6 +2194,17 @@ pub fn references_are_unique_per_span_test() {
 // resolves at the access, instead of being deferred and read once later
 // inference has fixed the receiver's type.
 
+// Every type recorded at `span`, in the order girard reports them. A call span
+// already carries two — `infer_expr`'s wrapper records it and `infer_call`
+// records the callee's own return over it — so the count is only meaningful
+// against the same shape without the seeding.
+fn annotations_at(source: String, span: glance.Span) -> List(String) {
+  let assert Ok(analysis) = girard.analyse(source, girard.default_options())
+  analysis.annotated.expressions
+  |> list.filter(fn(a) { a.span == span })
+  |> list.map(fn(a) { girard.type_to_string(a.type_) })
+}
+
 pub fn piped_lambda_reads_field_test() {
   // `left |> fn(x) { .. }` calls the lambda on the piped value, so the piped
   // type is the parameter's before the body is inferred.
@@ -2241,17 +2252,6 @@ pub fn applied_lambda_argument_is_inferred_once_test() {
   })
   |> list.map(fn(r) { r.resolution })
   |> should.equal([girard.ModuleFn("", "unwrap")])
-}
-
-// Every type recorded at `span`, in the order girard reports them. A call span
-// already carries two — `infer_expr`'s wrapper records it and `infer_call`
-// records the callee's own return over it — so the count is only meaningful
-// against the same shape without the seeding.
-fn annotations_at(source: String, span: glance.Span) -> List(String) {
-  let assert Ok(analysis) = girard.analyse(source, girard.default_options())
-  analysis.annotated.expressions
-  |> list.filter(fn(a) { a.span == span })
-  |> list.map(fn(a) { girard.type_to_string(a.type_) })
 }
 
 pub fn use_callback_reads_field_test() {
