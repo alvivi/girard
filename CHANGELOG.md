@@ -12,11 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `analyse`, `analyse_module`, `analyse_with_cache` and `analyse_package`:
   the `annotate*` results plus, for every field access and every bare name in
   call position, what it resolved to. Each `ResolvedReference` gives the spans
-  of the access, its label and its receiver, and a `Resolution`: a record field
-  and its receiver's type, a module function, constant or constructor under the
-  module's canonical path (not the import alias), a local value, or
-  `Unresolved`. `annotate*` keep their signatures — they are these functions
-  with the resolutions dropped.
+  of the access, its label and the accessed value, and a `Resolution`: a
+  record field and the record's type, a module function, constant or
+  constructor under the module's canonical path (not the import alias), a local
+  variable, or `Unresolved`. The variants are named after the compiler's
+  `ValueConstructorVariant`. `annotate*` keep their signatures — they are these
+  functions with the resolutions dropped.
 
 ### Fixed
 

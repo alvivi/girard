@@ -1126,12 +1126,12 @@ fn answer(path: String, function: String) -> Nil {
 
 fn describe_resolution(resolution: girard.Resolution) -> String {
   case resolution {
-    girard.RecordField(receiver, label) ->
-      girard.type_to_string(receiver) <> "." <> label
-    girard.ModuleFunction(module, name) -> module <> "." <> name <> "()"
+    girard.RecordField(record, label) ->
+      girard.type_to_string(record) <> "." <> label
+    girard.ModuleFn(module, name) -> module <> "." <> name <> "()"
     girard.ModuleConstant(module, name) -> module <> "." <> name
     girard.Constructor(module, name) -> module <> "." <> name <> "{}"
-    girard.LocalValue(name) -> "local " <> name
+    girard.LocalVariable(name) -> "local " <> name
     girard.Unresolved(_) -> "unresolved"
   }
 }

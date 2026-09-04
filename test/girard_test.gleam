@@ -2004,7 +2004,7 @@ pub fn module_call_resolves_to_canonical_path_test() {
     [#("gleam/io", io_println)],
     span_of(source, "printer.println"),
   )
-  |> should.equal(girard.ModuleFunction("gleam/io", "println"))
+  |> should.equal(girard.ModuleFn("gleam/io", "println"))
 }
 
 pub fn module_constant_resolves_to_module_constant_test() {
@@ -2052,7 +2052,7 @@ pub fn top_level_callee_resolves_to_module_function_test() {
   // was given, which is `""` for a module analysed on its own.
   let source = "pub fn run() { helper(1) }\npub fn helper(n) { n }"
   resolution_at(source, [], span_of(source, "helper"))
-  |> should.equal(girard.ModuleFunction("", "helper"))
+  |> should.equal(girard.ModuleFn("", "helper"))
 
   // A constant holding a function is a constant when it is called.
   let called_constant =
@@ -2067,14 +2067,14 @@ pub fn local_callee_resolves_to_local_value_test() {
   // A `let`-bound function, and the three spans of a bare name coincide.
   let bound = "pub fn run() {\n  let apply = fn(n) { n }\n  apply(1)\n}"
   let reference = reference_at(bound, [], last_span(bound, "apply"))
-  reference.resolution |> should.equal(girard.LocalValue("apply"))
+  reference.resolution |> should.equal(girard.LocalVariable("apply"))
   reference.label_span |> should.equal(reference.span)
   reference.container_span |> should.equal(reference.span)
 
   // A parameter.
   let parameter = "pub fn run(apply) { apply(1) }"
   resolution_at(parameter, [], last_span(parameter, "apply"))
-  |> should.equal(girard.LocalValue("apply"))
+  |> should.equal(girard.LocalVariable("apply"))
 
   // A `let` shadowing a top-level function of the same name: the local wins,
   // as it does for the labels the name may be called with.
@@ -2082,7 +2082,7 @@ pub fn local_callee_resolves_to_local_value_test() {
     "pub fn helper(n) { n }\n"
     <> "pub fn run() {\n  let helper = fn(n) { n }\n  helper(1)\n}"
   resolution_at(shadowed, [], last_span(shadowed, "helper"))
-  |> should.equal(girard.LocalValue("helper"))
+  |> should.equal(girard.LocalVariable("helper"))
 }
 
 pub fn deferred_receiver_is_unresolved_test() {
@@ -2099,7 +2099,7 @@ pub fn deferred_receiver_is_unresolved_test() {
     <> "  y\n"
     <> "}"
   resolution_at(source, [], span_of(source, "x.name"))
-  |> should.equal(girard.Unresolved(girard.UnknownReceiverType))
+  |> should.equal(girard.Unresolved(girard.RecordAccessUnknownType))
   type_of(source, "x.name") |> should.equal("String")
 }
 
@@ -2128,17 +2128,17 @@ pub fn pipe_and_use_targets_are_recorded_test() {
   // what its callee resolved to.
   let piped = "import io\npub fn run() { \"hi\" |> io.println }"
   resolution_at(piped, [#("io", io_println)], span_of(piped, "io.println"))
-  |> should.equal(girard.ModuleFunction("io", "println"))
+  |> should.equal(girard.ModuleFn("io", "println"))
 
   let bare_pipe = "pub fn run() { 1 |> double }\npub fn double(n) { n + n }"
   resolution_at(bare_pipe, [], span_of(bare_pipe, "double"))
-  |> should.equal(girard.ModuleFunction("", "double"))
+  |> should.equal(girard.ModuleFn("", "double"))
 
   let used =
     "pub fn run() {\n  use n <- each\n  n\n}\n"
     <> "pub fn each(f: fn(Int) -> Int) -> Int { f(1) }"
   resolution_at(used, [], span_of(used, "each"))
-  |> should.equal(girard.ModuleFunction("", "each"))
+  |> should.equal(girard.ModuleFn("", "each"))
 }
 
 pub fn references_are_unique_per_span_test() {
@@ -2150,7 +2150,7 @@ pub fn references_are_unique_per_span_test() {
     r.span == span_of(piped, "m.add")
   })
   |> list.map(fn(r) { r.resolution })
-  |> should.equal([girard.ModuleFunction("m", "add")])
+  |> should.equal([girard.ModuleFn("m", "add")])
 
   // And it is the real callee's, not the arity probe's: applying `run` to the
   // piped `1` fixes the box's parameter to `Int`, where the probe's
@@ -2229,7 +2229,7 @@ pub fn skipped_definition_keeps_the_shadowed_import_origin_test() {
   let assert Ok(reference) =
     list.find(analysis.resolutions, fn(r) { r.span == last_span(source, "g") })
   reference.resolution
-  |> should.equal(girard.ModuleFunction("imported", "g"))
+  |> should.equal(girard.ModuleFn("imported", "g"))
 }
 
 pub fn off_target_definition_has_no_references_test() {

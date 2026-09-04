@@ -13,7 +13,7 @@ each top-level definition's signature.
 The public API accepts source text, a pre-parsed `glance.Module`, or a whole
 package. The `analyse*` family additionally reports **which member each
 reference resolved to** — a record field, a module function, constant or
-constructor under the module's canonical path, a local value, or unresolved —
+constructor under the module's canonical path, a local variable, or unresolved —
 for every field access and every bare name in call position; `annotate*` are
 those functions with the resolutions taken off. Imported modules are resolved
 through an injectable resolver. Package annotation is best-effort per
@@ -128,19 +128,19 @@ same for a module's exports. Both are written at the sites that already write
 so a local shadows a module-level name's identity as it shadows its labels.
 `infer_field_access` and `infer_callee` record a `Reference` into
 `State.references` for every field access and every bare name in call position;
-`publish_references` zonks each receiver, converts it and keeps one entry per
-span, which is what `Analysis.resolutions` promises: no walk produces a
-duplicate today, but the guarantee is the API's rather than any one walk's.
+`publish_references` zonks each accessed record, converts it and keeps one
+entry per span, which is what `Analysis.resolutions` promises: no walk produces
+a duplicate today, but the guarantee is the API's rather than any one walk's.
 
 Absence has exactly three shapes. A definition in `Analysis.skipped` contributes
 no references, because `best_effort_group` discards its component's whole
 `State`. A definition dropped for the other build target is neither skipped nor
 walked. And an access girard deferred as a `PendingField` and read only once
-later inference fixed the receiver's type publishes
-`Unresolved(UnknownReceiverType)` — girard reached the field type but never a
-member at the access. That last is a tripwire as much as a result: over code the
-compiler accepts, each one is a place where girard's inference order lags the
-compiler's.
+later inference fixed the record's type publishes
+`Unresolved(RecordAccessUnknownType)` — girard reached the field type but never
+a member at the access. That last is a tripwire as much as a result: over code
+the compiler accepts, each one is a place where girard's inference order lags
+the compiler's.
 
 The public `Type` model has four variants:
 

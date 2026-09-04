@@ -157,13 +157,14 @@ pub type Logger {
 pub fn run(l: Logger) {
   case l {
     Loud(..) as printer -> printer.println("hi")   // RecordField(Logger, "println")
-    Quiet(..) -> printer.println("quiet")          // ModuleFunction("gleam/io", "println")
+    Quiet(..) -> printer.println("quiet")          // ModuleFn("gleam/io", "println")
   }
 }
 ```
 
 Each `ResolvedReference` carries the access's span — the same span the
-`Annotation` for it carries — the label's, the receiver's, and a `Resolution`:
+`Annotation` for it carries — the label's, the accessed value's, and a
+`Resolution`:
 
 ```gleam
 import girard
@@ -173,12 +174,12 @@ pub fn members(source: String) -> List(String) {
   let assert Ok(analysis) = girard.analyse(source, girard.default_options())
   list.map(analysis.resolutions, fn(reference) {
     case reference.resolution {
-      girard.RecordField(receiver, label) ->
-        girard.type_to_string(receiver) <> "." <> label
-      girard.ModuleFunction(module, name) -> module <> "." <> name <> "()"
+      girard.RecordField(record, label) ->
+        girard.type_to_string(record) <> "." <> label
+      girard.ModuleFn(module, name) -> module <> "." <> name <> "()"
       girard.ModuleConstant(module, name) -> module <> "." <> name
       girard.Constructor(module, name) -> module <> "." <> name <> "{}"
-      girard.LocalValue(name) -> name
+      girard.LocalVariable(name) -> name
       girard.Unresolved(_) -> "?"
     }
   })

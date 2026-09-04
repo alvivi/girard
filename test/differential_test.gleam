@@ -1492,7 +1492,7 @@ fn check_resolution(
 // function and `n` and `y` with constants, so the kind is not fixed.
 fn module_export(resolution: girard.Resolution) -> Option(#(String, String)) {
   case resolution {
-    girard.ModuleFunction(module, name) -> Some(#(module, name))
+    girard.ModuleFn(module, name) -> Some(#(module, name))
     girard.ModuleConstant(module, name) -> Some(#(module, name))
     girard.Constructor(module, name) -> Some(#(module, name))
     _ -> None
@@ -1528,15 +1528,14 @@ fn resolution_at(
 
 fn describe_resolution(resolution: girard.Resolution) -> String {
   case resolution {
-    girard.RecordField(receiver, label) ->
-      "the " <> girard.type_to_string(receiver) <> " field `" <> label <> "`"
-    girard.ModuleFunction(module, name) ->
-      "the function " <> module <> "." <> name
+    girard.RecordField(record, label) ->
+      "the " <> girard.type_to_string(record) <> " field `" <> label <> "`"
+    girard.ModuleFn(module, name) -> "the function " <> module <> "." <> name
     girard.ModuleConstant(module, name) ->
       "the constant " <> module <> "." <> name
     girard.Constructor(module, name) ->
       "the constructor " <> module <> "." <> name
-    girard.LocalValue(name) -> "the local `" <> name <> "`"
+    girard.LocalVariable(name) -> "the local `" <> name <> "`"
     girard.Unresolved(_) -> "no member at all"
   }
 }

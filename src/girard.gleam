@@ -106,44 +106,58 @@ pub type AnnotatedModule {
   )
 }
 
-/// Which member a reference resolved to.
+/// Which member a reference resolved to. The variants are named after the
+/// compiler's `ValueConstructorVariant`, which is where the same distinction
+/// lives there, plus `RecordField` for the case the compiler reaches through
+/// `RecordAccess` rather than through a scope entry.
 pub type Resolution {
-  /// A field of the receiver's nominal type — the compiler's `RecordAccess`.
-  RecordField(receiver: Type, label: String)
+  /// A field of the record's nominal type — the compiler's `RecordAccess`,
+  /// whose accessed value it likewise calls the `record`.
+  RecordField(record: Type, label: String)
   /// A module's function, under the module's canonical path.
-  ModuleFunction(module: String, name: String)
+  ModuleFn(module: String, name: String)
   /// A module's constant, under the module's canonical path.
   ModuleConstant(module: String, name: String)
   /// A custom-type constructor, under its defining module's canonical path and
-  /// its declared name — `Near`, even where it was imported `as Close`.
+  /// its declared name — `Near`, even where it was imported `as Close`. The
+  /// compiler calls this variant `Record`; `Constructor` is the name it uses
+  /// for the same thing wherever it faces outwards.
   Constructor(module: String, name: String)
   /// A local binding: a `let`, a parameter, or a pattern's binding.
-  LocalValue(name: String)
+  LocalVariable(name: String)
   /// girard reached no member *at* the reference. The reason says why.
   Unresolved(reason: UnresolvedReason)
 }
 
 /// Why girard reached no member at a reference.
 pub type UnresolvedReason {
-  /// The receiver's type was unknown at the access and no module of its name
+  /// The record's type was unknown at the access and no module of its name
   /// exported the label, so girard deferred the access and read the field only
   /// once later inference had fixed the type — after the point where a member
   /// could be named. The [`Annotation`](#Annotation) at the span is still
   /// girard's answer for the field's type; only the member is unreported.
   ///
-  /// Where the compiler's inference had not fixed the receiver's type at the
-  /// access either, it rejects the program there (`Unknown type for record
-  /// access`) and girard is the more permissive of the two. Where it had,
-  /// girard merely reached the answer later than the compiler did.
-  UnknownReceiverType
+  /// Named for the compiler error covering the same ground,
+  /// `RecordAccessUnknownType`. Where the compiler's inference had not fixed
+  /// the record's type at the access either, it rejects the program there
+  /// (`Unknown type for record access`) and girard is the more permissive of
+  /// the two. Where it had, girard merely reached the answer later than the
+  /// compiler did.
+  RecordAccessUnknownType
 }
 
 /// One reference and what it resolved to.
 ///
 /// `span` is the whole access — the same span [`Annotation`](#Annotation)
 /// carries for it — while `label_span` and `container_span` are the member and
-/// the receiver, following the compiler's own convention. For a bare name in
-/// call position the three are the same span.
+/// the accessed value, named as the compiler names the two spans it computes
+/// for a field access. For a bare name in call position the three are the same
+/// span.
+///
+/// Note that the compiler's own `Reference` is a different notion: it records
+/// the *syntax* a use took — qualified, unqualified, aliased — for renaming and
+/// find-references. A `ResolvedReference` says which member the use reached,
+/// and says nothing about how it was spelled.
 pub type ResolvedReference {
   ResolvedReference(
     span: glance.Span,
@@ -688,8 +702,8 @@ type State {
     // of discovery. Types are stored "live" and zonked at the end.
     annotations: List(#(glance.Span, ty.Type)),
     // What every field access and every called bare name resolved to, in
-    // reverse order of discovery. A receiver is stored "live" and zonked at
-    // the end, as an annotation's type is.
+    // reverse order of discovery. An accessed record is stored "live" and
+    // zonked at the end, as an annotation's type is.
     references: List(Reference),
     // Field accesses and tuple indexes whose container type was not yet known
     // when encountered; resolved by `resolve_pending` once inference has fixed
@@ -712,7 +726,7 @@ type Pending {
   PendingIndex(container: ty.Type, index: Int, result: ty.Type)
 }
 
-// A reference and what it resolved to, live. The receiver is an
+// A reference and what it resolved to, live. The accessed record is an
 // inference-side type that later unification may still refine, so it is kept
 // as one and `publish_reference` zonks and converts it at the end, exactly as
 // `render` does for an annotation. The public `Resolution` cannot be built
@@ -723,11 +737,11 @@ type Reference {
 }
 
 type Resolved {
-  ResolvedField(receiver: ty.Type, label: String)
-  // Published as `ModuleFunction`, `ModuleConstant` or `Constructor`, by kind.
+  ResolvedField(record: ty.Type, label: String)
+  // Published as `ModuleFn`, `ModuleConstant` or `Constructor`, by kind.
   ResolvedOrigin(origin: Origin)
   ResolvedLocal(name: String)
-  // Published as `Unresolved(UnknownReceiverType)`.
+  // Published as `Unresolved(RecordAccessUnknownType)`.
   ResolvedDeferred
 }
 
@@ -2980,9 +2994,9 @@ fn infer_bit_segment(
 // the resolver reads it to record which member the access resolved to.
 type Access {
   // A record field: the compiler's `RecordAccess`, which has no field map.
-  // Carries the receiver's nominal type, live — the reference publishes it
+  // Carries the accessed record's nominal type, live — the reference publishes it
   // zonked, so later unification still refines it.
-  Field(receiver: ty.Type)
+  Field(record: ty.Type)
   // A module export, with its own field map when the export has one, and the
   // identity it was read under.
   Export(labels: Result(List(Option(String)), Nil), origin: Origin)
@@ -3078,7 +3092,7 @@ fn record_access(
   access: Access,
 ) -> State {
   case access {
-    Field(receiver) -> reference(st, spans, ResolvedField(receiver, label))
+    Field(record) -> reference(st, spans, ResolvedField(record, label))
     Export(_, origin) -> reference(st, spans, ResolvedOrigin(origin))
     Deferred -> reference(st, spans, ResolvedDeferred)
   }
@@ -4966,7 +4980,7 @@ fn render(module: glance.Module, env: Env, st: State) -> AnnotatedModule {
 }
 
 // Publish the references recorded during inference: keep one per span, zonk
-// each receiver through the final substitution and convert it, then sort by
+// each accessed record through the final substitution and convert it, then sort by
 // span as annotations are sorted.
 fn publish_references(st: State) -> List(ResolvedReference) {
   st.references
@@ -5005,16 +5019,16 @@ fn publish_reference(st: State, reference: Reference) -> ResolvedReference {
 
 fn publish_resolution(st: State, resolved: Resolved) -> Resolution {
   case resolved {
-    ResolvedField(receiver, label) ->
-      RecordField(to_public(zonk(st, receiver)), label)
+    ResolvedField(record, label) ->
+      RecordField(to_public(zonk(st, record)), label)
     ResolvedOrigin(Origin(module, name, kind)) ->
       case kind {
-        FunctionKind -> ModuleFunction(module, name)
+        FunctionKind -> ModuleFn(module, name)
         ConstantKind -> ModuleConstant(module, name)
         ConstructorKind -> Constructor(module, name)
       }
-    ResolvedLocal(name) -> LocalValue(name)
-    ResolvedDeferred -> Unresolved(UnknownReceiverType)
+    ResolvedLocal(name) -> LocalVariable(name)
+    ResolvedDeferred -> Unresolved(RecordAccessUnknownType)
   }
 }
 
