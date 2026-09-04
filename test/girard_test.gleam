@@ -559,6 +559,22 @@ pub fn labelled_function_call_test() {
   |> should.equal("fn(Int) -> Int")
 }
 
+pub fn mutually_recursive_labelled_call_test() {
+  // A call to a sibling in the same strongly-connected component reads the
+  // callee's labels off the placeholder entry `prereg_def` installed for it,
+  // before either body is walked — so a definition's field map has to be
+  // installed with its value rather than ahead of every definition.
+  let source =
+    "pub fn even(n n: Int, tag tag: String) -> String {\n"
+    <> "  case n {\n    0 -> tag\n    _ -> odd(tag: tag, n: n - 1)\n  }\n"
+    <> "}\n"
+    <> "pub fn odd(n n: Int, tag tag: String) -> String {\n"
+    <> "  case n {\n    0 -> tag\n    _ -> even(tag: tag, n: n - 1)\n  }\n"
+    <> "}"
+  signature(source, "even")
+  |> should.equal("fn(Int, String) -> String")
+}
+
 pub fn spread_pattern_test() {
   let source =
     "pub type User { User(name: String, age: Int) }\n"
