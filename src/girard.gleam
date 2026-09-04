@@ -3012,9 +3012,11 @@ type Access {
   // Carries the accessed record's nominal type, live — the reference publishes it
   // zonked, so later unification still refines it.
   Field(record: ty.Type)
-  // A module export: the scope entry the interface holds for it, whose variant
-  // carries both the labels a call may use and the identity to publish.
-  Export(entry: ValueConstructor)
+  // A module export, by what the interface says it is: the variant carries
+  // both the labels a call may use and the identity to publish. The scheme the
+  // entry also held has been instantiated by the time the branch is read, so
+  // the branch does not carry it.
+  Export(variant: ValueVariant)
   // Neither yet: the container's type is still a variable and no module of its
   // name exports the label, so a `PendingField` was queued and no member was
   // decided here.
@@ -3078,7 +3080,7 @@ fn record_access(
 ) -> State {
   case access {
     Field(record) -> reference(st, spans, ResolvedField(record, label))
-    Export(entry) -> reference(st, spans, resolved_value(label, entry.variant))
+    Export(variant) -> reference(st, spans, resolved_value(label, variant))
     Deferred -> reference(st, spans, ResolvedDeferred)
   }
 }
@@ -3113,7 +3115,7 @@ fn module_export(
   entry: ValueConstructor,
 ) -> Result(#(ty.Type, Access, State), Error) {
   let #(type_, st) = instantiate(st, entry.scheme)
-  Ok(#(type_, Export(entry), st))
+  Ok(#(type_, Export(entry.variant), st))
 }
 
 // Defer `container.label` until inference fixes the container's type.
@@ -3420,7 +3422,7 @@ fn infer_callee(
         label,
       ))
       let labels = case access {
-        Export(entry) -> field_map(entry.variant)
+        Export(variant) -> field_map(variant)
         Field(_) | Deferred -> Error(Nil)
       }
       Ok(#(type_, labels, record(st, span(function), type_)))
