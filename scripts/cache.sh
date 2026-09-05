@@ -196,18 +196,43 @@ select_pkgs() {
 }
 
 # Reconstruct one cached package's closure under $stage as symlinks into the
-# pool (zero-copy), and print the packages-root. Empty if it is not cached.
+# pool (zero-copy), and print the packages-root. Fails, printing why, if the
+# closure cannot be staged whole.
+#
+# Whole is the point. A closure staged with a hole in it still runs: girard just
+# walks fewer modules, and if the hole is the root package it walks none at all
+# and reports a confident zero — zero mismatches, zero unresolved references.
+# Nothing downstream can tell that apart from a package that is genuinely clean,
+# so a truncated or corrupt cache would certify itself. Every member the
+# manifest names must therefore be in the pool and must link, and the root's own
+# `src/` must be there when the staging is done; anything less takes the
+# callers' `missing` branch instead of a result.
 stage_closure() {
   local pkg="$1" stage="$2" pkgroot member name
-  [ -f "$manifest_dir/$pkg.txt" ] || return 1
+  local manifest="$manifest_dir/$pkg.txt"
+  if [ ! -s "$manifest" ]; then
+    printf 'stage %s: no manifest\n' "$pkg" >&2
+    return 1
+  fi
   pkgroot="$stage/$pkg"
   rm -rf "$pkgroot"
-  mkdir -p "$pkgroot"
+  mkdir -p "$pkgroot" || return 1
   while IFS= read -r member; do
     [ -z "$member" ] && continue
     name="${member%@*}"
-    [ -d "$pool/$member" ] && ln -sfn "$pool/$member" "$pkgroot/$name"
-  done <"$manifest_dir/$pkg.txt"
+    if [ ! -d "$pool/$member/src" ]; then
+      printf 'stage %s: pool entry %s missing from the cache\n' "$pkg" "$member" >&2
+      return 1
+    fi
+    if ! ln -sfn "$pool/$member" "$pkgroot/$name"; then
+      printf 'stage %s: could not link pool entry %s\n' "$pkg" "$member" >&2
+      return 1
+    fi
+  done <"$manifest"
+  if [ ! -d "$pkgroot/$pkg/src" ]; then
+    printf 'stage %s: closure names no source for the package itself\n' "$pkg" >&2
+    return 1
+  fi
   printf '%s' "$pkgroot"
 }
 
@@ -230,11 +255,10 @@ cmd_resweep() {
   for pkg in $pkgs; do
     pkg="$(printf '%s' "$pkg" | tr -d '[:space:]')"
     [ -z "$pkg" ] && continue
-    if [ ! -f "$manifest_dir/$pkg.txt" ] || [ ! -f "$oracle_dir/$pkg.json" ]; then
-      printf '%s\tmissing\tnot in cache\n' "$pkg" >>"$results"
+    if [ ! -f "$oracle_dir/$pkg.json" ] || ! pkgroot="$(stage_closure "$pkg" "$stage")"; then
+      printf '%s\tmissing\tnot in cache, or closure incomplete\n' "$pkg" >>"$results"
       continue
     fi
-    pkgroot="$(stage_closure "$pkg" "$stage")"
 
     summary="$( cd "$root" && gleam run -m girard/diff "$pkg" "$oracle_dir/$pkg.json" "$pkgroot" 2>/dev/null | grep -E '^diff ' | tail -1 )"
     if [ -n "$summary" ]; then
@@ -278,7 +302,7 @@ cmd_census() {
     pkg="$(printf '%s' "$pkg" | tr -d '[:space:]')"
     [ -z "$pkg" ] && continue
     if ! pkgroot="$(stage_closure "$pkg" "$stage")"; then
-      printf '%s\tmissing\tnot in cache\n' "$pkg" >>"$results"
+      printf '%s\tmissing\t\tnot in cache, or closure incomplete\n' "$pkg" >>"$results"
       continue
     fi
 
