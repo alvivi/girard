@@ -7,13 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `annotate`, `annotate_module`, `annotate_with_cache` and `annotate_package`
+  now return the resolutions 2.2.0 introduced: `AnnotatedModule` has a
+  `resolutions` field, and the `analyse*` family and the `Analysis` type are
+  removed. A consumer that read `analysis.annotated` and
+  `analysis.resolutions` reads the one record; a consumer of `annotate*` that
+  only reads fields is unaffected. Constructing or fully destructuring
+  `AnnotatedModule` must name the new field:
+
+  ```gleam
+  // Before
+  let assert Ok(analysis) = girard.analyse(source, options)
+  analysis.annotated.expressions
+  analysis.resolutions
+
+  // After
+  let assert Ok(annotated) = girard.annotate(source, options)
+  annotated.expressions
+  annotated.resolutions
+  ```
+
 ### Fixed
 
 - A skipped definition no longer breaks calls to the import it shadows. In
   best-effort mode the skipped definition's argument labels outlived it, so a
   later call using the import's own labels was wrongly rejected with
   `UnknownLabel` or `AmbiguousCall`. Those calls now type.
-- `analyse*` now names the module a call was typed against. Where `a`'s own
+- A resolution now names the module a call was typed against. Where `a`'s own
   `g` was skipped and shadowed an `import imported.{g}`, an importer calling
   `a.g` was told it had called `a.g` rather than `imported.g`.
 - A lambda that is piped into, called directly, given as a `use` callback or

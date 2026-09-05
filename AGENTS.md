@@ -11,14 +11,13 @@ and reports the inferred type of every expression by source span together with
 each top-level definition's signature.
 
 The public API accepts source text, a pre-parsed `glance.Module`, or a whole
-package. The `analyse*` family additionally reports **which member each
-reference resolved to** — a record field, a module function, constant or
-constructor under the module's canonical path, a local variable, or unresolved —
-for every field access and every bare name in call position; `annotate*` are
-those functions with the resolutions taken off. Imported modules are resolved
-through an injectable resolver. Package annotation is best-effort per
-definition: definitions that cannot be typed and their dependants are reported
-as skipped while independent definitions are still annotated.
+package. Every result also reports **which member each reference resolved to** —
+a record field, a module function, constant or constructor under the module's
+canonical path, a local variable, or unresolved — for every field access and
+every bare name in call position. Imported modules are resolved through an
+injectable resolver. Package annotation is best-effort per definition:
+definitions that cannot be typed and their dependants are reported as skipped
+while independent definitions are still annotated.
 
 ## Build and Test
 
@@ -55,7 +54,7 @@ API.
 
 | File | Responsibility |
 |---|---|
-| `src/girard.gleam` | The whole public API and inference engine, in labelled comment sections, public API first: source/AST/package entry points and CLI; the public `Type`, `Scheme`, and inference `Error` vocabulary, and the `Resolution` / `ResolvedReference` / `Analysis` resolution vocabulary; Hindley-Milner inference (state, substitutions, environments and schemes, unification, generalization/instantiation, expression/pattern/statement inference, type hydration, module interfaces); the built-in prelude type constructors; and the type printer |
+| `src/girard.gleam` | The whole public API and inference engine, in labelled comment sections, public API first: source/AST/package entry points and CLI; the public `Type`, `Scheme`, and inference `Error` vocabulary, and the `Resolution` / `ResolvedReference` resolution vocabulary; Hindley-Milner inference (state, substitutions, environments and schemes, unification, generalization/instantiation, expression/pattern/statement inference, type hydration, module interfaces); the built-in prelude type constructors; and the type printer |
 | `src/girard/internal/ty.gleam` | The inference-side `Type` and `Scheme`: the public vocabulary plus the narrowed variant on `Named`, converted to the public types when a result or an error is published |
 | `src/girard/internal/scc.gleam` | Tarjan strongly-connected components for dependency-ordered inference |
 | `src/girard/internal/reference.gleam` | Lexically scoped reference collection for the top-level definition graph |
@@ -141,14 +140,15 @@ labels and identity by replacing its entry, which is all that binding a name
 does. `infer_field_access` and `infer_callee` record a `Reference` into
 `State.references` for every field access and every bare name in call position;
 `publish_references` zonks each accessed record, converts it and keeps one
-entry per span, which is what `Analysis.resolutions` promises: no walk produces
-a duplicate today, but the guarantee is the API's rather than any one walk's.
+entry per span, which is what `AnnotatedModule.resolutions` promises: no walk
+produces a duplicate today, but the guarantee is the API's rather than any one
+walk's.
 
-Absence has exactly three shapes. A definition in `Analysis.skipped` contributes
-no references, because `best_effort_group` discards its component's whole
-`State`. A definition dropped for the other build target is neither skipped nor
-walked. And an access girard deferred as a `PendingField` and read only once
-later inference fixed the record's type publishes
+Absence has exactly three shapes. A definition in `ModuleResult.skipped`
+contributes no references, because `best_effort_group` discards its component's
+whole `State`. A definition dropped for the other build target is neither
+skipped nor walked. And an access girard deferred as a `PendingField` and read
+only once later inference fixed the record's type publishes
 `Unresolved(RecordAccessUnknownType)` — girard reached the field type but never
 a member at the access. That last is a tripwire as much as a result: over code
 the compiler accepts, each one is a place where girard's inference order lags

@@ -6,6 +6,11 @@
 //// ([`annotate_package`](#annotate_package)). Give it source text or a
 //// `glance` AST you parsed yourself.
 ////
+//// Every result also reports which member each reference resolved to — a
+//// record field, a module function, constant or constructor under the
+//// module's canonical path, a local variable, or unresolved — for every field
+//// access and every bare name in call position.
+////
 //// Imported modules are resolved through a [`Resolver`](#Resolver) to obtain
 //// their public interfaces.
 
@@ -30,8 +35,9 @@ import simplifile
 //
 // The vocabulary a consumer pattern-matches on: the structured `Type` and
 // its generalized `Scheme`, the inference `Error`, the per-expression
-// `Annotation` and whole-module `AnnotatedModule` results, and the
-// `Resolver` and `Target` knobs that configure a run.
+// `Annotation` and whole-module `AnnotatedModule` results, the
+// `Resolution` / `ResolvedReference` vocabulary `AnnotatedModule` carries,
+// and the `Resolver` and `Target` knobs that configure a run.
 
 /// The structured type girard infers for an expression or definition. Pattern-
 /// match on its variants to inspect an inferred type, or render it to Gleam
@@ -87,7 +93,8 @@ pub type Annotation {
 }
 
 /// Everything girard inferred for one module: each top-level definition's
-/// signature, plus the type of every expression in their bodies.
+/// signature, the type of every expression in their bodies, and what every
+/// field access and every bare name in call position resolved to.
 ///
 /// `functions` and `constants` have one entry per top-level definition — its
 /// generalized `Scheme` (a `type_` plus the ids of its quantified `Var`s).
@@ -95,6 +102,25 @@ pub type Annotation {
 /// calls, operators, sub-expressions — keyed by its `glance` source span, so
 /// you can join inferred types onto your own AST. Render any type with
 /// [`type_to_string`](#type_to_string).
+///
+/// `resolutions` is sorted by span, with one entry per span. The contract is
+/// exact: an entry is recorded for every `glance.FieldAccess` girard walked,
+/// wherever it sits, and for every bare name in call position — the callee of
+/// a call, a capture or a `use`, and a bare pipe target. Nothing else is
+/// recorded, so a name read outside call position (`let g = greet`), the
+/// constructor of a record update or of a pattern, and a tuple index have no
+/// entry. A span with no entry was therefore either not a recorded position or
+/// never walked: nothing is recorded inside a definition dropped for the other
+/// build [`Target`](#Target), and, for a record reached through
+/// [`annotate_package`](#annotate_package), nothing inside one the enclosing
+/// [`ModuleResult`](#ModuleResult)'s `skipped` names. The strict entry points
+/// return no `AnnotatedModule` at all when a definition fails, so from them
+/// every walked definition is in the record.
+///
+/// A resolution names a module by its canonical path, never the alias it was
+/// imported under. The module under analysis is named as girard was given it:
+/// its path under [`annotate_package`](#annotate_package), and `""` for a
+/// module annotated on its own — the same name its own types carry in `Named`.
 pub type AnnotatedModule {
   AnnotatedModule(
     /// Top-level function name to inferred signature scheme, in source order.
@@ -103,6 +129,9 @@ pub type AnnotatedModule {
     constants: List(#(String, Scheme)),
     /// Expression span to inferred type, sorted by start offset.
     expressions: List(Annotation),
+    /// What every field access and every bare name in call position resolved
+    /// to, sorted by span, one entry per span.
+    resolutions: List(ResolvedReference),
   )
 }
 
@@ -173,39 +202,6 @@ pub type ResolvedReference {
     label_span: glance.Span,
     container_span: glance.Span,
     resolution: Resolution,
-  )
-}
-
-/// Everything girard inferred for one module — its
-/// [`AnnotatedModule`](#AnnotatedModule) — plus what every field access and
-/// every bare name in call position resolved to, and which definitions girard
-/// declined.
-///
-/// `resolutions` is sorted by span, with one entry per span. The contract is
-/// exact: an entry is recorded for every `glance.FieldAccess` girard walked,
-/// wherever it sits, and for every bare name in call position — the callee of
-/// a call, a capture or a `use`, and a bare pipe target. Nothing else is
-/// recorded, so a name read outside call position (`let g = greet`), the
-/// constructor of a record update or of a pattern, and a tuple index have no
-/// entry. A span with no entry was therefore either not a recorded position or
-/// never walked: a definition in `skipped` contributes none, and neither does
-/// one dropped for the other build [`Target`](#Target).
-///
-/// A resolution names a module by its canonical path, never the alias it was
-/// imported under. The module under analysis is named as girard was given it:
-/// its path under [`analyse_package`](#analyse_package), and `""` for a module
-/// analysed on its own — the same name its own types carry in `Named`.
-///
-/// `skipped` names each top-level function or constant girard declined, with
-/// the error that declined it. It is always empty from
-/// [`analyse`](#analyse), [`analyse_module`](#analyse_module) and
-/// [`analyse_with_cache`](#analyse_with_cache), which fail the whole module
-/// instead; see [`analyse_package`](#analyse_package) for the best-effort rule.
-pub type Analysis {
-  Analysis(
-    annotated: AnnotatedModule,
-    resolutions: List(ResolvedReference),
-    skipped: List(#(String, Error)),
   )
 }
 
@@ -306,8 +302,8 @@ fn first_readable(paths: List(String)) -> Result(String, Nil) {
 // Annotating a module
 //
 // The primary entry points. Annotate source text or a pre-parsed `glance`
-// module, inferring every expression and top-level signature, or return the
-// first inference error.
+// module, inferring every expression and top-level signature and resolving
+// every reference, or return the first inference error.
 
 /// Annotate a Gleam source string: parse it with `glance`, then annotate as
 /// [`annotate_module`](#annotate_module). Returns the inferred error if the
@@ -316,16 +312,8 @@ pub fn annotate(
   source: String,
   options: Options,
 ) -> Result(AnnotatedModule, Error) {
-  analyse(source, options) |> result.map(fn(analysis) { analysis.annotated })
-}
-
-/// Analyse a Gleam source string: parse it with `glance`, then analyse as
-/// [`analyse_module`](#analyse_module). This is [`annotate`](#annotate) plus
-/// what every field access and every bare name in call position resolved to —
-/// see [`Analysis`](#Analysis) for the exact contract.
-pub fn analyse(source: String, options: Options) -> Result(Analysis, Error) {
   use module <- result.try(parse(source))
-  analyse_module(module, options)
+  annotate_module(module, options)
 }
 
 /// Annotate an already-parsed `glance.Module`. Use this when you have parsed the
@@ -338,22 +326,7 @@ pub fn annotate_module(
   module: glance.Module,
   options: Options,
 ) -> Result(AnnotatedModule, Error) {
-  analyse_module(module, options)
-  |> result.map(fn(analysis) { analysis.annotated })
-}
-
-/// Analyse an already-parsed `glance.Module`, as
-/// [`annotate_module`](#annotate_module) annotates one, and additionally report
-/// what every field access and every bare name in call position resolved to.
-/// The spans in [`ResolvedReference`](#ResolvedReference) are glance's, so they
-/// line up with your own AST's nodes. See [`Analysis`](#Analysis) for the exact
-/// contract; `skipped` is always empty here, because a module that does not
-/// type is an error rather than a partial result.
-pub fn analyse_module(
-  module: glance.Module,
-  options: Options,
-) -> Result(Analysis, Error) {
-  use #(#(env, st), _interface, _cache, skipped) <- result.try(infer_module(
+  use #(#(env, st), _interface, _cache, _skipped) <- result.try(infer_module(
     options,
     set.new(),
     dict.new(),
@@ -361,7 +334,7 @@ pub fn analyse_module(
     module,
     best_effort: False,
   ))
-  Ok(Analysis(render(module, env, st), publish_references(st), skipped))
+  Ok(render(module, env, st))
 }
 
 fn parse(source: String) -> Result(glance.Module, Error) {
@@ -411,19 +384,6 @@ pub fn annotate_with_cache(
   options: Options,
   cache: Cache,
 ) -> #(Result(AnnotatedModule, Error), Cache) {
-  let #(analysis, cache) = analyse_with_cache(source, options, cache)
-  #(result.map(analysis, fn(analysis) { analysis.annotated }), cache)
-}
-
-/// Analyse a source string like [`analyse`](#analyse), but reuse and extend
-/// `cache` exactly as [`annotate_with_cache`](#annotate_with_cache) does. The
-/// cache holds imported modules' interfaces, which the resolutions of the
-/// module under analysis are read from; it carries no resolutions of its own.
-pub fn analyse_with_cache(
-  source: String,
-  options: Options,
-  cache: Cache,
-) -> #(Result(Analysis, Error), Cache) {
   case parse(source) {
     Error(error) -> #(Error(error), cache)
     Ok(module) ->
@@ -438,8 +398,8 @@ pub fn analyse_with_cache(
         )
       {
         Error(error) -> #(Error(error), cache)
-        Ok(#(#(env, st), _interface, interfaces, skipped)) -> #(
-          Ok(Analysis(render(module, env, st), publish_references(st), skipped)),
+        Ok(#(#(env, st), _interface, interfaces, _skipped)) -> #(
+          Ok(render(module, env, st)),
           Cache(interfaces),
         )
       }
@@ -496,26 +456,6 @@ pub fn annotate_package(
   modules: List(#(String, glance.Module)),
   options: Options,
 ) -> dict.Dict(String, ModuleResult) {
-  analyse_package(modules, options)
-  |> dict.map_values(fn(_, analysis) {
-    ModuleResult(analysis.annotated, analysis.skipped)
-  })
-}
-
-/// Analyse every module in a package in one pass, as
-/// [`annotate_package`](#annotate_package) annotates one, and additionally
-/// report what every field access and every bare name in call position
-/// resolved to — see [`Analysis`](#Analysis) for the exact contract.
-///
-/// Best-effort per definition, on the same rule: a top-level function or
-/// constant that does not type — along with any that depend on it — is reported
-/// in that module's `skipped` rather than failing the module. A skipped
-/// definition contributes no resolutions, so no reference falls inside its
-/// span, while every other definition is still analysed.
-pub fn analyse_package(
-  modules: List(#(String, glance.Module)),
-  options: Options,
-) -> dict.Dict(String, Analysis) {
   let #(results, _cache) =
     list.fold(modules, #(dict.new(), dict.new()), fn(acc, entry) {
       let #(results, cache) = acc
@@ -531,8 +471,7 @@ pub fn analyse_package(
           // Seed this module's own interface so a later module that imports it
           // hits the cache instead of re-resolving it through the resolver.
           let cache = dict.insert(cache, path, interface)
-          let result =
-            Analysis(render(module, env, st), publish_references(st), skipped)
+          let result = ModuleResult(render(module, env, st), skipped)
           #(dict.insert(results, path, result), cache)
         }
       }
@@ -5022,6 +4961,7 @@ fn render(module: glance.Module, env: Env, st: State) -> AnnotatedModule {
     functions: collect_schemes(functions, env),
     constants: collect_schemes(constants, env),
     expressions: sort_by_span(expressions),
+    resolutions: publish_references(st),
   )
 }
 
@@ -5035,7 +4975,7 @@ fn publish_references(st: State) -> List(ResolvedReference) {
   |> sort_references
 }
 
-// `Analysis.resolutions` promises one entry per span, so this is where that
+// `AnnotatedModule.resolutions` promises one entry per span, so this is where that
 // promise is kept, whoever produces a duplicate. No inference path does today
 // — `infer_pipe`'s arity probe used to, and now runs on a state it throws away
 // — but the guarantee is the API's, not one walk's, so it is enforced rather

@@ -1499,8 +1499,8 @@ fn module_export(resolution: girard.Resolution) -> Option(#(String, String)) {
   }
 }
 
-// There is at most one reference per span — `Analysis.resolutions` holds one
-// entry per span — so finding the first is finding the only one.
+// There is at most one reference per span — `AnnotatedModule.resolutions`
+// holds one entry per span — so finding the first is finding the only one.
 fn resolution_at(
   fixture: Fixture,
   path: String,

@@ -13,7 +13,7 @@ function's inferred return type — reported by the compiler in
 reading is the corpus's mechanism, because it is the only question both sides
 answer.
 
-girard *does* report the decision directly, in `analyse(...).resolutions`, and
+girard *does* report the decision directly, in `annotate(...).resolutions`, and
 the suite asserts it beside the type: the resolution at each contested access
 must be the branch girard's own return type decodes to, and a module answer must
 name the module's canonical path. That last is the one thing no type answer can

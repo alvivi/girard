@@ -74,8 +74,8 @@ double: fn(Int) -> Int
 `constants`) and every expression's `Type` keyed by its source span (in
 `expressions`). These are structured [`girard`](src/girard.gleam) values —
 pattern-match on `Named`/`Fn`/`Var`/`Tuple`, or render one with
-`girard.type_to_string`. `girard.analyse` returns the same annotations plus
-what every reference resolved to — see [Resolving
+`girard.type_to_string`. The same record also reports what every reference
+resolved to, in `resolutions` — see [Resolving
 references](#resolving-references).
 
 ### Command line
@@ -140,11 +140,10 @@ module you pass is taken pre-parsed.)
 
 ### Resolving references
 
-`girard.analyse` — and `analyse_module`, `analyse_with_cache` and
-`analyse_package`, the twins of the four `annotate*` functions — reports
-everything `annotate` does *and* which member each reference resolved to. This
-is the question a linter or a rename asks: given `printer.println(…)`, is
-`printer` a record in scope or the module the import bound?
+Every `AnnotatedModule` also says which member each reference resolved to, in
+`resolutions`. This is the question a linter or a rename asks: given
+`printer.println(…)`, is `printer` a record in scope or the module the import
+bound?
 
 ```gleam
 import gleam/io as printer
@@ -171,8 +170,8 @@ import girard
 import gleam/list
 
 pub fn members(source: String) -> List(String) {
-  let assert Ok(analysis) = girard.analyse(source, girard.default_options())
-  list.map(analysis.resolutions, fn(reference) {
+  let assert Ok(annotated) = girard.annotate(source, girard.default_options())
+  list.map(annotated.resolutions, fn(reference) {
     case reference.resolution {
       girard.RecordField(record, label) ->
         girard.type_to_string(record) <> "." <> label
@@ -195,7 +194,7 @@ it sits, and for **every bare name in call position** — the callee of a call, 
 capture or a `use`, and a bare pipe target. Nothing else, so a name read outside
 call position (`let g = greet`), the constructor of a record update or of a
 pattern, and a tuple index have no entry. A span with no entry was therefore
-either not a recorded position or never walked: a definition `analyse_package`
+either not a recorded position or never walked: a definition `annotate_package`
 reports as `skipped` contributes none, and neither does one dropped for the
 other build target.
 

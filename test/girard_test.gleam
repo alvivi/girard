@@ -1951,8 +1951,8 @@ fn references(
   source: String,
   modules: List(#(String, String)),
 ) -> List(girard.ResolvedReference) {
-  let assert Ok(analysis) = girard.analyse(source, options_with(modules))
-  analysis.resolutions
+  let assert Ok(annotated) = girard.annotate(source, options_with(modules))
+  annotated.resolutions
 }
 
 // The one reference recorded at `span`. There is at most one — `resolutions`
@@ -2065,7 +2065,7 @@ pub fn prelude_constructor_resolves_to_gleam_test() {
 
 pub fn top_level_callee_resolves_to_module_function_test() {
   // A bare call on this module's own function names it under the module girard
-  // was given, which is `""` for a module analysed on its own.
+  // was given, which is `""` for a module annotated on its own.
   let source = "pub fn run() { helper(1) }\npub fn helper(n) { n }"
   resolution_at(source, [], span_of(source, "helper"))
   |> should.equal(girard.ModuleFn("", "helper"))
@@ -2212,8 +2212,8 @@ fn should_read_box_value(source: String) -> Nil {
 // records the callee's own return over it — so the count is only meaningful
 // against the same shape without the seeding.
 fn annotations_at(source: String, span: glance.Span) -> List(String) {
-  let assert Ok(analysis) = girard.analyse(source, girard.default_options())
-  analysis.annotated.expressions
+  let assert Ok(annotated) = girard.annotate(source, girard.default_options())
+  annotated.expressions
   |> list.filter(fn(a) { a.span == span })
   |> list.map(fn(a) { girard.type_to_string(a.type_) })
 }
@@ -2374,15 +2374,15 @@ pub fn skipped_definition_has_no_references_test() {
     <> "pub fn bad(p: Person) { p.name + 1 }"
   let options =
     girard.default_options() |> girard.with_resolver(fn(_) { Error(Nil) })
-  let assert Ok(analysis) =
+  let assert Ok(result) =
     dict.get(
-      girard.analyse_package(parse_package([#("app/m", source)]), options),
+      girard.annotate_package(parse_package([#("app/m", source)]), options),
       "app/m",
     )
 
   let assert Ok(girard.TypeMismatch(_, _)) =
-    list.key_find(analysis.skipped, "bad")
-  list.map(analysis.resolutions, fn(r) { r.span })
+    list.key_find(result.skipped, "bad")
+  list.map(result.annotated.resolutions, fn(r) { r.span })
   |> should.equal([span_of(source, "p.name")])
 }
 
@@ -2477,14 +2477,16 @@ pub fn skipped_definition_exports_the_shadowed_import_identity_test() {
     ),
     #("app/b", b),
   ]
-  let assert Ok(analysis) =
+  let assert Ok(result) =
     dict.get(
-      girard.analyse_package(parse_package(sources), options_with([])),
+      girard.annotate_package(parse_package(sources), options_with([])),
       "app/b",
     )
 
   let assert Ok(reference) =
-    list.find(analysis.resolutions, fn(r) { r.span == span_of(b, "a.g") })
+    list.find(result.annotated.resolutions, fn(r) {
+      r.span == span_of(b, "a.g")
+    })
   reference.resolution
   |> should.equal(girard.ModuleFn("app/imported", "g"))
 }
@@ -2504,18 +2506,20 @@ pub fn skipped_definition_keeps_the_shadowed_import_origin_test() {
     <> "pub fn g() { 1 + \"oops\" }\n"
     <> "pub fn uses() { g() }"
   let modules = [#("imported", "pub fn g() -> String { \"x\" }")]
-  let assert Ok(analysis) =
+  let assert Ok(result) =
     dict.get(
-      girard.analyse_package(
+      girard.annotate_package(
         parse_package([#("app/m", source)]),
         options_with(modules),
       ),
       "app/m",
     )
 
-  list.key_find(analysis.skipped, "g") |> should.be_ok
+  list.key_find(result.skipped, "g") |> should.be_ok
   let assert Ok(reference) =
-    list.find(analysis.resolutions, fn(r) { r.span == last_span(source, "g") })
+    list.find(result.annotated.resolutions, fn(r) {
+      r.span == last_span(source, "g")
+    })
   reference.resolution
   |> should.equal(girard.ModuleFn("imported", "g"))
 }
@@ -2528,50 +2532,47 @@ pub fn off_target_definition_has_no_references_test() {
     <> "@target(javascript)\n"
     <> "pub fn js(p: Person) { p.name }\n"
     <> "pub fn erl(p: Person) { p.name }"
-  let assert Ok(analysis) = girard.analyse(source, girard.default_options())
+  let result = package_result([#("app/m", source)], "app/m")
 
-  analysis.skipped |> should.equal([])
-  list.map(analysis.resolutions, fn(r) { r.span })
+  result.skipped |> should.equal([])
+  list.map(result.annotated.resolutions, fn(r) { r.span })
   |> should.equal([last_span(source, "p.name")])
 }
 
-pub fn annotate_matches_analyse_test() {
-  // `annotate*` are `analyse*` with the resolutions taken off, so the two
-  // families cannot drift.
+pub fn resolutions_are_returned_by_every_entry_point_test() {
+  // One family now, so the resolutions ride on every result: the three strict
+  // entry points return the identical record, and the package's `annotated`
+  // carries them too — under the package's own module name, which is the only
+  // difference between the two.
   let source =
     "pub type Person {\n  Person(name: String)\n}\n"
     <> "pub fn f(p: Person) { p.name }"
-  let assert Ok(analysis) = girard.analyse(source, girard.default_options())
-  girard.annotate(source, girard.default_options())
-  |> should.equal(Ok(analysis.annotated))
-
+  let options = options_with([])
+  let assert Ok(module) = glance.module(source)
+  let assert Ok(annotated) = girard.annotate(source, options)
   let #(cached, _) =
-    girard.analyse_with_cache(
-      source,
-      girard.default_options(),
-      girard.new_cache(),
-    )
-  let #(annotated, _) =
-    girard.annotate_with_cache(
-      source,
-      girard.default_options(),
-      girard.new_cache(),
-    )
-  let assert Ok(cached) = cached
-  annotated |> should.equal(Ok(cached.annotated))
+    girard.annotate_with_cache(source, options, girard.new_cache())
 
-  let sources = [
-    #("app/m", "pub fn good() -> Int { 1 }\npub fn bad() { 1 + \"oops\" }"),
-  ]
-  let options =
-    girard.default_options() |> girard.with_resolver(fn(_) { Error(Nil) })
-  let parsed = parse_package(sources)
-  girard.annotate_package(parsed, options)
-  |> should.equal(
-    dict.map_values(girard.analyse_package(parsed, options), fn(_, analysis) {
-      girard.ModuleResult(analysis.annotated, analysis.skipped)
-    }),
-  )
+  annotated.resolutions
+  |> list.map(fn(r) { #(r.span, r.resolution) })
+  |> should.equal([
+    #(
+      span_of(source, "p.name"),
+      girard.RecordField(girard.Named("", "Person", []), "name"),
+    ),
+  ])
+  girard.annotate_module(module, options) |> should.equal(Ok(annotated))
+  cached |> should.equal(Ok(annotated))
+
+  let from_package = package_result([#("app/m", source)], "app/m")
+  from_package.annotated.resolutions
+  |> list.map(fn(r) { #(r.span, r.resolution) })
+  |> should.equal([
+    #(
+      span_of(source, "p.name"),
+      girard.RecordField(girard.Named("app/m", "Person", []), "name"),
+    ),
+  ])
 }
 
 // The census
