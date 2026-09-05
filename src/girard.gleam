@@ -5019,7 +5019,9 @@ fn hydrate_threaded(
 // definition's scheme, and publishes a dropped definition under the scheme of
 // a same-named unqualified import.
 fn render(inferred: Inferred) -> AnnotatedModule {
-  let Inferred(functions:, constants:, env:, st:, dropped:, ..) = inferred
+  let Inferred(functions:, constants:, env:, st:, skipped:, dropped:, ..) =
+    inferred
+  let declined = set.from_list(list.map(skipped, fn(entry) { entry.0 }))
 
   // `st.annotations` is in reverse discovery order. Restore discovery order
   // before the stable span sort, so annotations sharing a span retain the order
@@ -5031,8 +5033,8 @@ fn render(inferred: Inferred) -> AnnotatedModule {
     })
 
   AnnotatedModule(
-    functions: collect_schemes(functions, env),
-    constants: collect_schemes(constants, env),
+    functions: collect_schemes(functions, env, declined),
+    constants: collect_schemes(constants, env, declined),
     expressions: sort_by_span(expressions),
     resolutions: publish_references(st),
     dropped:,
@@ -5107,13 +5109,27 @@ fn sort_dropped(dropped: List(Dropped)) -> List(Dropped) {
 }
 
 // The inferred (generalized) scheme of each definition, in source order.
-// Best-effort inference leaves skipped definitions unbound, so omit them here.
-fn collect_schemes(defs: List(Def), env: Env) -> List(#(String, Scheme)) {
+//
+// Best-effort inference leaves a skipped definition unbound, so a lookup is
+// usually enough to omit it — but its name is only unbound if nothing *else*
+// binds it. One that shadows a same-named unqualified import falls back to
+// the import's entry, so it would be published under the import's scheme,
+// which is the same mistake `render` avoids for a dropped definition. The
+// names inference declined are therefore dropped by name.
+fn collect_schemes(
+  defs: List(Def),
+  env: Env,
+  declined: Set(String),
+) -> List(#(String, Scheme)) {
   list.filter_map(defs, fn(def) {
     let name = def_name(def)
-    case lookup(env, name) {
-      Ok(scheme) -> Ok(#(name, scheme_to_public(scheme)))
-      Error(_) -> Error(Nil)
+    case set.contains(declined, name) {
+      True -> Error(Nil)
+      False ->
+        case lookup(env, name) {
+          Ok(scheme) -> Ok(#(name, scheme_to_public(scheme)))
+          Error(_) -> Error(Nil)
+        }
     }
   })
 }

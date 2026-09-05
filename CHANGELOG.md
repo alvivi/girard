@@ -57,6 +57,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the active target's signature; the inactive one was listed too, with the
   active one's signature. A definition dropped for the target no longer
   appears under a same-named unqualified import's signature either.
+- A definition in a `ModuleResult`'s `skipped` no longer appears in
+  `annotated.functions` under the signature of the unqualified import it
+  shadows. `import imported.{g}` with a local `pub fn g` that does not type
+  listed `g` in both `skipped` and `functions`, holding `imported`'s scheme,
+  against `ModuleResult`'s own promise that a skipped definition is absent from
+  `annotated`. The names inference declined are dropped by name now, rather
+  than by a lookup that only fails when nothing else binds the name.
 - A skipped definition no longer breaks calls to the import it shadows. In
   best-effort mode the skipped definition's argument labels outlived it, so a
   later call using the import's own labels was wrongly rejected with

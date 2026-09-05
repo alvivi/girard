@@ -146,7 +146,10 @@ walk's.
 
 Absence has exactly three shapes. A definition in `ModuleResult.skipped`
 contributes no references, because `best_effort_group` discards its component's
-whole `State`. A definition dropped for the other build target is listed in
+whole `State`, and no signature: `render` drops the declined names by name,
+because a lookup only fails to find a skipped definition when nothing *else*
+binds it, and an unqualified import it shadows does. A definition dropped for
+the other build target is listed in
 `AnnotatedModule.dropped` with its span, and is neither skipped nor walked:
 `for_target` returns the functions and constants it filtered out beside the
 filtered module, and `Inferred` carries the definitions inference walked, which

@@ -2540,6 +2540,33 @@ pub fn skipped_definition_keeps_the_shadowed_import_origin_test() {
   |> should.equal(girard.ModuleFn("imported", "g"))
 }
 
+pub fn skipped_definition_does_not_borrow_an_import_test() {
+  // The twin of `dropped_definition_does_not_borrow_an_import_test`. A
+  // definition girard declines is looked up like any other, and it is only
+  // absent from `functions` because best-effort inference left its name
+  // unbound — which it is not when the definition shadows an unqualified
+  // import of the same name. `g` was published under the import's signature
+  // while also being named in `skipped`, contradicting `ModuleResult`, so the
+  // names inference declined are dropped by name rather than by lookup.
+  let source =
+    "import imported.{g}\n"
+    <> "pub fn g() { 1 + \"oops\" }\n"
+    <> "pub fn uses() { g() }"
+  let modules = [#("imported", "pub fn g() -> String { \"x\" }")]
+  let assert Ok(result) =
+    dict.get(
+      girard.annotate_package(
+        parse_package([#("app/m", source)]),
+        options_with(modules),
+      ),
+      "app/m",
+    )
+
+  list.key_find(result.skipped, "g") |> should.be_ok
+  list.key_find(result.annotated.functions, "g") |> should.be_error
+  list.map(result.annotated.functions, fn(f) { f.0 }) |> should.equal(["uses"])
+}
+
 pub fn off_target_definition_is_dropped_test() {
   // A definition compiled only for the other target is dropped before
   // inference: it is not skipped, nothing walks its spans, and it is named in
