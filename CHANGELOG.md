@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `AnnotatedModule.dropped`: the name and span of every top-level function or
+  constant left out for the other build `Target`. A span with no annotation
+  and no resolution is now one of three things a consumer can tell apart: not
+  a recorded position, inside a definition `skipped` with its error, or inside
+  one `dropped` for the target.
+
+### Changed
+
+- `annotate`, `annotate_module`, `annotate_with_cache` and `annotate_package`
+  now return the resolutions 2.2.0 introduced: `AnnotatedModule` has a
+  `resolutions` field. Their signatures are otherwise unchanged, so a consumer
+  that only reads fields off the result is unaffected; constructing or fully
+  destructuring `AnnotatedModule` must name the two new fields, `resolutions`
+  and the `dropped` above.
+- `Resolution`'s `RecordField` names the accessed value's type `receiver`
+  rather than `record`. Positional matches (`RecordField(type_, label)`) are
+  unaffected; only a labelled access or update needs the new name. The variant
+  holds a type, not the accessed expression the compiler's own `record` field
+  holds, and `record` otherwise had to name both the whole access and one half
+  of it.
+
 ### Removed
 
 - `analyse`, `analyse_module`, `analyse_with_cache` and `analyse_package`, and
@@ -27,29 +50,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   annotated.expressions
   annotated.resolutions
   ```
-
-### Changed
-
-- `annotate`, `annotate_module`, `annotate_with_cache` and `annotate_package`
-  now return the resolutions 2.2.0 introduced: `AnnotatedModule` has a
-  `resolutions` field. Their signatures are otherwise unchanged, so a consumer
-  that only reads fields off the result is unaffected; constructing or fully
-  destructuring `AnnotatedModule` must name the two new fields (`resolutions`,
-  and the `dropped` below).
-- `Resolution`'s `RecordField` names the accessed value's type `receiver`
-  rather than `record`. Positional matches (`RecordField(type_, label)`) are
-  unaffected; only a labelled access or update needs the new name. The variant
-  holds a type, not the accessed expression the compiler's own `record` field
-  holds, and `record` otherwise had to name both the whole access and one half
-  of it.
-
-### Added
-
-- `AnnotatedModule.dropped`: the name and span of every top-level function or
-  constant left out for the other build `Target`. A span with no annotation
-  and no resolution is now one of three things a consumer can tell apart: not
-  a recorded position, inside a definition `skipped` with its error, or inside
-  one `dropped` for the target.
 
 ### Fixed
 
