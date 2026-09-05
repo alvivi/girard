@@ -194,8 +194,9 @@ it sits, and for **every bare name in call position** — the callee of a call, 
 capture or a `use`, and a bare pipe target. Nothing else, so a name read outside
 call position (`let g = greet`), the constructor of a record update or of a
 pattern, and a tuple index have no entry. A span with no entry was therefore
-either not a recorded position or never walked: a definition `annotate_package`
-reports as `skipped` contributes none, and neither does one `dropped` names.
+either not a recorded position or one girard never walked — see [Definitions
+dropped for the target](#definitions-dropped-for-the-target) for the three
+shapes that takes.
 
 ### Definitions dropped for the target
 
@@ -212,9 +213,10 @@ pub fn greet() { "hi" }
 ```
 
 That closes the last gap in reading an absence. A span with no annotation and
-no resolution is one of three things, and a consumer can now tell them apart:
-not a recorded position at all, inside a definition `skipped` (with the error
-that declined it), or inside one `dropped` for the target.
+no resolution is one of exactly three things, and a consumer can now tell them
+apart: not a recorded position at all, inside a definition `annotate_package`
+reports as `skipped` (with the error that declined it), or inside one `dropped`
+for the target.
 
 Only functions and constants are listed. `@target` drops imports, custom types
 and type aliases too, but none has a body, so no missing annotation is ever

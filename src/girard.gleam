@@ -134,8 +134,7 @@ pub type AnnotatedModule {
     /// to, sorted by span, one entry per span.
     resolutions: List(ResolvedReference),
     /// Top-level functions and constants dropped for the other build
-    /// [`Target`](#Target), with their spans, sorted by span. Nothing inside a
-    /// dropped definition's span is annotated or resolved.
+    /// [`Target`](#Target), with their spans, sorted by span.
     dropped: List(Dropped),
   )
 }
@@ -1179,11 +1178,15 @@ type InterfaceCache =
 // Everything one module's inference produced. A tuple ran out of room at four
 // elements; naming the parts also keeps the three public callers and
 // `resolve_uncached` from destructuring positionally past what each needs.
+//
+// It holds the definitions inference *walked* rather than the module they came
+// from, so `render` has no module to look a definition up in and cannot
+// publish one that was never walked. That is what the caller's own unfiltered
+// module used to let it do.
 type Inferred {
   Inferred(
-    // The target-filtered module — what inference actually walked, and so
-    // what `render` must render.
-    module: glance.Module,
+    functions: List(Def),
+    constants: List(Def),
     env: Env,
     st: State,
     interface: ModuleInterface,
@@ -1272,7 +1275,8 @@ fn infer_module(
       public_accessor_type_names(module),
     )
   Ok(Inferred(
-    module:,
+    functions:,
+    constants:,
     env: final_env,
     st:,
     interface:,
@@ -1603,8 +1607,10 @@ fn resolve_uncached(
             module,
             best_effort:,
           ))
-          let Inferred(interface:, cache:, ..) = inferred
-          Ok(#(Some(interface), dict.insert(cache, path, interface)))
+          Ok(#(
+            Some(inferred.interface),
+            dict.insert(inferred.cache, path, inferred.interface),
+          ))
         }
       }
   }
@@ -1839,10 +1845,6 @@ fn for_target(
       }),
     )
   #(module, sort_dropped(dropped))
-}
-
-fn sort_dropped(dropped: List(Dropped)) -> List(Dropped) {
-  list.sort(dropped, fn(a, b) { compare_spans(a.span, b.span) })
 }
 
 fn on_target(definition: glance.Definition(a), target: Target) -> Bool {
@@ -5006,17 +5008,14 @@ fn hydrate_threaded(
 // inference-side type becomes a public one, whether in a result or in an
 // `Error` that carries a type.
 
-// `Inferred.module` is the target-filtered module, so a definition dropped for
-// the other target is not looked up here at all. Rendering the caller's
-// unfiltered module instead would publish a target sibling twice — both names
-// find the surviving definition's scheme — and would publish a dropped
-// definition under the scheme of a same-named unqualified import.
+// `Inferred.functions` and `Inferred.constants` are the definitions inference
+// walked, so a definition dropped for the other target is not looked up here
+// at all. Rendering the caller's unfiltered module — as this used to —
+// publishes a target sibling twice, since both names find the surviving
+// definition's scheme, and publishes a dropped definition under the scheme of
+// a same-named unqualified import.
 fn render(inferred: Inferred) -> AnnotatedModule {
-  let Inferred(module:, env:, st:, dropped:, ..) = inferred
-  let functions =
-    list.map(module.functions, fn(d) { FunctionDef(d.definition) })
-  let constants =
-    list.map(module.constants, fn(d) { ConstantDef(d.definition) })
+  let Inferred(functions:, constants:, env:, st:, dropped:, ..) = inferred
 
   // `st.annotations` is in reverse discovery order. Restore discovery order
   // before the stable span sort, so annotations sharing a span retain the order
@@ -5046,8 +5045,8 @@ fn publish_references(st: State) -> List(ResolvedReference) {
   |> sort_references
 }
 
-// `AnnotatedModule.resolutions` promises one entry per span, so this is where that
-// promise is kept, whoever produces a duplicate. No inference path does today
+// `AnnotatedModule.resolutions` promises one entry per span, so this is where
+// that promise is kept, whoever produces a duplicate. No path does today
 // — `infer_pipe`'s arity probe used to, and now runs on a state it throws away
 // — but the guarantee is the API's, not one walk's, so it is enforced rather
 // than assumed. The survivor is the **last recorded**: `st.references` is in
@@ -5096,6 +5095,13 @@ fn sort_references(
   list.sort(references, fn(a, b) { compare_spans(a.span, b.span) })
 }
 
+// Called from `for_target`, which is where a dropped definition is found, but
+// defined here with the other two so the three published orderings are decided
+// in one place.
+fn sort_dropped(dropped: List(Dropped)) -> List(Dropped) {
+  list.sort(dropped, fn(a, b) { compare_spans(a.span, b.span) })
+}
+
 // The inferred (generalized) scheme of each definition, in source order.
 // Best-effort inference leaves skipped definitions unbound, so omit them here.
 fn collect_schemes(defs: List(Def), env: Env) -> List(#(String, Scheme)) {
@@ -5138,8 +5144,9 @@ fn sort_by_span(annotations: List(Annotation)) -> List(Annotation) {
   list.sort(annotations, fn(a, b) { compare_spans(a.span, b.span) })
 }
 
-// The order both published lists carry: by where a span starts, then by where
-// it ends. One comparator, so "sorted by span" cannot come to mean two things.
+// The order every published list carries: by where a span starts, then by
+// where it ends. One comparator, so "sorted by span" cannot come to mean two
+// things.
 fn compare_spans(a: glance.Span, b: glance.Span) -> order.Order {
   int.compare(a.start, b.start)
   |> order.break_tie(int.compare(a.end, b.end))

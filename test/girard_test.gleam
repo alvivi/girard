@@ -90,6 +90,16 @@ fn type_of(source: String, snippet: String) -> String {
   }
 }
 
+// The rendered type of `name` in an already-annotated `functions` or
+// `constants` list, for a test that holds the record and would otherwise
+// re-infer the module through `signature` or `constant_type`.
+fn scheme_of(schemes: List(#(String, girard.Scheme)), name: String) -> String {
+  case list.key_find(schemes, name) {
+    Ok(scheme) -> girard.type_to_string(scheme.type_)
+    Error(_) -> panic as { "nothing named " <> name }
+  }
+}
+
 // The span of the first occurrence of `snippet` in `source`.
 fn span_of(source: String, snippet: String) -> glance.Span {
   let assert Ok(start) = first_index(source, snippet)
@@ -2564,7 +2574,7 @@ pub fn dropped_constant_is_reported_test() {
   |> should.equal([
     girard.Dropped("answer", span_of(source, "pub const answer = \"42\"")),
   ])
-  constant_type(source, "answer") |> should.equal("Int")
+  scheme_of(annotated.constants, "answer") |> should.equal("Int")
 
   let assert Ok(js) =
     girard.annotate(source, girard.with_target(options, girard.JavaScript))
@@ -2572,8 +2582,7 @@ pub fn dropped_constant_is_reported_test() {
   |> should.equal([
     girard.Dropped("answer", span_of(source, "pub const answer = 42")),
   ])
-  let assert Ok(scheme) = list.key_find(js.constants, "answer")
-  girard.type_to_string(scheme.type_) |> should.equal("String")
+  scheme_of(js.constants, "answer") |> should.equal("String")
 }
 
 pub fn dropped_is_in_source_order_test() {
@@ -2608,7 +2617,7 @@ pub fn target_sibling_is_published_once_test() {
   list.map(annotated.functions, fn(f) { f.0 })
   |> list.sort(string.compare)
   |> should.equal(["do_thing", "thing"])
-  signature(source, "do_thing")
+  scheme_of(annotated.functions, "do_thing")
   |> should.equal("fn(String) -> Result(Int, MyError)")
   list.map(annotated.dropped, fn(d) { d.name }) |> should.equal(["do_thing"])
 }

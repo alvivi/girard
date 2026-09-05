@@ -147,16 +147,15 @@ walk's.
 Absence has exactly three shapes. A definition in `ModuleResult.skipped`
 contributes no references, because `best_effort_group` discards its component's
 whole `State`. A definition dropped for the other build target is listed in
-`AnnotatedModule.dropped` with its span, and is neither skipped nor walked;
-`for_target` collects the two value categories it filters and `render` stores
-them, and it renders the *filtered* module, so a target sibling is published
-once and a dropped definition cannot borrow a same-named import's scheme. And
-an access girard deferred as a `PendingField` and read
-only once later inference fixed the record's type publishes
-`Unresolved(RecordAccessUnknownType)` — girard reached the field type but never
-a member at the access. That last is a tripwire as much as a result: over code
-the compiler accepts, each one is a place where girard's inference order lags
-the compiler's.
+`AnnotatedModule.dropped` with its span, and is neither skipped nor walked:
+`for_target` returns the functions and constants it filtered out beside the
+filtered module, and `Inferred` carries the definitions inference walked, which
+are the ones `render` publishes. And an access girard deferred as a
+`PendingField` and read only once later inference fixed the record's type
+publishes `Unresolved(RecordAccessUnknownType)` — girard reached the field type
+but never a member at the access. That last is a tripwire as much as a result:
+over code the compiler accepts, each one is a place where girard's inference
+order lags the compiler's.
 
 The public `Type` model has four variants:
 
