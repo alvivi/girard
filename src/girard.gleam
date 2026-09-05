@@ -140,9 +140,12 @@ pub type AnnotatedModule {
 }
 
 /// A top-level function or constant left out of the build for the other
-/// [`Target`](#Target): its name, and the span glance gave the whole
-/// definition. It carries no target of its own — there are two, and the
-/// active one is in the caller's [`Options`](#Options).
+/// [`Target`](#Target): its name, and the span glance gave the definition —
+/// from its `pub`, `fn` or `const` keyword to its closing token. Everything
+/// written above that keyword is outside the span, including the doc comment
+/// and the `@target` attribute that is the reason the definition is here at
+/// all. It carries no target of its own — there are two, and the active one is
+/// in the caller's [`Options`](#Options).
 pub type Dropped {
   Dropped(name: String, span: glance.Span)
 }
