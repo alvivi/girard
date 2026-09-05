@@ -3281,7 +3281,7 @@ fn infer_fn(
   return_annotation: Option(glance.Type),
   body: List(glance.Statement),
 ) -> Result(#(ty.Type, State), Error) {
-  let #(names, st) = annotation_var_names(st, params, return_annotation)
+  let #(names, _ids, st) = annotation_var_names(st, params, return_annotation)
   // No expected type: each parameter starts as a fresh variable.
   let #(seeds, st) = fresh_n(st, list.length(params))
   infer_lambda(env, st, params, return_annotation, body, seeds, None, names)
@@ -3299,18 +3299,21 @@ fn infer_fn(
 // writes mean the same thing whether or not the type it will be called at is
 // already known, as they do in the compiler, which hydrates a lambda's
 // annotations in one scope either way.
+//
+// The ids are returned alongside because a `let`-bound lambda is generalized
+// over exactly these variables; every other caller ignores them.
 fn annotation_var_names(
   st: State,
   params: List(glance.FnParameter),
   return_annotation: Option(glance.Type),
-) -> #(Dict(String, ty.Type), State) {
+) -> #(Dict(String, ty.Type), List(Int), State) {
   list.fold(
     list.unique(fn_annotation_var_names(params, return_annotation)),
-    #(dict.new(), st),
+    #(dict.new(), [], st),
     fn(acc, nm) {
-      let #(names, st) = acc
+      let #(names, ids, st) = acc
       let #(id, st) = fresh_id(st)
-      #(dict.insert(names, nm, ty.Var(id)), st)
+      #(dict.insert(names, nm, ty.Var(id)), [id, ..ids], st)
     },
   )
 }
@@ -3328,7 +3331,7 @@ fn infer_seeded_lambda(
   seeds: List(ty.Type),
   expected_return: Option(ty.Type),
 ) -> Result(#(ty.Type, State), Error) {
-  let #(names, st) = annotation_var_names(st, params, return_annotation)
+  let #(names, _ids, st) = annotation_var_names(st, params, return_annotation)
   use #(fn_type, st) <- result.try(infer_lambda(
     env,
     st,
@@ -3480,20 +3483,16 @@ fn infer_call(
       }
     _ -> infer_callee(env, st, function)
   })
-  use #(result, st) <- result.try(
+  use #(return, st) <- result.try(
     place_arguments(
       st,
       fn_type,
       labels,
       arguments,
-      fn(label, location) { glance.Variable(location, label) },
+      fn(expression) { expression },
       fn(st, argument, hole) { check(env, st, argument, hole) },
     ),
   )
-  // The call's type is the callee's own return type, not the hole unified
-  // against it: the two are the same type, but only the callee's carries the
-  // variant a constructor's return was built with.
-  let return = call_return(st, fn_type, result)
   Ok(#(return, record(st, span, return)))
 }
 
@@ -3510,17 +3509,23 @@ fn infer_call(
 // after it however the two were written.
 //
 // The three call shapes — a call, a capture and a `use` — differ only in what a
-// slot holds and in what checking one does, so each supplies its own materializer
-// for a shorthand field and its own `check_slot`.
+// slot holds and in what checking one does, so each says how to `wrap` a bare
+// expression as one of its own slots and how to `check_slot` one. Wrapping is
+// all a shorthand field needs: `label:` is the in-scope `label` in every shape,
+// so that rule is written here rather than three times.
 fn place_arguments(
   st: State,
   fn_type: ty.Type,
   labels: Option(FieldMap),
   slots: List(glance.Field(slot)),
-  shorthand: fn(String, glance.Span) -> slot,
+  wrap: fn(glance.Expression) -> slot,
   check_slot: fn(State, slot, ty.Type) -> Result(State, Error),
 ) -> Result(#(ty.Type, State), Error) {
-  use ordered <- result.try(order_fields(labels, slots, shorthand))
+  use ordered <- result.try(
+    order_fields(labels, slots, fn(label, location) {
+      wrap(glance.Variable(location, label))
+    }),
+  )
   let #(holes, st) = fresh_n(st, list.length(ordered))
   let #(result, st) = fresh(st)
   use st <- result.try(unify(st, fn_type, ty.Fn(holes, result)))
@@ -3529,7 +3534,10 @@ fn place_arguments(
       check_slot(st, pair.0, pair.1)
     }),
   )
-  Ok(#(result, st))
+  // The call's value is the callee's own return type, not the hole unified
+  // against it: the two are the same type, but only the callee's carries the
+  // variant a constructor's return was built with.
+  Ok(#(call_return(st, fn_type, result), st))
 }
 
 // Seed a called lambda's parameters from the call's own arguments, then walk
@@ -3749,12 +3757,13 @@ fn infer_capture(
   // argument are aligned into declared order by the same reorder a direct call
   // would do. Source order in, declared order out.
   use #(fn_type, labels, st) <- result.try(infer_callee(env, st, function))
-  // The hole carries the capture's own parameter type, so wherever the reorder
-  // places it, unifying it with the parameter it landed on is all that is left.
+  // `hole` is the capture's own parameter type. The marker in the slots says
+  // only *where* among the arguments the hole goes; unifying `hole` with the
+  // parameter the reorder placed it against is all that is left.
   let #(hole, st) = fresh(st)
   let hole_field = case label {
-    Some(name) -> glance.LabelledField(name, span, Hole(hole))
-    None -> glance.UnlabelledField(Hole(hole))
+    Some(name) -> glance.LabelledField(name, span, Implicit)
+    None -> glance.UnlabelledField(Implicit)
   }
   let slots =
     list.flatten([
@@ -3762,34 +3771,25 @@ fn infer_capture(
       [hole_field],
       list.map(after, map_field(_, Argument)),
     ])
-  use #(result, st) <- result.try(
+  use #(return, st) <- result.try(
     place_arguments(
       st,
       fn_type,
       labels,
       slots,
-      fn(label, location) { Argument(glance.Variable(location, label)) },
+      Argument,
       fn(st, slot, slot_type) {
         case slot {
           Argument(expression) -> check(env, st, expression, slot_type)
-          Hole(hole) -> unify(st, hole, slot_type)
+          Implicit -> unify(st, hole, slot_type)
         }
       },
     ),
   )
   // A capture is a lambda whose body is the call, so its return is the
   // callee's own — `Loud(_)` returns a value known to be `Loud`.
-  let captured = ty.Fn([hole], call_return(st, fn_type, result))
+  let captured = ty.Fn([hole], return)
   Ok(#(captured, record(st, span, captured)))
-}
-
-// A capture's arguments as the call it stands for sees them: the ones written
-// out, and the hole, which the field map may place anywhere among them. The
-// hole travels through the reorder as a marker because it is not an expression
-// — it is the capture's own parameter, and it carries that parameter's type.
-type CaptureSlot {
-  Argument(expression: glance.Expression)
-  Hole(type_: ty.Type)
 }
 
 fn infer_binop(
@@ -3990,14 +3990,17 @@ fn infer_statements(
   }
 }
 
-// A `use`'s arguments as the call it desugars to sees them: the explicit ones,
-// and the callback, which is pushed unlabelled and can therefore land anywhere
-// the field map puts it. The marker travels through the reorder in place of an
-// expression, because the callback is not one — its parameters are patterns and
-// its body is the rest of the block.
-type UseSlot {
-  Explicit(expression: glance.Expression)
-  Callback
+// A slot in a call girard assembles rather than reads: the arguments a capture
+// or a `use` writes out, plus the one argument that is implied rather than
+// written — a capture's hole, a `use`'s callback. Neither is a
+// `glance.Expression` (the hole is the capture's own parameter; the callback's
+// parameters are patterns and its body is the rest of the block), so the
+// implied one travels through the reorder as a marker and each shape says what
+// checking it means. The field map may place it anywhere among the others,
+// which is the whole reason it goes through the reorder at all.
+type CallSlot {
+  Argument(expression: glance.Expression)
+  Implicit
 }
 
 // Desugar `use a, b <- rhs(args)` followed by `rest` into
@@ -4026,28 +4029,15 @@ fn infer_use(
   }
   use #(callee_type, labels, st) <- result.try(infer_callee(env, st, callee))
   let slots =
-    list.append(list.map(arguments, map_field(_, Explicit)), [
-      glance.UnlabelledField(Callback),
+    list.append(list.map(arguments, map_field(_, Argument)), [
+      glance.UnlabelledField(Implicit),
     ])
-  use #(result, st) <- result.try(
-    place_arguments(
-      st,
-      callee_type,
-      labels,
-      slots,
-      fn(label, location) { Explicit(glance.Variable(location, label)) },
-      fn(st, slot, hole) {
-        case slot {
-          Explicit(expression) -> check(env, st, expression, hole)
-          Callback -> check_callback(env, st, use_patterns, rest, hole)
-        }
-      },
-    ),
-  )
-  // A `use` is the fourth call shape, so its value is the callee's own return
-  // rather than the hole that was unified against it — only the callee's
-  // carries the variant a constructor built.
-  Ok(#(call_return(st, callee_type, result), st))
+  place_arguments(st, callee_type, labels, slots, Argument, fn(st, slot, hole) {
+    case slot {
+      Argument(expression) -> check(env, st, expression, hole)
+      Implicit -> check_callback(env, st, use_patterns, rest, hole)
+    }
+  })
 }
 
 // Check a `use` callback against the parameter type its slot was given, the way
@@ -4141,13 +4131,8 @@ fn infer_statement(
     ) ->
       case fn_annotation_var_names(fparams, freturn) {
         [] -> infer_expr_assignment(env, st, pattern, None, value)
-        ann_names -> {
-          let #(names, ann_ids, st) =
-            list.fold(ann_names, #(dict.new(), [], st), fn(acc, nm) {
-              let #(names, ids, st) = acc
-              let #(id, st) = fresh_id(st)
-              #(dict.insert(names, nm, ty.Var(id)), [id, ..ids], st)
-            })
+        _ -> {
+          let #(names, ann_ids, st) = annotation_var_names(st, fparams, freturn)
           let #(seeds, st) = fresh_n(st, list.length(fparams))
           use #(value_type, st) <- result.try(infer_lambda(
             env,

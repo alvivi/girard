@@ -2232,6 +2232,21 @@ pub fn applied_lambda_reads_field_test() {
   should_read_box_value(source)
 }
 
+pub fn applied_lambda_return_keeps_the_variant_test() {
+  // A call's value is the callee's own return, not the hole unified against it,
+  // and a lambda in callee position is no exception: `Loud`'s stamp rides out
+  // on the lambda's body type. Reading the return off a fresh variable bound to
+  // that type instead would erase the stamp — binding a variable always does —
+  // and `println`, which only `Loud` declares, would fall out of reach.
+  let source =
+    logger_type
+    <> "pub fn run(f: fn(String) -> Nil) {\n"
+    <> "  fn() { Loud(f) }().println\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn(fn(String) -> Nil) -> fn(String) -> Nil")
+}
+
 pub fn applied_lambda_argument_is_inferred_once_test() {
   // The pass that learns the argument types is invisible: it keeps what
   // unification learned and puts back everything it reported. So a called
