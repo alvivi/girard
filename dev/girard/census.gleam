@@ -36,14 +36,8 @@ pub fn main() -> Nil {
 }
 
 fn census(package: String, pkg_root: String) -> Nil {
-  let src = pkg_root <> "/" <> package <> "/src"
-
-  let options =
-    girard.default_options()
-    |> girard.with_resolver(packages.dir_resolver(pkg_root))
-    |> girard.with_target(packages.target_of(
-      pkg_root <> "/" <> package <> "/gleam.toml",
-    ))
+  let options = packages.options(pkg_root, package)
+  let src = packages.source_root(pkg_root, package)
 
   // One interface cache across the package's modules, as `girard/diff` threads
   // one: a shared import is inferred once for the package rather than once per

@@ -126,15 +126,8 @@ fn parse_spec(raw: String) -> List(PkgSpec) {
 // — the way a package-walking tool (or an editor across sibling files) uses
 // girard.
 fn bench_package(spec: PkgSpec) -> Tally {
-  let resolver = packages.dir_resolver(spec.root)
-  let target =
-    packages.target_of(spec.root <> "/" <> spec.package <> "/gleam.toml")
-  let options =
-    girard.default_options()
-    |> girard.with_resolver(resolver)
-    |> girard.with_target(target)
-
-  let src = spec.root <> "/" <> spec.package <> "/src"
+  let options = packages.options(spec.root, spec.package)
+  let src = packages.source_root(spec.root, spec.package)
   let #(tally, _cache) =
     list.fold(
       packages.sources(src),

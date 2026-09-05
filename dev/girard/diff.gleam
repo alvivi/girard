@@ -43,8 +43,8 @@ pub fn main() -> Nil {
 }
 
 fn diff(package: String, json_path: String, pkg_root: String) -> Nil {
-  let resolver = packages.dir_resolver(pkg_root)
-  let target = packages.target_of(pkg_root <> "/" <> package <> "/gleam.toml")
+  let options = packages.options(pkg_root, package)
+  let source_root = packages.source_root(pkg_root, package)
   let assert Ok(json_string) = simplifile.read(json_path)
   let assert Ok(modules) =
     json.parse(
@@ -54,11 +54,6 @@ fn diff(package: String, json_path: String, pkg_root: String) -> Nil {
         decode.dict(decode.string, decode.list(expression_decoder())),
       ),
     )
-
-  let options =
-    girard.default_options()
-    |> girard.with_resolver(resolver)
-    |> girard.with_target(target)
 
   // Thread one interface cache across the package's modules so each shared
   // import is inferred once for the whole package, not once per importing
@@ -71,8 +66,7 @@ fn diff(package: String, json_path: String, pkg_root: String) -> Nil {
       fn(acc, entry) {
         let #(checked, mismatches, errored, cache) = acc
         let #(module_name, oracle_exprs) = entry
-        let path =
-          pkg_root <> "/" <> package <> "/src/" <> module_name <> ".gleam"
+        let path = source_root <> "/" <> module_name <> ".gleam"
         case simplifile.read(path) {
           Error(_) -> #(checked, mismatches, errored, cache)
           Ok(source) -> {

@@ -13,6 +13,25 @@ import gleam/list
 import gleam/string
 import simplifile
 
+// A package under a staged root
+//
+// The layout every one of these tools stages: `<root>/<package>/src/...` beside
+// the package's own `gleam.toml`. Spelling it here rather than at each caller is
+// what makes "girard over package P" one thing rather than three.
+
+/// The directory holding a package's own modules.
+pub fn source_root(root: String, package: String) -> String {
+  root <> "/" <> package <> "/src"
+}
+
+/// How girard is run over a package installed under `root`: its imports
+/// resolved from the staged root, and its own declared build target.
+pub fn options(root: String, package: String) -> girard.Options {
+  girard.default_options()
+  |> girard.with_resolver(dir_resolver(root))
+  |> girard.with_target(target_of(root <> "/" <> package <> "/gleam.toml"))
+}
+
 // Imports
 //
 // Resolve an imported module from a staged packages root rather than girard's
@@ -86,11 +105,13 @@ pub fn sources(root: String) -> List(String) {
 /// — the module path being what an `import` names it by, so a caller reporting
 /// a module never has to rebuild the file path it already read.
 pub fn modules(root: String) -> List(#(String, String)) {
+  let prefix = string.length(root <> "/")
+  let suffix = string.length(".gleam")
   list.map(sources(root), fn(path) {
     let module =
       path
-      |> string.drop_start(string.length(root <> "/"))
-      |> string.drop_end(string.length(".gleam"))
+      |> string.drop_start(prefix)
+      |> string.drop_end(suffix)
     #(module, path)
   })
 }
