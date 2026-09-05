@@ -54,7 +54,7 @@ API.
 
 | File | Responsibility |
 |---|---|
-| `src/girard.gleam` | The whole public API and inference engine, in labelled comment sections, public API first: source/AST/package entry points and CLI; the public `Type`, `Scheme`, and inference `Error` vocabulary, and the `Resolution` / `ResolvedReference` resolution vocabulary; Hindley-Milner inference (state, substitutions, environments and schemes, unification, generalization/instantiation, expression/pattern/statement inference, type hydration, module interfaces); the built-in prelude type constructors; and the type printer |
+| `src/girard.gleam` | The whole public API and inference engine, in labelled comment sections, public API first: source/AST/package entry points and CLI; the public `Type`, `Scheme`, and inference `Error` vocabulary, and the `Resolution` / `ResolvedReference` / `Dropped` resolution and absence vocabulary; Hindley-Milner inference (state, substitutions, environments and schemes, unification, generalization/instantiation, expression/pattern/statement inference, type hydration, module interfaces); the built-in prelude type constructors; and the type printer |
 | `src/girard/internal/ty.gleam` | The inference-side `Type` and `Scheme`: the public vocabulary plus the narrowed variant on `Named`, converted to the public types when a result or an error is published |
 | `src/girard/internal/scc.gleam` | Tarjan strongly-connected components for dependency-ordered inference |
 | `src/girard/internal/reference.gleam` | Lexically scoped reference collection for the top-level definition graph |
@@ -146,8 +146,12 @@ walk's.
 
 Absence has exactly three shapes. A definition in `ModuleResult.skipped`
 contributes no references, because `best_effort_group` discards its component's
-whole `State`. A definition dropped for the other build target is neither
-skipped nor walked. And an access girard deferred as a `PendingField` and read
+whole `State`. A definition dropped for the other build target is listed in
+`AnnotatedModule.dropped` with its span, and is neither skipped nor walked;
+`for_target` collects the two value categories it filters and `render` stores
+them, and it renders the *filtered* module, so a target sibling is published
+once and a dropped definition cannot borrow a same-named import's scheme. And
+an access girard deferred as a `PendingField` and read
 only once later inference fixed the record's type publishes
 `Unresolved(RecordAccessUnknownType)` — girard reached the field type but never
 a member at the access. That last is a tripwire as much as a result: over code

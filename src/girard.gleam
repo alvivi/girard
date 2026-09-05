@@ -9,7 +9,8 @@
 //// Every result also reports which member each reference resolved to — a
 //// record field, a module function, constant or constructor under the
 //// module's canonical path, a local variable, or unresolved — for every field
-//// access and every bare name in call position.
+//// access and every bare name in call position, and names every top-level
+//// definition left out of the build for the other `Target`.
 ////
 //// Imported modules are resolved through a [`Resolver`](#Resolver) to obtain
 //// their public interfaces.
@@ -110,12 +111,12 @@ pub type Annotation {
 /// recorded, so a name read outside call position (`let g = greet`), the
 /// constructor of a record update or of a pattern, and a tuple index have no
 /// entry. A span with no entry was therefore either not a recorded position or
-/// never walked: nothing is recorded inside a definition dropped for the other
-/// build [`Target`](#Target), and, for a record reached through
-/// [`annotate_package`](#annotate_package), nothing inside one the enclosing
-/// [`ModuleResult`](#ModuleResult)'s `skipped` names. The strict entry points
-/// return no `AnnotatedModule` at all when a definition fails, so from them
-/// every walked definition is in the record.
+/// never walked: nothing is recorded inside a definition `dropped` names, and,
+/// for a record reached through [`annotate_package`](#annotate_package),
+/// nothing inside one the enclosing [`ModuleResult`](#ModuleResult)'s
+/// `skipped` names. The strict entry points return no `AnnotatedModule` at all
+/// when a definition fails, so from them every walked definition the module
+/// declares is in the record.
 ///
 /// A resolution names a module by its canonical path, never the alias it was
 /// imported under. The module under analysis is named as girard was given it:
@@ -132,7 +133,19 @@ pub type AnnotatedModule {
     /// What every field access and every bare name in call position resolved
     /// to, sorted by span, one entry per span.
     resolutions: List(ResolvedReference),
+    /// Top-level functions and constants dropped for the other build
+    /// [`Target`](#Target), with their spans, sorted by span. Nothing inside a
+    /// dropped definition's span is annotated or resolved.
+    dropped: List(Dropped),
   )
+}
+
+/// A top-level function or constant left out of the build for the other
+/// [`Target`](#Target): its name, and the span glance gave the whole
+/// definition. It carries no target of its own — there are two, and the
+/// active one is in the caller's [`Options`](#Options).
+pub type Dropped {
+  Dropped(name: String, span: glance.Span)
 }
 
 /// Which member a reference resolved to. The variants are named after the
@@ -326,7 +339,7 @@ pub fn annotate_module(
   module: glance.Module,
   options: Options,
 ) -> Result(AnnotatedModule, Error) {
-  use #(#(env, st), _interface, _cache, _skipped) <- result.try(infer_module(
+  use inferred <- result.try(infer_module(
     options,
     set.new(),
     dict.new(),
@@ -334,7 +347,7 @@ pub fn annotate_module(
     module,
     best_effort: False,
   ))
-  Ok(render(module, env, st))
+  Ok(render(inferred))
 }
 
 fn parse(source: String) -> Result(glance.Module, Error) {
@@ -398,10 +411,7 @@ pub fn annotate_with_cache(
         )
       {
         Error(error) -> #(Error(error), cache)
-        Ok(#(#(env, st), _interface, interfaces, _skipped)) -> #(
-          Ok(render(module, env, st)),
-          Cache(interfaces),
-        )
+        Ok(inferred) -> #(Ok(render(inferred)), Cache(inferred.cache))
       }
   }
 }
@@ -428,7 +438,7 @@ pub fn invalidate(cache: Cache, path: String) -> Cache {
 /// [`AnnotatedModule`](#AnnotatedModule) plus the definitions that could not be
 /// typed. `skipped` names each top-level function or constant girard declined,
 /// with the error that declined it; a definition in `skipped` is absent from
-/// `annotated`.
+/// `annotated`, and nothing inside its span is annotated or resolved.
 pub type ModuleResult {
   ModuleResult(annotated: AnnotatedModule, skipped: List(#(String, Error)))
 }
@@ -467,11 +477,11 @@ pub fn annotate_package(
         // `infer_module` should not fail. If that invariant is broken, omit the
         // module rather than crashing the whole package run.
         Error(_) -> #(results, cache)
-        Ok(#(#(env, st), interface, cache, skipped)) -> {
+        Ok(inferred) -> {
           // Seed this module's own interface so a later module that imports it
           // hits the cache instead of re-resolving it through the resolver.
-          let cache = dict.insert(cache, path, interface)
-          let result = ModuleResult(render(module, env, st), skipped)
+          let cache = dict.insert(inferred.cache, path, inferred.interface)
+          let result = ModuleResult(render(inferred), inferred.skipped)
           #(dict.insert(results, path, result), cache)
         }
       }
@@ -1166,6 +1176,23 @@ fn infer_def(
 type InterfaceCache =
   dict.Dict(String, ModuleInterface)
 
+// Everything one module's inference produced. A tuple ran out of room at four
+// elements; naming the parts also keeps the three public callers and
+// `resolve_uncached` from destructuring positionally past what each needs.
+type Inferred {
+  Inferred(
+    // The target-filtered module — what inference actually walked, and so
+    // what `render` must render.
+    module: glance.Module,
+    env: Env,
+    st: State,
+    interface: ModuleInterface,
+    cache: InterfaceCache,
+    skipped: List(#(String, Error)),
+    dropped: List(Dropped),
+  )
+}
+
 // Fully infer a module: resolve imports, register types, and infer every
 // definition in dependency order. Returns the final environment and state
 // plus the module's public interface.
@@ -1176,14 +1203,11 @@ fn infer_module(
   module_name: String,
   module: glance.Module,
   best_effort best_effort: Bool,
-) -> Result(
-  #(#(Env, State), ModuleInterface, InterfaceCache, List(#(String, Error))),
-  Error,
-) {
+) -> Result(Inferred, Error) {
   // Drop definitions and imports compiled only for another target. A pair of
   // target-specific siblings may have different types, so the inactive one
   // must not shadow the active definition.
-  let module = for_target(module, options.target)
+  let #(module, dropped) = for_target(module, options.target)
   let #(prelude_env, st) = prelude()
   let env = set_module(prelude_env, module_name)
 
@@ -1247,7 +1271,15 @@ fn infer_module(
       public_type_names(module),
       public_accessor_type_names(module),
     )
-  Ok(#(#(final_env, st), interface, cache, skipped))
+  Ok(Inferred(
+    module:,
+    env: final_env,
+    st:,
+    interface:,
+    cache:,
+    skipped:,
+    dropped:,
+  ))
 }
 
 fn infer_defs(
@@ -1563,7 +1595,7 @@ fn resolve_uncached(
         Ok(module) -> {
           // An import's own skipped definitions (best-effort) are irrelevant to
           // the importer; only its public interface, partial or not, matters.
-          use #(_, interface, cache, _skipped) <- result.try(infer_module(
+          use inferred <- result.try(infer_module(
             options,
             set.insert(loading, path),
             cache,
@@ -1571,6 +1603,7 @@ fn resolve_uncached(
             module,
             best_effort:,
           ))
+          let Inferred(interface:, cache:, ..) = inferred
           Ok(#(Some(interface), dict.insert(cache, path, interface)))
         }
       }
@@ -1771,14 +1804,45 @@ fn import_type(
 // Keep only the definitions and imports compiled for `target`: those with no
 // `@target` attribute, or one naming the active target. A definition annotated
 // for the other target is dropped, exactly as the compiler omits it.
-fn for_target(module: glance.Module, target: Target) -> glance.Module {
-  glance.Module(
-    imports: list.filter(module.imports, on_target(_, target)),
-    custom_types: list.filter(module.custom_types, on_target(_, target)),
-    type_aliases: list.filter(module.type_aliases, on_target(_, target)),
-    constants: list.filter(module.constants, on_target(_, target)),
-    functions: list.filter(module.functions, on_target(_, target)),
-  )
+//
+// The dropped functions and constants come back with the filtered module, to
+// be published: they are the definitions that hold expressions, so they are
+// the ones a consumer can find a span inside and no annotation at. A dropped
+// import, custom type or alias has no body, so its absence needs no
+// explanation and none is reported.
+fn for_target(
+  module: glance.Module,
+  target: Target,
+) -> #(glance.Module, List(Dropped)) {
+  let #(functions, dropped_functions) =
+    list.partition(module.functions, on_target(_, target))
+  let #(constants, dropped_constants) =
+    list.partition(module.constants, on_target(_, target))
+  let module =
+    glance.Module(
+      imports: list.filter(module.imports, on_target(_, target)),
+      custom_types: list.filter(module.custom_types, on_target(_, target)),
+      type_aliases: list.filter(module.type_aliases, on_target(_, target)),
+      constants:,
+      functions:,
+    )
+  // glance keeps functions and constants in separate lists, so concatenating
+  // the two is per-category order; the span sort restores source order, which
+  // is what an interleaved pair was written in.
+  let dropped =
+    list.append(
+      list.map(dropped_functions, fn(d) {
+        Dropped(d.definition.name, d.definition.location)
+      }),
+      list.map(dropped_constants, fn(d) {
+        Dropped(d.definition.name, d.definition.location)
+      }),
+    )
+  #(module, sort_dropped(dropped))
+}
+
+fn sort_dropped(dropped: List(Dropped)) -> List(Dropped) {
+  list.sort(dropped, fn(a, b) { compare_spans(a.span, b.span) })
 }
 
 fn on_target(definition: glance.Definition(a), target: Target) -> Bool {
@@ -4942,7 +5006,13 @@ fn hydrate_threaded(
 // inference-side type becomes a public one, whether in a result or in an
 // `Error` that carries a type.
 
-fn render(module: glance.Module, env: Env, st: State) -> AnnotatedModule {
+// `Inferred.module` is the target-filtered module, so a definition dropped for
+// the other target is not looked up here at all. Rendering the caller's
+// unfiltered module instead would publish a target sibling twice — both names
+// find the surviving definition's scheme — and would publish a dropped
+// definition under the scheme of a same-named unqualified import.
+fn render(inferred: Inferred) -> AnnotatedModule {
+  let Inferred(module:, env:, st:, dropped:, ..) = inferred
   let functions =
     list.map(module.functions, fn(d) { FunctionDef(d.definition) })
   let constants =
@@ -4962,6 +5032,7 @@ fn render(module: glance.Module, env: Env, st: State) -> AnnotatedModule {
     constants: collect_schemes(constants, env),
     expressions: sort_by_span(expressions),
     resolutions: publish_references(st),
+    dropped:,
   )
 }
 

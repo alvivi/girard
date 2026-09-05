@@ -195,8 +195,30 @@ capture or a `use`, and a bare pipe target. Nothing else, so a name read outside
 call position (`let g = greet`), the constructor of a record update or of a
 pattern, and a tuple index have no entry. A span with no entry was therefore
 either not a recorded position or never walked: a definition `annotate_package`
-reports as `skipped` contributes none, and neither does one dropped for the
-other build target.
+reports as `skipped` contributes none, and neither does one `dropped` names.
+
+### Definitions dropped for the target
+
+Gleam's `@target` picks a build, so a definition annotated for the target
+girard is *not* typing is dropped before inference, exactly as the compiler
+omits it. Those definitions are named in `dropped`, with the span glance gave
+each one, sorted by span:
+
+```gleam
+@target(javascript)
+pub fn platform() { "js" }   // Dropped("platform", Span(20, 46))
+
+pub fn greet() { "hi" }
+```
+
+That closes the last gap in reading an absence. A span with no annotation and
+no resolution is one of three things, and a consumer can now tell them apart:
+not a recorded position at all, inside a definition `skipped` (with the error
+that declined it), or inside one `dropped` for the target.
+
+Only functions and constants are listed. `@target` drops imports, custom types
+and type aliases too, but none has a body, so no missing annotation is ever
+inside one.
 
 ### Options: resolver and target
 
@@ -243,7 +265,8 @@ invalidate cached importers, or start again from `new_cache()`.
 `girard.annotate_package(modules, options)` annotates many modules in one pass,
 inferring a shared import only once across the whole run. `modules` is a list of
 `#(module_path, glance.Module)`; the result maps each path to a `ModuleResult`
-(`.annotated` plus `.skipped`).
+(`.annotated` plus `.skipped`; the definitions dropped for the target are in
+`.annotated.dropped`, since a module annotated on its own drops them too).
 
 Unlike `annotate`/`annotate_module`, it is **best-effort per definition**: a
 top-level function or constant that does not type — along with anything that

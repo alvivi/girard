@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed. A consumer that read `analysis.annotated` and
   `analysis.resolutions` reads the one record; a consumer of `annotate*` that
   only reads fields is unaffected. Constructing or fully destructuring
-  `AnnotatedModule` must name the new field:
+  `AnnotatedModule` must name the new fields (`resolutions`, and the `dropped`
+  below):
 
   ```gleam
   // Before
@@ -29,8 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   annotated.resolutions
   ```
 
+### Added
+
+- `AnnotatedModule.dropped`: the name and span of every top-level function or
+  constant left out for the other build `Target`. A span with no annotation
+  and no resolution is now one of three things a consumer can tell apart: not
+  a recorded position, inside a definition `skipped` with its error, or inside
+  one `dropped` for the target.
+
 ### Fixed
 
+- A `@target` sibling pair is listed once in `functions` / `constants`, under
+  the active target's signature; the inactive one was listed too, with the
+  active one's signature. A definition dropped for the target no longer
+  appears under a same-named unqualified import's signature either.
 - A skipped definition no longer breaks calls to the import it shadows. In
   best-effort mode the skipped definition's argument labels outlived it, so a
   later call using the import's own labels was wrongly rejected with
