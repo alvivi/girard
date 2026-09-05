@@ -12,7 +12,7 @@ top-level definition's signature. Parsing is delegated to
 [`glance`](https://hexdocs.pm/glance/).
 
 The project is stable: its inferred types are validated differentially against
-the real compiler across the hex ecosystem (see [`docs/packages.md`](docs/packages.md)).
+the real compiler across the hex ecosystem (see [`docs/PACKAGES.md`](docs/PACKAGES.md)).
 
 ## Why?
 

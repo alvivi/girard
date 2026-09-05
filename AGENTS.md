@@ -195,7 +195,7 @@ There are three levels of compiler comparison:
   compiler's `gleam export expression-types` over a package's resolved
   dependency closure.
 - `scripts/batch_sweep.sh` repeats the per-expression sweep across many Hex
-  packages. [docs/packages.md](docs/packages.md) records the resulting ecosystem
+  packages. [docs/PACKAGES.md](docs/PACKAGES.md) records the resulting ecosystem
   coverage.
 - `test/differential_test.gleam` compares *which* member a name resolves to —
   record field or same-named module export — against a manifest of answers from

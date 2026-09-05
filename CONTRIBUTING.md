@@ -111,7 +111,7 @@ For full breadth, `scripts/sweep.sh <package>` checks girard's
 **per-expression** output against a patched compiler's `gleam export
 expression-types` over a package's whole Hex-resolved dependency closure;
 `scripts/batch_sweep.sh` runs it across many packages. Results across the Hex
-ecosystem are tracked in [docs/packages.md](docs/packages.md).
+ecosystem are tracked in [docs/PACKAGES.md](docs/PACKAGES.md).
 
 The package sweep below is a faster coverage report that runs girard without
 the patched-compiler comparison:
@@ -123,7 +123,7 @@ gleam run -m girard/sweep gleam_json  # sweep another installed dependency
 
 It buckets every module as fully typed or by error reason, giving a prioritised
 backlog of inference gaps. The per-expression Hex sweep needs a patched compiler
-and network access, so it is run locally rather than in CI; `docs/packages.md` is the
+and network access, so it is run locally rather than in CI; `docs/PACKAGES.md` is the
 record of that coverage.
 
 A third package tool counts the *resolutions* rather than the types:
