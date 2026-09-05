@@ -21,23 +21,23 @@ import simplifile
 /// The module path the driver stages every case source under. Fixed, because
 /// each temp project holds exactly one case and is then thrown away, so the
 /// package name and module path carry no information — and fixing them is what
-/// lets `differential/gleam.toml` be copied byte for byte instead of patched.
+/// lets `fixtures/differential/gleam.toml` be copied byte for byte instead of patched.
 pub const case_module = "differential_case"
 
 // The girard side
 //
 // `disk_resolver` reads `src/` then `build/packages/*/src`, relative to the
 // working directory, so from the repo root it cannot see
-// `differential/support`. The resolver has to be *composite* rather than a
+// `fixtures/differential/support`. The resolver has to be *composite* rather than a
 // replacement: `with_resolver` swaps the disk resolver out entirely, and the
 // `result.try` control still needs the real `gleam/result`.
 
-/// Resolve `differential/support` first, then fall through to girard's own disk
+/// Resolve `fixtures/differential/support` first, then fall through to girard's own disk
 /// resolver.
 pub fn resolver() -> girard.Resolver {
   let disk = girard.disk_resolver()
   fn(path: String) -> Result(String, Nil) {
-    case simplifile.read("differential/support/" <> path <> ".gleam") {
+    case simplifile.read("fixtures/differential/support/" <> path <> ".gleam") {
       Ok(source) -> Ok(source)
       Error(_) -> disk(path)
     }

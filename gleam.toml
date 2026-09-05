@@ -22,7 +22,7 @@ glinter = ">= 2.19.2 and < 3.0.0"
 # Decoding the patched compiler's oracle JSON in dev/girard/diff and the oracle
 # test — not used by the library itself.
 gleam_json = ">= 3.1.0 and < 4.0.0"
-# Snapshot testing for the golden report fixtures under `golden/` (see
+# Snapshot testing for the golden report fixtures under `fixtures/golden/` (see
 # test/golden_test.gleam). Review changes with `gleam run -m birdie`.
 birdie = ">= 2.0.2 and < 3.0.0"
 # SHA-256 for the differential manifest's canonical `inputs_hash` /

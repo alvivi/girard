@@ -1,6 +1,6 @@
 //// The girard half of the resolution differential suite: it re-derives girard's
-//// answer for every case under `differential/` and asserts it still matches
-//// `differential/expected.json`, which the compiler half
+//// answer for every case under `fixtures/differential/` and asserts it still matches
+//// `fixtures/differential/expected.json`, which the compiler half
 //// (`scripts/gen-differential.sh`) wrote with a pinned gleam 1.18.0.
 ////
 //// **The suite is green and the divergences are data.** The manifest records
@@ -1630,7 +1630,8 @@ pub fn evidence_aggregate_is_pinned_test() {
 // row's compile was pinned to.
 
 pub fn stdlib_pin_matches_test() {
-  let assert Ok(lock) = simplifile.read("differential/pinned/manifest.toml")
+  let assert Ok(lock) =
+    simplifile.read("fixtures/differential/pinned/manifest.toml")
   case
     string.contains(
       lock,
@@ -1640,7 +1641,7 @@ pub fn stdlib_pin_matches_test() {
     True -> Nil
     False ->
       panic as {
-        "differential/pinned/manifest.toml no longer pins gleam_stdlib "
+        "fixtures/differential/pinned/manifest.toml no longer pins gleam_stdlib "
         <> differential.stdlib_version
       }
   }
@@ -1693,12 +1694,12 @@ fn load() -> Manifest {
   case manifest.decode(manifest_text()) {
     Ok(loaded) -> loaded
     Error(_) ->
-      panic as "differential/expected.json is not a well-formed manifest — every field must be present, with absence spelled `null`, and every enumerated field within its vocabulary"
+      panic as "fixtures/differential/expected.json is not a well-formed manifest — every field must be present, with absence spelled `null`, and every enumerated field within its vocabulary"
   }
 }
 
 fn manifest_text() -> String {
-  let assert Ok(text) = simplifile.read("differential/expected.json")
+  let assert Ok(text) = simplifile.read("fixtures/differential/expected.json")
   text
 }
 
@@ -1793,7 +1794,7 @@ fn require(row: Row, message: String, condition: Bool) -> Nil {
 }
 
 fn fail(row: Row, message: String) -> a {
-  panic as { "differential/" <> row.fixture <> ": " <> message }
+  panic as { "fixtures/differential/" <> row.fixture <> ": " <> message }
 }
 
 fn describe(outcome: Outcome) -> String {

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Regenerate the differential-testing oracle fixtures from the *real* Gleam
-# compiler. For each oracle/<name>.gleam it writes:
-#   - oracle/<name>.interface.json  (gleam export package-interface)
-#   - oracle/<name>.expr.json       (gleam export expression-types)
+# compiler. For each fixtures/oracle/<name>.gleam it writes:
+#   - fixtures/oracle/<name>.interface.json  (gleam export package-interface)
+#   - fixtures/oracle/<name>.expr.json       (gleam export expression-types)
 #
 # `expression-types` requires the patched compiler built from the
 # `expression-type-export` branch in ../gleam. Override its path with GLEAM=.
@@ -13,7 +13,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-oracle_dir="$root/oracle"
+oracle_dir="$root/fixtures/oracle"
 toolversions="$root/.tool-versions"
 gleam="${GLEAM:-$root/../gleam/target/debug/gleam}"
 

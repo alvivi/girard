@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Regenerate the resolution differential manifest from the *real* Gleam
-# compiler. For every case under `differential/cases/` it compiles the fixture,
+# compiler. For every case under `fixtures/differential/cases/` it compiles the fixture,
 # and whichever forced-branch companions the case has, with **gleam 1.18.0**,
 # then hands the results to `girard/differential` to write
-# `differential/expected.json`.
+# `fixtures/differential/expected.json`.
 #
 # Run from the project root: `bash scripts/gen-differential.sh`.
 #
@@ -14,7 +14,7 @@
 # Three things it does differently from `gen-oracle.sh`, each of which would
 # silently corrupt the evidence if it did not:
 #
-#   - it copies `differential/.tool-versions`, *not* the repo root's, which pins
+#   - it copies `fixtures/differential/.tool-versions`, *not* the repo root's, which pins
 #     1.18.1 — copying the wrong one runs the whole corpus on the wrong compiler;
 #   - it copies `gleam.toml` byte for byte instead of patching `name =`, so the
 #     committed template is exactly the compiled configuration and `inputs_hash`
@@ -25,7 +25,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-differential="$root/differential"
+differential="$root/fixtures/differential"
 gleam="${GLEAM:-$HOME/.asdf/installs/gleam/1.18.0/bin/gleam}"
 staging="${STAGING:-$(mktemp -d)}"
 
@@ -79,8 +79,8 @@ compile() {
     local module
     while IFS= read -r module; do
       [ -z "$module" ] && continue
-      mkdir -p "$work/src/$(dirname "${module#differential/support/}")"
-      cp "$root/$module" "$work/src/${module#differential/support/}"
+      mkdir -p "$work/src/$(dirname "${module#fixtures/differential/support/}")"
+      cp "$root/$module" "$work/src/${module#fixtures/differential/support/}"
     done <<< "${support//,/$'\n'}"
   fi
 

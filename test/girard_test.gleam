@@ -184,7 +184,7 @@ pub fn printer_skips_reserved_words_test() {
 //
 // The human-readable report `girard.report` produces for the CLI on an
 // inference error. Its rendering of well-typed modules is covered by the golden
-// snapshots in `golden_test.gleam` (see `golden/double.gleam`).
+// snapshots in `golden_test.gleam` (see `fixtures/golden/double.gleam`).
 
 pub fn report_error_test() {
   girard.report("pub fn f() { 1 +. 2 }")

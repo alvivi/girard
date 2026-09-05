@@ -44,8 +44,8 @@ cases/<case>/forced_module.gleam  companion: the receiver binding renamed away
 expected.json        the manifest
 ```
 
-`differential/` sits at the repo root beside `oracle/` and `golden/`, outside
-`src/` and `test/`, so `gleam` does not compile the fixtures as modules.
+`fixtures/differential/` sits beside `fixtures/oracle/` and `fixtures/golden/`,
+outside `src/` and `test/`, so `gleam` does not compile the fixtures as modules.
 
 ## The shadow module
 

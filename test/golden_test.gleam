@@ -1,6 +1,6 @@
 //// Golden snapshots of girard's complete, human-readable module report.
 ////
-//// Each `golden/*.gleam` fixture is annotated and rendered with
+//// Each `fixtures/golden/*.gleam` fixture is annotated and rendered with
 //// `girard.report`, then captured as a Birdie snapshot pairing the source with
 //// its inferred annotation — analogous to glance's source-plus-AST snapshots.
 //// This complements the suite rather than duplicating it:
@@ -10,8 +10,8 @@
 ////     unintended regressions and makes deliberate format changes reviewable.
 ////   - `girard_test.gleam` holds focused behavioural specifications.
 ////
-//// Fixtures live at the repo root under `golden/` (like `oracle/`) rather than
-//// under `test/`, so `gleam` does not try to compile them as modules — a
+//// Fixtures live under `fixtures/golden/` (like `fixtures/oracle/`) rather
+//// than under `test/`, so `gleam` does not try to compile them as modules — a
 //// fixture is inference input, not project code. Drop a `.gleam` file in and it
 //// is picked up automatically. Review new or changed snapshots with
 //// `gleam run -m birdie`.
@@ -22,19 +22,19 @@ import gleam/list
 import gleam/string
 import simplifile
 
-// Annotate every fixture under `golden/` and snapshot its report. The snapshot
+// Annotate every fixture under `fixtures/golden/` and snapshot its report. The snapshot
 // title is the fixture's base name, so each fixture owns one snapshot. A pending
 // (new or changed) snapshot halts the loop, so after adding several fixtures at
 // once, accept with `gleam run -m birdie` and rerun to reach the rest.
 pub fn golden_modules_test() {
-  let assert Ok(entries) = simplifile.read_directory("golden")
+  let assert Ok(entries) = simplifile.read_directory("fixtures/golden")
 
   entries
   |> list.filter(string.ends_with(_, ".gleam"))
   |> list.sort(string.compare)
   |> list.each(fn(entry) {
     let name = string.replace(entry, ".gleam", "")
-    let assert Ok(source) = simplifile.read("golden/" <> entry)
+    let assert Ok(source) = simplifile.read("fixtures/golden/" <> entry)
 
     snapshot(source)
     |> birdie.snap(title: "golden: " <> name)

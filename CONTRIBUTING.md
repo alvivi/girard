@@ -54,19 +54,19 @@ publishes a glance-7-compatible release (see the note in `gleam.toml`).
   public signatures and per-expression types with committed exports from the
   real compiler.
 - [`test/golden_test.gleam`](test/golden_test.gleam) snapshots girard's own
-  rendered report for each [`golden/`](golden/) fixture — see below.
+  rendered report for each [`fixtures/golden/`](fixtures/golden/) fixture — see below.
 
 ## Golden snapshots
 
 [`test/golden_test.gleam`](test/golden_test.gleam) annotates every
-[`golden/`](golden/) `*.gleam` fixture and captures `girard.report`'s output —
+[`fixtures/golden/`](fixtures/golden/) `*.gleam` fixture and captures `girard.report`'s output —
 the source paired with its inferred annotation — as a [Birdie][birdie] snapshot.
 Unlike the oracle suite (parity against the real compiler) these guard girard's
 own human-readable output against unintended regressions and make deliberate
-printer changes reviewable as a diff. Fixtures live at the repo root, beside
-`oracle/`, so `gleam` does not compile them as project modules.
+printer changes reviewable as a diff. Fixtures live under `fixtures/`, beside
+`fixtures/oracle/`, so `gleam` does not compile them as project modules.
 
-Add a fixture by dropping a `.gleam` file into `golden/`; it is picked up
+Add a fixture by dropping a `.gleam` file into `fixtures/golden/`; it is picked up
 automatically. A new or changed snapshot fails the test until reviewed:
 
 ```sh
@@ -80,11 +80,11 @@ Commit the resulting `.accepted` files; the `.new` files are git-ignored.
 
 ## Differential testing against the real compiler
 
-For every [`oracle/`](oracle/) Gleam fixture, the compiler exports both its
+For every [`fixtures/oracle/`](fixtures/oracle/) Gleam fixture, the compiler exports both its
 public package interface and its per-expression types. The oracle test decodes
 both JSON files into girard's `Type`, renders them with girard's printer, and
 compares signatures and shared expression spans modulo canonical type-variable
-renaming. [`oracle/README.md`](oracle/README.md) describes the fixture layout and
+renaming. [`fixtures/oracle/README.md`](fixtures/oracle/README.md) describes the fixture layout and
 comparison rules. Regenerate the fixtures after adding or changing one:
 
 ```sh
@@ -92,13 +92,13 @@ bash scripts/gen-oracle.sh
 gleam test
 ```
 
-A third fixture corpus, [`differential/`](differential/), measures something the
+A third fixture corpus, [`fixtures/differential/`](fixtures/differential/), measures something the
 oracle cannot: **which** `x.label` a name resolves to when a record field and a
 same-named module export both offer one. Each fixture makes the decision visible
 in a type — the module's export returns something different from the field — and
 the manifest records both sides' answers with each disagreement flagged, owned,
 and explained. The suite is green and the divergences are data:
-[`differential/README.md`](differential/README.md) describes the layout, the
+[`fixtures/differential/README.md`](fixtures/differential/README.md) describes the layout, the
 manifest and how to add a case. Regenerate it after adding or changing a
 fixture; it needs the pinned gleam 1.18.0 but no patched compiler:
 
@@ -111,7 +111,7 @@ For full breadth, `scripts/sweep.sh <package>` checks girard's
 **per-expression** output against a patched compiler's `gleam export
 expression-types` over a package's whole Hex-resolved dependency closure;
 `scripts/batch_sweep.sh` runs it across many packages. Results across the Hex
-ecosystem are tracked in [PACKAGES.md](PACKAGES.md).
+ecosystem are tracked in [docs/packages.md](docs/packages.md).
 
 The package sweep below is a faster coverage report that runs girard without
 the patched-compiler comparison:
@@ -123,7 +123,7 @@ gleam run -m girard/sweep gleam_json  # sweep another installed dependency
 
 It buckets every module as fully typed or by error reason, giving a prioritised
 backlog of inference gaps. The per-expression Hex sweep needs a patched compiler
-and network access, so it is run locally rather than in CI; `PACKAGES.md` is the
+and network access, so it is run locally rather than in CI; `docs/packages.md` is the
 record of that coverage.
 
 A third package tool counts the *resolutions* rather than the types:
