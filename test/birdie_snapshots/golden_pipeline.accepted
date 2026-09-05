@@ -1,5 +1,5 @@
 ---
-version: 2.0.1
+version: 2.0.2
 title: golden: pipeline
 ---
 === source ===
@@ -19,21 +19,21 @@ pub fn describe(flag) {
 }
 
 === annotation ===
+apply: fn(a, fn(a) -> b) -> b
+compose: fn(fn(c) -> d, fn(d) -> e) -> fn(c) -> e
 describe: fn(Bool) -> String
-compose: fn(fn(a) -> b, fn(b) -> c) -> fn(a) -> c
-apply: fn(d, fn(d) -> e) -> e
-34-42: fn(d) -> e
-34-49: e
-34-49: e
-43-48: d
-87-121: fn(a) -> c
-99-105: fn(b) -> c
-99-119: c
-99-119: c
-106-111: fn(a) -> b
-106-118: b
-106-118: b
-112-117: a
+34-42: fn(a) -> b
+34-49: b
+34-49: b
+43-48: a
+87-121: fn(c) -> e
+99-105: fn(d) -> e
+99-119: e
+99-119: e
+106-111: fn(c) -> d
+106-118: d
+106-118: d
+112-117: c
 151-202: String
 156-160: Bool
 175-180: String

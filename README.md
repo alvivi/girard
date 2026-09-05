@@ -74,8 +74,8 @@ double: fn(Int) -> Int
 `constants`) and every expression's `Type` keyed by its source span (in
 `expressions`). These are structured [`girard`](src/girard.gleam) values —
 pattern-match on `Named`/`Fn`/`Var`/`Tuple`, or render one with
-`girard.type_to_string`. `girard.analyse` returns the same annotations plus
-what every reference resolved to — see [Resolving
+`girard.type_to_string`. The same record also reports what every reference
+resolved to, in `resolutions` — see [Resolving
 references](#resolving-references).
 
 ### Command line
@@ -140,11 +140,10 @@ module you pass is taken pre-parsed.)
 
 ### Resolving references
 
-`girard.analyse` — and `analyse_module`, `analyse_with_cache` and
-`analyse_package`, the twins of the four `annotate*` functions — reports
-everything `annotate` does *and* which member each reference resolved to. This
-is the question a linter or a rename asks: given `printer.println(…)`, is
-`printer` a record in scope or the module the import bound?
+Every `AnnotatedModule` also says which member each reference resolved to, in
+`resolutions`. This is the question a linter or a rename asks: given
+`printer.println(…)`, is `printer` a record in scope or the module the import
+bound?
 
 ```gleam
 import gleam/io as printer
@@ -164,18 +163,19 @@ pub fn run(l: Logger) {
 
 Each `ResolvedReference` carries the access's span — the same span the
 `Annotation` for it carries — the label's, the accessed value's, and a
-`Resolution`:
+`Resolution`. A `RecordField` names the field's `label` and the type of the
+value it was read from, its `receiver`:
 
 ```gleam
 import girard
 import gleam/list
 
 pub fn members(source: String) -> List(String) {
-  let assert Ok(analysis) = girard.analyse(source, girard.default_options())
-  list.map(analysis.resolutions, fn(reference) {
+  let assert Ok(annotated) = girard.annotate(source, girard.default_options())
+  list.map(annotated.resolutions, fn(reference) {
     case reference.resolution {
-      girard.RecordField(record, label) ->
-        girard.type_to_string(record) <> "." <> label
+      girard.RecordField(receiver, label) ->
+        girard.type_to_string(receiver) <> "." <> label
       girard.ModuleFn(module, name) -> module <> "." <> name <> "()"
       girard.ModuleConstant(module, name) -> module <> "." <> name
       girard.Constructor(module, name) -> module <> "." <> name <> "{}"
@@ -195,9 +195,33 @@ it sits, and for **every bare name in call position** — the callee of a call, 
 capture or a `use`, and a bare pipe target. Nothing else, so a name read outside
 call position (`let g = greet`), the constructor of a record update or of a
 pattern, and a tuple index have no entry. A span with no entry was therefore
-either not a recorded position or never walked: a definition `analyse_package`
-reports as `skipped` contributes none, and neither does one dropped for the
-other build target.
+either not a recorded position or one girard never walked — see [Definitions
+dropped for the target](#definitions-dropped-for-the-target) for the three
+shapes that takes.
+
+### Definitions dropped for the target
+
+Gleam's `@target` picks a build, so a definition annotated for the target
+girard is *not* typing is dropped before inference, exactly as the compiler
+omits it. Those definitions are named in `dropped`, with the span glance gave
+each one, sorted by span:
+
+```gleam
+@target(javascript)
+pub fn platform() { "js" }   // Dropped("platform", Span(20, 46))
+
+pub fn greet() { "hi" }
+```
+
+That closes the last gap in reading an absence. A span with no annotation and
+no resolution is one of exactly three things, and a consumer can now tell them
+apart: not a recorded position at all, inside a definition `annotate_package`
+reports as `skipped` (with the error that declined it), or inside one `dropped`
+for the target.
+
+Only functions and constants are listed. `@target` drops imports, custom types
+and type aliases too, but none has a body, so no missing annotation is ever
+inside one.
 
 ### Options: resolver and target
 
@@ -244,7 +268,8 @@ invalidate cached importers, or start again from `new_cache()`.
 `girard.annotate_package(modules, options)` annotates many modules in one pass,
 inferring a shared import only once across the whole run. `modules` is a list of
 `#(module_path, glance.Module)`; the result maps each path to a `ModuleResult`
-(`.annotated` plus `.skipped`).
+(`.annotated` plus `.skipped`; the definitions dropped for the target are in
+`.annotated.dropped`, since a module annotated on its own drops them too).
 
 Unlike `annotate`/`annotate_module`, it is **best-effort per definition**: a
 top-level function or constant that does not type — along with anything that

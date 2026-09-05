@@ -37,7 +37,7 @@ annotate_all(Files, Opts) ->
             {ok, Bin} ->
                 case girard:annotate(Bin, Opts) of
                     {ok, Annotated} ->
-                        %% AnnotatedModule(functions, constants, expressions)
+                        %% AnnotatedModule(functions, constants, expressions, resolutions, dropped)
                         Es = element(4, Annotated),
                         {Ok + 1, Err, Exprs + length(Es)};
                     {error, _} ->

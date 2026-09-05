@@ -20,10 +20,10 @@ pub fn later() -> String {
 }
 
 === annotation ===
-later: fn() -> String
-not_yet: fn(String) -> String
-crash: fn() -> Int
 unreachable: fn(String) -> Int
+crash: fn() -> Int
+not_yet: fn(String) -> String
+later: fn() -> String
 46-84: Int
 55-84: String
 57-72: String

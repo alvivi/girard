@@ -90,6 +90,16 @@ fn type_of(source: String, snippet: String) -> String {
   }
 }
 
+// The rendered type of `name` in an already-annotated `functions` or
+// `constants` list, for a test that holds the record and would otherwise
+// re-infer the module through `signature` or `constant_type`.
+fn scheme_of(schemes: List(#(String, girard.Scheme)), name: String) -> String {
+  case list.key_find(schemes, name) {
+    Ok(scheme) -> girard.type_to_string(scheme.type_)
+    Error(_) -> panic as { "nothing named " <> name }
+  }
+}
+
 // The span of the first occurrence of `snippet` in `source`.
 fn span_of(source: String, snippet: String) -> glance.Span {
   let assert Ok(start) = first_index(source, snippet)
@@ -108,6 +118,12 @@ fn last_span(source: String, snippet: String) -> glance.Span {
     True -> glance.Span(start, start + string.byte_size(snippet))
     False -> panic as { "not in the source: " <> snippet }
   }
+}
+
+// Whether `span` falls inside `outer`, which is how "nothing inside a dropped
+// definition is reported" is checked.
+fn within(span: glance.Span, outer: glance.Span) -> Bool {
+  span.start >= outer.start && span.end <= outer.end
 }
 
 fn first_index(haystack: String, needle: String) -> Result(Int, Nil) {
@@ -1951,8 +1967,8 @@ fn references(
   source: String,
   modules: List(#(String, String)),
 ) -> List(girard.ResolvedReference) {
-  let assert Ok(analysis) = girard.analyse(source, options_with(modules))
-  analysis.resolutions
+  let assert Ok(annotated) = girard.annotate(source, options_with(modules))
+  annotated.resolutions
 }
 
 // The one reference recorded at `span`. There is at most one — `resolutions`
@@ -2065,7 +2081,7 @@ pub fn prelude_constructor_resolves_to_gleam_test() {
 
 pub fn top_level_callee_resolves_to_module_function_test() {
   // A bare call on this module's own function names it under the module girard
-  // was given, which is `""` for a module analysed on its own.
+  // was given, which is `""` for a module annotated on its own.
   let source = "pub fn run() { helper(1) }\npub fn helper(n) { n }"
   resolution_at(source, [], span_of(source, "helper"))
   |> should.equal(girard.ModuleFn("", "helper"))
@@ -2212,8 +2228,8 @@ fn should_read_box_value(source: String) -> Nil {
 // records the callee's own return over it — so the count is only meaningful
 // against the same shape without the seeding.
 fn annotations_at(source: String, span: glance.Span) -> List(String) {
-  let assert Ok(analysis) = girard.analyse(source, girard.default_options())
-  analysis.annotated.expressions
+  let assert Ok(annotated) = girard.annotate(source, girard.default_options())
+  annotated.expressions
   |> list.filter(fn(a) { a.span == span })
   |> list.map(fn(a) { girard.type_to_string(a.type_) })
 }
@@ -2374,15 +2390,15 @@ pub fn skipped_definition_has_no_references_test() {
     <> "pub fn bad(p: Person) { p.name + 1 }"
   let options =
     girard.default_options() |> girard.with_resolver(fn(_) { Error(Nil) })
-  let assert Ok(analysis) =
+  let assert Ok(result) =
     dict.get(
-      girard.analyse_package(parse_package([#("app/m", source)]), options),
+      girard.annotate_package(parse_package([#("app/m", source)]), options),
       "app/m",
     )
 
   let assert Ok(girard.TypeMismatch(_, _)) =
-    list.key_find(analysis.skipped, "bad")
-  list.map(analysis.resolutions, fn(r) { r.span })
+    list.key_find(result.skipped, "bad")
+  list.map(result.annotated.resolutions, fn(r) { r.span })
   |> should.equal([span_of(source, "p.name")])
 }
 
@@ -2477,14 +2493,16 @@ pub fn skipped_definition_exports_the_shadowed_import_identity_test() {
     ),
     #("app/b", b),
   ]
-  let assert Ok(analysis) =
+  let assert Ok(result) =
     dict.get(
-      girard.analyse_package(parse_package(sources), options_with([])),
+      girard.annotate_package(parse_package(sources), options_with([])),
       "app/b",
     )
 
   let assert Ok(reference) =
-    list.find(analysis.resolutions, fn(r) { r.span == span_of(b, "a.g") })
+    list.find(result.annotated.resolutions, fn(r) {
+      r.span == span_of(b, "a.g")
+    })
   reference.resolution
   |> should.equal(girard.ModuleFn("app/imported", "g"))
 }
@@ -2504,74 +2522,204 @@ pub fn skipped_definition_keeps_the_shadowed_import_origin_test() {
     <> "pub fn g() { 1 + \"oops\" }\n"
     <> "pub fn uses() { g() }"
   let modules = [#("imported", "pub fn g() -> String { \"x\" }")]
-  let assert Ok(analysis) =
+  let assert Ok(result) =
     dict.get(
-      girard.analyse_package(
+      girard.annotate_package(
         parse_package([#("app/m", source)]),
         options_with(modules),
       ),
       "app/m",
     )
 
-  list.key_find(analysis.skipped, "g") |> should.be_ok
+  list.key_find(result.skipped, "g") |> should.be_ok
   let assert Ok(reference) =
-    list.find(analysis.resolutions, fn(r) { r.span == last_span(source, "g") })
+    list.find(result.annotated.resolutions, fn(r) {
+      r.span == last_span(source, "g")
+    })
   reference.resolution
   |> should.equal(girard.ModuleFn("imported", "g"))
 }
 
-pub fn off_target_definition_has_no_references_test() {
+pub fn skipped_definition_does_not_borrow_an_import_test() {
+  // The twin of `dropped_definition_does_not_borrow_an_import_test`. A
+  // definition girard declines is looked up like any other, and it is only
+  // absent from `functions` because best-effort inference left its name
+  // unbound — which it is not when the definition shadows an unqualified
+  // import of the same name. `g` was published under the import's signature
+  // while also being named in `skipped`, contradicting `ModuleResult`, so the
+  // names inference declined are dropped by name rather than by lookup.
+  let source =
+    "import imported.{g}\n"
+    <> "pub fn g() { 1 + \"oops\" }\n"
+    <> "pub fn uses() { g() }"
+  let modules = [#("imported", "pub fn g() -> String { \"x\" }")]
+  let assert Ok(result) =
+    dict.get(
+      girard.annotate_package(
+        parse_package([#("app/m", source)]),
+        options_with(modules),
+      ),
+      "app/m",
+    )
+
+  list.key_find(result.skipped, "g") |> should.be_ok
+  list.key_find(result.annotated.functions, "g") |> should.be_error
+  list.map(result.annotated.functions, fn(f) { f.0 }) |> should.equal(["uses"])
+}
+
+pub fn off_target_definition_is_dropped_test() {
   // A definition compiled only for the other target is dropped before
-  // inference: it is not skipped, and nothing walks its spans.
+  // inference: it is not skipped, nothing walks its spans, and it is named in
+  // `dropped` — which is how a consumer tells that absence from the other two.
   let source =
     "pub type Person {\n  Person(name: String)\n}\n"
     <> "@target(javascript)\n"
     <> "pub fn js(p: Person) { p.name }\n"
     <> "pub fn erl(p: Person) { p.name }"
-  let assert Ok(analysis) = girard.analyse(source, girard.default_options())
+  let span = span_of(source, "pub fn js(p: Person) { p.name }")
+  let result = package_result([#("app/m", source)], "app/m")
 
-  analysis.skipped |> should.equal([])
-  list.map(analysis.resolutions, fn(r) { r.span })
+  result.skipped |> should.equal([])
+  result.annotated.dropped |> should.equal([girard.Dropped("js", span)])
+  list.key_find(result.annotated.functions, "js") |> should.be_error
+  list.map(result.annotated.resolutions, fn(r) { r.span })
   |> should.equal([last_span(source, "p.name")])
+  list.any(result.annotated.expressions, fn(a) { within(a.span, span) })
+  |> should.be_false
 }
 
-pub fn annotate_matches_analyse_test() {
-  // `annotate*` are `analyse*` with the resolutions taken off, so the two
-  // families cannot drift.
+pub fn dropped_constant_is_reported_test() {
+  // Constants are dropped for the target as functions are, and the active
+  // target decides which of a pair is the dropped one.
+  let source =
+    "@target(erlang)\npub const answer = 42\n"
+    <> "@target(javascript)\npub const answer = \"42\""
+  let options = options_with([])
+
+  let assert Ok(annotated) = girard.annotate(source, options)
+  annotated.dropped
+  |> should.equal([
+    girard.Dropped("answer", span_of(source, "pub const answer = \"42\"")),
+  ])
+  scheme_of(annotated.constants, "answer") |> should.equal("Int")
+
+  let assert Ok(js) =
+    girard.annotate(source, girard.with_target(options, girard.JavaScript))
+  js.dropped
+  |> should.equal([
+    girard.Dropped("answer", span_of(source, "pub const answer = 42")),
+  ])
+  scheme_of(js.constants, "answer") |> should.equal("String")
+}
+
+pub fn dropped_is_in_source_order_test() {
+  // glance keeps functions and constants in separate lists, so a dropped
+  // constant written between two dropped functions would come out after both
+  // if the two partitions were merely concatenated. The span sort puts it back
+  // where it was written.
+  let source =
+    "@target(javascript)\npub fn first() { 1 }\n"
+    <> "@target(javascript)\npub const middle = 2\n"
+    <> "@target(javascript)\npub fn last() { 3 }"
+  let assert Ok(annotated) = girard.annotate(source, options_with([]))
+
+  list.map(annotated.dropped, fn(d) { d.name })
+  |> should.equal(["first", "middle", "last"])
+}
+
+pub fn definitions_are_published_in_source_order_test() {
+  // `functions` and `constants` promise source order, and glance accumulates
+  // each list newest-first, so the definitions came out reversed. They are
+  // sorted by span like every other published list now.
+  let source =
+    "pub fn alpha() { 1 }\n"
+    <> "pub const one = 1\n"
+    <> "pub fn beta() { 2 }\n"
+    <> "pub const two = 2\n"
+    <> "pub fn gamma() { 3 }"
+  let assert Ok(annotated) = girard.annotate(source, options_with([]))
+
+  list.map(annotated.functions, fn(f) { f.0 })
+  |> should.equal(["alpha", "beta", "gamma"])
+  list.map(annotated.constants, fn(c) { c.0 }) |> should.equal(["one", "two"])
+}
+
+pub fn target_sibling_is_published_once_test() {
+  // The caller's unfiltered module used to be rendered, so both siblings
+  // looked their one surviving namesake up by name and `functions` listed it
+  // twice. The filtered module is rendered now: one entry, under the active
+  // target's signature, with the inactive sibling in `dropped`.
+  let source =
+    "pub type MyError {\n  Boom\n}\n"
+    <> "@target(erlang)\n@external(erlang, \"m\", \"f\")\n"
+    <> "fn do_thing(x: String) -> Result(Int, MyError)\n"
+    <> "@target(javascript)\n@external(javascript, \"./m.mjs\", \"f\")\n"
+    <> "fn do_thing(x: String) -> Result(Int, String)\n"
+    <> "pub fn thing(x: String) {\n  do_thing(x)\n}"
+  let assert Ok(annotated) = girard.annotate(source, options_with([]))
+
+  list.map(annotated.functions, fn(f) { f.0 })
+  |> list.sort(string.compare)
+  |> should.equal(["do_thing", "thing"])
+  scheme_of(annotated.functions, "do_thing")
+  |> should.equal("fn(String) -> Result(Int, MyError)")
+  list.map(annotated.dropped, fn(d) { d.name }) |> should.equal(["do_thing"])
+}
+
+pub fn dropped_definition_does_not_borrow_an_import_test() {
+  // A dropped definition shadowing an unqualified import of the same name
+  // found the *import's* scheme when the unfiltered module was rendered, and
+  // published it under its own name. It is simply not looked up now.
+  let source = "import imported.{g}\n@target(javascript)\npub fn g() { 1 }"
+  let modules = [#("imported", "pub fn g() -> String { \"x\" }")]
+  let assert Ok(annotated) = girard.annotate(source, options_with(modules))
+
+  list.key_find(annotated.functions, "g") |> should.be_error
+  annotated.dropped
+  |> should.equal([girard.Dropped("g", span_of(source, "pub fn g() { 1 }"))])
+}
+
+pub fn resolutions_are_returned_by_every_entry_point_test() {
+  // One family now, so the resolutions and the dropped definitions ride on
+  // every result: the three strict entry points return the identical record,
+  // and the package's `annotated` carries both too — under the package's own
+  // module name, which is the only difference between the two.
   let source =
     "pub type Person {\n  Person(name: String)\n}\n"
+    <> "@target(javascript)\npub fn js(p: Person) { p.name }\n"
     <> "pub fn f(p: Person) { p.name }"
-  let assert Ok(analysis) = girard.analyse(source, girard.default_options())
-  girard.annotate(source, girard.default_options())
-  |> should.equal(Ok(analysis.annotated))
-
+  let options = options_with([])
+  let assert Ok(module) = glance.module(source)
+  let assert Ok(annotated) = girard.annotate(source, options)
   let #(cached, _) =
-    girard.analyse_with_cache(
-      source,
-      girard.default_options(),
-      girard.new_cache(),
-    )
-  let #(annotated, _) =
-    girard.annotate_with_cache(
-      source,
-      girard.default_options(),
-      girard.new_cache(),
-    )
-  let assert Ok(cached) = cached
-  annotated |> should.equal(Ok(cached.annotated))
+    girard.annotate_with_cache(source, options, girard.new_cache())
 
-  let sources = [
-    #("app/m", "pub fn good() -> Int { 1 }\npub fn bad() { 1 + \"oops\" }"),
+  let dropped = [
+    girard.Dropped("js", span_of(source, "pub fn js(p: Person) { p.name }")),
   ]
-  let options =
-    girard.default_options() |> girard.with_resolver(fn(_) { Error(Nil) })
-  let parsed = parse_package(sources)
-  girard.annotate_package(parsed, options)
-  |> should.equal(
-    dict.map_values(girard.analyse_package(parsed, options), fn(_, analysis) {
-      girard.ModuleResult(analysis.annotated, analysis.skipped)
-    }),
-  )
+
+  annotated.resolutions
+  |> list.map(fn(r) { #(r.span, r.resolution) })
+  |> should.equal([
+    #(
+      last_span(source, "p.name"),
+      girard.RecordField(girard.Named("", "Person", []), "name"),
+    ),
+  ])
+  annotated.dropped |> should.equal(dropped)
+  girard.annotate_module(module, options) |> should.equal(Ok(annotated))
+  cached |> should.equal(Ok(annotated))
+
+  let from_package = package_result([#("app/m", source)], "app/m")
+  from_package.annotated.resolutions
+  |> list.map(fn(r) { #(r.span, r.resolution) })
+  |> should.equal([
+    #(
+      last_span(source, "p.name"),
+      girard.RecordField(girard.Named("app/m", "Person", []), "name"),
+    ),
+  ])
+  from_package.annotated.dropped |> should.equal(dropped)
 }
 
 // The census

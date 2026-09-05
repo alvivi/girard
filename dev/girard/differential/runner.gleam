@@ -54,10 +54,10 @@ pub fn girard_analysis(
   function: String,
 ) -> #(Outcome, List(girard.ResolvedReference)) {
   let options = girard.with_resolver(girard.default_options(), resolver())
-  case girard.analyse(source, options) {
+  case girard.annotate(source, options) {
     Error(error) -> #(girard_error(error_variant(error)), [])
-    Ok(analysis) -> #(
-      case list.key_find(analysis.annotated.functions, function) {
+    Ok(annotated) -> #(
+      case list.key_find(annotated.functions, function) {
         Error(_) -> girard_error("MissingFunction")
         Ok(scheme) ->
           Outcome(
@@ -68,7 +68,7 @@ pub fn girard_analysis(
             error_variant: None,
           )
       },
-      analysis.resolutions,
+      annotated.resolutions,
     )
   }
 }

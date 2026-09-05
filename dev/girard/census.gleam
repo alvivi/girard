@@ -1,5 +1,5 @@
 //// Count what girard resolved, and what it did not, over a whole installed
-//// package. It runs `analyse_with_cache` over every module of
+//// package. It runs `annotate_with_cache` over every module of
 //// `<packages-root>/<package>/src` and reports every reference published as
 //// `Unresolved`, with the span it sits at.
 ////
@@ -53,7 +53,7 @@ fn census(package: String, pkg_root: String) -> Nil {
           Error(_) -> acc
           Ok(source) -> {
             let #(result, cache) =
-              girard.analyse_with_cache(source, options, cache)
+              girard.annotate_with_cache(source, options, cache)
             case result {
               Error(e) -> {
                 io.println(
@@ -93,8 +93,8 @@ fn census(package: String, pkg_root: String) -> Nil {
 }
 
 // Print one line per unresolved reference in a module; return how many.
-fn report(module_name: String, analysis: girard.Analysis) -> Int {
-  list.fold(analysis.resolutions, 0, fn(found, reference) {
+fn report(module_name: String, annotated: girard.AnnotatedModule) -> Int {
+  list.fold(annotated.resolutions, 0, fn(found, reference) {
     case reference.resolution {
       girard.Unresolved(reason) -> {
         io.println(
