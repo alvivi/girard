@@ -22,12 +22,12 @@ import simplifile
 
 // Oracle comparison
 //
-// Read each sample under `oracle/`, annotate it with girard, and check every
+// Read each sample under `fixtures/oracle/`, annotate it with girard, and check every
 // public signature — and every per-expression span both sides report —
 // against the compiler's corresponding exports.
 
 pub fn signatures_match_compiler_test() {
-  let assert Ok(entries) = simplifile.read_directory("oracle")
+  let assert Ok(entries) = simplifile.read_directory("fixtures/oracle")
   let samples =
     list.filter_map(entries, fn(entry) {
       case string.ends_with(entry, ".gleam") {
@@ -42,8 +42,9 @@ pub fn signatures_match_compiler_test() {
 // compiler's interface for that module.
 fn check_sample(name: String) -> Nil {
   let assert Ok(json_string) =
-    simplifile.read("oracle/" <> name <> ".interface.json")
-  let assert Ok(source) = simplifile.read("oracle/" <> name <> ".gleam")
+    simplifile.read("fixtures/oracle/" <> name <> ".interface.json")
+  let assert Ok(source) =
+    simplifile.read("fixtures/oracle/" <> name <> ".gleam")
 
   let assert Ok(#(oracle_functions, oracle_constants)) =
     json.parse(json_string, decode.at(["modules", name], module_decoder()))
@@ -69,7 +70,8 @@ fn check_sample(name: String) -> Nil {
 // both sides report. Compiler desugaring emits some spans girard does not, so
 // require agreement only where the spans coincide.
 fn check_expressions(name: String, annotated: girard.AnnotatedModule) -> Nil {
-  let assert Ok(expr_json) = simplifile.read("oracle/" <> name <> ".expr.json")
+  let assert Ok(expr_json) =
+    simplifile.read("fixtures/oracle/" <> name <> ".expr.json")
   let assert Ok(oracle_exprs) =
     json.parse(
       expr_json,

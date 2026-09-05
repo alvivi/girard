@@ -8,8 +8,8 @@
 # The offset- and line-ending-sensitive test data, pinned explicitly so the
 # intent survives even if the blanket rule above is ever relaxed:
 #   - *.gleam            sources whose byte offsets are reported and compared
-#   - oracle/*.json      committed compiler exports carrying byte spans
+#   - fixtures/oracle/*.json  committed compiler exports carrying byte spans
 #   - *.accepted         Birdie snapshots embedding both source and offsets
 *.gleam                          text eol=lf
-oracle/*.json                    text eol=lf
+fixtures/oracle/*.json           text eol=lf
 test/birdie_snapshots/*.accepted text eol=lf

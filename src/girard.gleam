@@ -195,7 +195,7 @@ pub type UnresolvedReason {
   /// the access rather than after it.
   ///
   /// That is measured rather than promised: over the corpora girard is checked
-  /// against — its `oracle/` and `golden/` fixtures, and a resweep of lustre,
+  /// against — its `fixtures/oracle/` and `fixtures/golden/` fixtures, and a resweep of lustre,
   /// mist, wisp, glint, birl, gleam_otp, maud and shore — no accepted program
   /// reports this reason. A finite census is not a proof, so a new one over
   /// code the compiler accepts is a gap in girard's inference order, and worth

@@ -37,24 +37,24 @@ import simplifile
 
 // Paths and pins
 
-const cases_dir = "differential/cases"
+const cases_dir = "fixtures/differential/cases"
 
-const support_dir = "differential/support"
+const support_dir = "fixtures/differential/support"
 
-const manifest_path = "differential/expected.json"
+const manifest_path = "fixtures/differential/expected.json"
 
-const plain_template = "differential/gleam.toml"
+const plain_template = "fixtures/differential/gleam.toml"
 
-const pinned_template = "differential/pinned/gleam.toml"
+const pinned_template = "fixtures/differential/pinned/gleam.toml"
 
-const pinned_lock = "differential/pinned/manifest.toml"
+const pinned_lock = "fixtures/differential/pinned/manifest.toml"
 
 /// The compiler the whole corpus is measured against. Pinned here as well as in
-/// `differential/.tool-versions`, because the version is a hash input.
+/// `fixtures/differential/.tool-versions`, because the version is a hash input.
 pub const gleam_version = "1.18.0"
 
 /// The stdlib version the one dependency-taking row is pinned to, matching
-/// `differential/pinned/manifest.toml`. The test asserts girard's own
+/// `fixtures/differential/pinned/manifest.toml`. The test asserts girard's own
 /// `build/packages` agrees, so a skew fails loudly instead of reading as a
 /// resolution divergence.
 pub const stdlib_version = "1.0.3"

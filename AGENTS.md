@@ -37,12 +37,12 @@ testing workflow, and code/changelog/commit conventions.
 Tests use **gleeunit**. `test/girard_test.gleam` covers inference and the public
 API directly. `test/oracle_test.gleam` compares inferred public signatures and
 per-expression types with committed JSON exports from the real Gleam compiler
-for sources under `oracle/`. `test/golden_test.gleam` uses **birdie** to
-snapshot `girard.report`'s rendered output for each fixture under `golden/`;
+for sources under `fixtures/oracle/`. `test/golden_test.gleam` uses **birdie** to
+snapshot `girard.report`'s rendered output for each fixture under `fixtures/golden/`;
 review pending snapshots with `gleam run -m birdie`.
 `test/differential_test.gleam` re-derives girard's answer for every case under
-`differential/` and asserts it still matches the committed manifest of compiler
-answers there. `oracle/`, `golden/` and `differential/` all sit at the repo
+`fixtures/differential/` and asserts it still matches the committed manifest of
+compiler answers there. The three corpora live under `fixtures/` at the repo
 root, outside `src/` and `test/`, so `gleam` does not compile the fixtures as
 modules.
 
@@ -195,11 +195,11 @@ There are three levels of compiler comparison:
   compiler's `gleam export expression-types` over a package's resolved
   dependency closure.
 - `scripts/batch_sweep.sh` repeats the per-expression sweep across many Hex
-  packages. [PACKAGES.md](PACKAGES.md) records the resulting ecosystem
+  packages. [docs/packages.md](docs/packages.md) records the resulting ecosystem
   coverage.
 - `test/differential_test.gleam` compares *which* member a name resolves to —
   record field or same-named module export — against a manifest of answers from
-  a pinned gleam 1.18.0 under `differential/`. Regenerate it with
+  a pinned gleam 1.18.0 under `fixtures/differential/`. Regenerate it with
   `scripts/gen-differential.sh`. Divergences are recorded rather than hidden:
   the manifest flags each one, names the change that must remove it, and the
   test pins their count so the total cannot quietly grow.
