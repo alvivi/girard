@@ -7,16 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+### Removed
 
-- `annotate`, `annotate_module`, `annotate_with_cache` and `annotate_package`
-  now return the resolutions 2.2.0 introduced: `AnnotatedModule` has a
-  `resolutions` field, and the `analyse*` family and the `Analysis` type are
-  removed. A consumer that read `analysis.annotated` and
-  `analysis.resolutions` reads the one record; a consumer of `annotate*` that
-  only reads fields is unaffected. Constructing or fully destructuring
-  `AnnotatedModule` must name the new fields (`resolutions`, and the `dropped`
-  below):
+- `analyse`, `analyse_module`, `analyse_with_cache` and `analyse_package`, and
+  the `Analysis` type they returned. There is no deprecation period and no
+  alias: 2.2.0 released the resolution API additively so 2.x consumers could
+  stay on 2.x, and 3.0.0 is where it becomes the only API. Every `analyse*`
+  call becomes the `annotate*` of the same name, reading one record instead of
+  two:
 
   ```gleam
   // Before
@@ -29,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   annotated.expressions
   annotated.resolutions
   ```
+
+### Changed
+
+- `annotate`, `annotate_module`, `annotate_with_cache` and `annotate_package`
+  now return the resolutions 2.2.0 introduced: `AnnotatedModule` has a
+  `resolutions` field. Their signatures are otherwise unchanged, so a consumer
+  that only reads fields off the result is unaffected; constructing or fully
+  destructuring `AnnotatedModule` must name the two new fields (`resolutions`,
+  and the `dropped` below).
 
 ### Added
 
