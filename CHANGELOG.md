@@ -9,35 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `AnnotatedModule.dropped`: the name and span of every top-level function or
-  constant left out for the other build `Target`. A span with no annotation
-  and no resolution is now one of three things a consumer can tell apart: not
-  a recorded position, inside a definition `skipped` with its error, or inside
-  one `dropped` for the target.
+- `AnnotatedModule.dropped`: the name and span of each top-level function or
+  constant `@target` left out of this build. A span with no annotation is now
+  explainable — girard declined the definition (`skipped`), dropped it for the
+  target (`dropped`), or never records that position at all.
 
 ### Changed
 
 - `annotate`, `annotate_module`, `annotate_with_cache` and `annotate_package`
-  now return the resolutions 2.2.0 introduced: `AnnotatedModule` has a
-  `resolutions` field. Their signatures are otherwise unchanged, so a consumer
-  that only reads fields off the result is unaffected; constructing or fully
-  destructuring `AnnotatedModule` must name the two new fields, `resolutions`
-  and the `dropped` above.
-- `Resolution`'s `RecordField` names the accessed value's type `receiver`
-  rather than `record`. Positional matches (`RecordField(type_, label)`) are
-  unaffected; only a labelled access or update needs the new name. The variant
-  holds a type, not the accessed expression the compiler's own `record` field
-  holds, and `record` otherwise had to name both the whole access and one half
-  of it.
+  return the resolutions 2.2.0 introduced, on a new `AnnotatedModule`
+  `resolutions` field. Their signatures are unchanged, so reading fields off
+  the result still works as it did; constructing or fully destructuring
+  `AnnotatedModule` must name the two new fields, `resolutions` and `dropped`.
+- `Resolution`'s `RecordField` renames its first field `record` → `receiver`.
+  It holds the type of the value the field was read from — the `user` in
+  `user.name` — which `record` was too easy to read as the whole access.
+  Positional matches (`RecordField(type_, label)`) are unaffected; only a
+  labelled one needs the new name.
 
 ### Removed
 
 - `analyse`, `analyse_module`, `analyse_with_cache` and `analyse_package`, and
-  the `Analysis` type they returned. There is no deprecation period and no
-  alias: 2.2.0 released the resolution API additively so 2.x consumers could
-  stay on 2.x, and 3.0.0 is where it becomes the only API. Every `analyse*`
-  call becomes the `annotate*` of the same name, reading one record instead of
-  two:
+  the `Analysis` they returned. 2.2.0 shipped them beside `annotate*` so 2.x
+  consumers could stay put; 3.0.0 drops them, with no alias. Call the
+  `annotate*` of the same name and read one record instead of two:
 
   ```gleam
   // Before
@@ -54,23 +49,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A `@target` sibling pair is listed once in `functions` / `constants`, under
-  the active target's signature; the inactive one was listed too, with the
-  active one's signature. A definition dropped for the target no longer
-  appears under a same-named unqualified import's signature either.
-- A definition in a `ModuleResult`'s `skipped` no longer appears in
-  `annotated.functions` under the signature of the unqualified import it
-  shadows. `import imported.{g}` with a local `pub fn g` that does not type
-  listed `g` in both `skipped` and `functions`, holding `imported`'s scheme,
-  against `ModuleResult`'s own promise that a skipped definition is absent from
-  `annotated`. The names inference declined are dropped by name now, rather
-  than by a lookup that only fails when nothing else binds the name.
+  the active target's signature. Both used to be listed, and both under the
+  active one's signature. A definition dropped for the target no longer takes
+  a same-named unqualified import's signature either.
+- A definition in `skipped` no longer also appears in `annotated.functions`,
+  as `ModuleResult` promises. A local `pub fn g` that does not type, over an
+  `import imported.{g}` it shadows, was listed in both — in `functions` under
+  the import's signature rather than its own.
 - `AnnotatedModule.functions` and `constants` are in the source order their
-  fields have always documented. `glance` accumulates a module's definitions
-  newest-first and both lists were published as they came, so they were
-  reversed; they are sorted by span like every other published list now. A
-  consumer that reads a definition by name is unaffected; one that walked
-  either list in order was walking the module backwards. `girard.report`
-  renders definitions in the same new order.
+  docs have always promised; both were reversed. Reading a definition by name
+  is unaffected, but walking either list in order was walking the module
+  backwards. `girard.report` lists definitions in the same new order.
 - A skipped definition no longer breaks calls to the import it shadows. In
   best-effort mode the skipped definition's argument labels outlived it, so a
   later call using the import's own labels was wrongly rejected with
