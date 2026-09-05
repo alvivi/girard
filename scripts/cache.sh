@@ -25,7 +25,8 @@
 #   scripts/cache.sh stats                      summarize cache contents
 #
 # Layout ($GIRARD_CACHE, default ~/.cache/girard-sweep):
-#   pool/<name>@<version>/   each unique package version's gleam.toml + src/, ONCE
+#   pool/<name>@<version>/   each unique package version's src/, ONCE, with its
+#                            gleam.toml when it has one (an Erlang dep has none)
 #   manifest/<pkg>.txt       the package's closure: one "<name>@<version>" per line
 #   oracle/<pkg>.json        the patched compiler's per-expression oracle
 #   index.tsv                <pkg> <TAB> built|skip-build|skip-resolve <TAB> detail
@@ -128,16 +129,40 @@ EOF
   #    storing only gleam.toml + src/ (all girard's resolver and the diff need).
   local tmp_manifest="$work/manifest.txt"
   : >"$tmp_manifest"
-  local ver dest
+  #    A closure member need not be a Gleam package — a rebar3 dependency is
+  #    `src/*.erl` and no `gleam.toml` — so the copy stays best-effort for a
+  #    dependency. It is not optional for the root package: its `gleam.toml` is
+  #    the only thing that says whether the package builds for Erlang or for
+  #    JavaScript, and a root pooled without one is censused under the wrong
+  #    target with no sign that anything went wrong.
+  local ver dest staged
   for d in "$deps"/*/; do
     name="$(basename "$d")"
     [ -d "$d/src" ] || continue
+    if [ "$name" = "$pkg" ] && [ ! -f "$d/gleam.toml" ]; then
+      printf '%s\tskip-build\tno gleam.toml for the package itself\n' "$pkg" >>"$index"
+      echo "cache build $pkg: skip-build (no gleam.toml)"
+      return 0
+    fi
     ver="$(toml_version "$d/gleam.toml")"
     dest="$pool/$name@$ver"
     if [ ! -d "$dest" ]; then
-      mkdir -p "$dest"
-      cp "$d/gleam.toml" "$dest/gleam.toml" 2>/dev/null || true
-      cp -r "$d/src" "$dest/src"
+      # Fill the entry under a temporary name and move it into place only once
+      # it is whole. A half-written `$dest` would be permanent: every later
+      # build sees the directory, takes the `[ ! -d "$dest" ]` branch's else,
+      # and adopts whatever is in it.
+      staged="$pool/.partial.$$.$name@$ver"
+      rm -rf "$staged"
+      if ! mkdir -p "$staged" \
+        || { [ -f "$d/gleam.toml" ] && ! cp "$d/gleam.toml" "$staged/gleam.toml"; } \
+        || ! cp -r "$d/src" "$staged/src" \
+        || { [ ! -d "$dest" ] && ! mv "$staged" "$dest"; }; then
+        rm -rf "$staged"
+        printf '%s\tskip-build\tcould not pool %s\n' "$pkg" "$name" >>"$index"
+        echo "cache build $pkg: skip-build (could not pool $name)"
+        return 0
+      fi
+      rm -rf "$staged"
     fi
     printf '%s@%s\n' "$name" "$ver" >>"$tmp_manifest"
   done
@@ -203,10 +228,20 @@ select_pkgs() {
 # walks fewer modules, and if the hole is the root package it walks none at all
 # and reports a confident zero — zero mismatches, zero unresolved references.
 # Nothing downstream can tell that apart from a package that is genuinely clean,
-# so a truncated or corrupt cache would certify itself. Every member the
-# manifest names must therefore be in the pool and must link, and the root's own
-# `src/` must be there when the staging is done; anything less takes the
-# callers' `missing` branch instead of a result.
+# so a truncated or corrupt cache would certify itself. A hole is not only an
+# absent member, either: a root entry with no `gleam.toml` reads as Erlang
+# whatever it is, so a JavaScript package would be walked with its `@target`
+# definitions dropped and report a smaller count, again as a clean one.
+#
+# Every member the manifest names must therefore be in the pool with its `src/`
+# and must link. The root package's entry is held to more than that — its
+# `gleam.toml`, and a `src/` holding at least one module — because that is
+# where a silent zero comes from. A dependency is held to less on purpose: a
+# closure member need not be a Gleam package at all — a rebar3 dependency is
+# `src/*.erl` with no `gleam.toml`, and a real corpus is full of them — while a
+# dependency that is empty surfaces as an import that does not resolve, which
+# the callers already report rather than pass. Anything that does fail takes
+# the callers' `missing` branch instead of a result.
 stage_closure() {
   local pkg="$1" stage="$2" pkgroot member name
   local manifest="$manifest_dir/$pkg.txt"
@@ -229,8 +264,10 @@ stage_closure() {
       return 1
     fi
   done <"$manifest"
-  if [ ! -d "$pkgroot/$pkg/src" ]; then
-    printf 'stage %s: closure names no source for the package itself\n' "$pkg" >&2
+  if [ ! -f "$pkgroot/$pkg/gleam.toml" ] \
+    || [ -z "$(find "$pkgroot/$pkg/src" -name '*.gleam' -print -quit 2>/dev/null)" ]; then
+    printf 'stage %s: closure has no complete entry for the package itself\n' \
+      "$pkg" >&2
     return 1
   fi
   printf '%s' "$pkgroot"
