@@ -1153,6 +1153,13 @@ fn def_name(def: Def) -> String {
   }
 }
 
+fn def_span(def: Def) -> glance.Span {
+  case def {
+    FunctionDef(f) -> f.location
+    ConstantDef(c) -> c.location
+  }
+}
+
 // `#(value references, field-access qualifier names)` of a definition.
 fn def_refs(def: Def) -> #(List(String), List(String)) {
   case def {
@@ -5102,13 +5109,15 @@ fn sort_references(
 }
 
 // Called from `for_target`, which is where a dropped definition is found, but
-// defined here with the other two so the three published orderings are decided
+// defined here beside the other sorts so every published ordering is decided
 // in one place.
 fn sort_dropped(dropped: List(Dropped)) -> List(Dropped) {
   list.sort(dropped, fn(a, b) { compare_spans(a.span, b.span) })
 }
 
 // The inferred (generalized) scheme of each definition, in source order.
+// glance accumulates a module's definitions newest-first, so the span sort is
+// what puts them in the order the fields promise rather than its reverse.
 //
 // Best-effort inference leaves a skipped definition unbound, so a lookup is
 // usually enough to omit it — but its name is only unbound if nothing *else*
@@ -5121,7 +5130,9 @@ fn collect_schemes(
   env: Env,
   declined: Set(String),
 ) -> List(#(String, Scheme)) {
-  list.filter_map(defs, fn(def) {
+  defs
+  |> list.sort(fn(a, b) { compare_spans(def_span(a), def_span(b)) })
+  |> list.filter_map(fn(def) {
     let name = def_name(def)
     case set.contains(declined, name) {
       True -> Error(Nil)

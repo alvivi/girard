@@ -64,6 +64,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against `ModuleResult`'s own promise that a skipped definition is absent from
   `annotated`. The names inference declined are dropped by name now, rather
   than by a lookup that only fails when nothing else binds the name.
+- `AnnotatedModule.functions` and `constants` are in the source order their
+  fields have always documented. `glance` accumulates a module's definitions
+  newest-first and both lists were published as they came, so they were
+  reversed; they are sorted by span like every other published list now. A
+  consumer that reads a definition by name is unaffected; one that walked
+  either list in order was walking the module backwards. `girard.report`
+  renders definitions in the same new order.
 - A skipped definition no longer breaks calls to the import it shadows. In
   best-effort mode the skipped definition's argument labels outlived it, so a
   later call using the import's own labels was wrongly rejected with

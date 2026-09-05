@@ -2627,6 +2627,23 @@ pub fn dropped_is_in_source_order_test() {
   |> should.equal(["first", "middle", "last"])
 }
 
+pub fn definitions_are_published_in_source_order_test() {
+  // `functions` and `constants` promise source order, and glance accumulates
+  // each list newest-first, so the definitions came out reversed. They are
+  // sorted by span like every other published list now.
+  let source =
+    "pub fn alpha() { 1 }\n"
+    <> "pub const one = 1\n"
+    <> "pub fn beta() { 2 }\n"
+    <> "pub const two = 2\n"
+    <> "pub fn gamma() { 3 }"
+  let assert Ok(annotated) = girard.annotate(source, options_with([]))
+
+  list.map(annotated.functions, fn(f) { f.0 })
+  |> should.equal(["alpha", "beta", "gamma"])
+  list.map(annotated.constants, fn(c) { c.0 }) |> should.equal(["one", "two"])
+}
+
 pub fn target_sibling_is_published_once_test() {
   // The caller's unfiltered module used to be rendered, so both siblings
   // looked their one surviving namesake up by name and `functions` listed it

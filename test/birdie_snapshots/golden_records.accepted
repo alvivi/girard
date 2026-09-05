@@ -1,5 +1,5 @@
 ---
-version: 2.0.1
+version: 2.0.2
 title: golden: records
 ---
 === source ===
@@ -16,8 +16,8 @@ pub fn birthday(user: User) {
 }
 
 === annotation ===
-birthday: fn(User) -> User
 name: fn(User) -> String
+birthday: fn(User) -> User
 78-82: User
 78-87: String
 123-154: User
