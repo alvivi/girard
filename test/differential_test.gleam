@@ -1528,8 +1528,8 @@ fn resolution_at(
 
 fn describe_resolution(resolution: girard.Resolution) -> String {
   case resolution {
-    girard.RecordField(record, label) ->
-      "the " <> girard.type_to_string(record) <> " field `" <> label <> "`"
+    girard.RecordField(receiver, label) ->
+      "the " <> girard.type_to_string(receiver) <> " field `" <> label <> "`"
     girard.ModuleFn(module, name) -> "the function " <> module <> "." <> name
     girard.ModuleConstant(module, name) ->
       "the constant " <> module <> "." <> name

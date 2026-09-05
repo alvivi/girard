@@ -152,9 +152,13 @@ pub type Dropped {
 /// lives there, plus `RecordField` for the case the compiler reaches through
 /// `RecordAccess` rather than through a scope entry.
 pub type Resolution {
-  /// A field of the record's nominal type — the compiler's `RecordAccess`,
-  /// whose accessed value it likewise calls the `record`.
-  RecordField(record: Type, label: String)
+  /// A field of the accessed value's nominal type — the compiler's
+  /// `RecordAccess`. `receiver` is the type of the value the field was read
+  /// from, the thing left of the dot. The compiler calls that field `record`;
+  /// this is the one place girard does not take its name, because here it
+  /// holds a *type* rather than the accessed expression, and because the same
+  /// word then has to name both the whole access and one half of it.
+  RecordField(receiver: Type, label: String)
   /// A module's function, under the module's canonical path.
   ModuleFn(module: String, name: String)
   /// A module's constant, under the module's canonical path.
@@ -172,7 +176,7 @@ pub type Resolution {
 
 /// Why girard reached no member at a reference.
 pub type UnresolvedReason {
-  /// The record's type was unknown at the access and no module of its name
+  /// The receiver's type was unknown at the access and no module of its name
   /// exported the label, so girard deferred the access and read the field only
   /// once later inference had fixed the type — after the point where a member
   /// could be named. The [`Annotation`](#Annotation) at the span is still
@@ -5075,8 +5079,8 @@ fn publish_reference(st: State, reference: Reference) -> ResolvedReference {
 
 fn publish_resolution(st: State, resolved: Resolved) -> Resolution {
   case resolved {
-    ResolvedField(record, label) ->
-      RecordField(to_public(zonk(st, record)), label)
+    ResolvedField(receiver, label) ->
+      RecordField(to_public(zonk(st, receiver)), label)
     // The declaring module's canonical path and the name the value has
     // *there*, never the alias it was read under: an
     // `import kinds.{Near as Close}` publishes `Constructor("kinds", "Near")`.

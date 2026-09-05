@@ -163,7 +163,8 @@ pub fn run(l: Logger) {
 
 Each `ResolvedReference` carries the access's span — the same span the
 `Annotation` for it carries — the label's, the accessed value's, and a
-`Resolution`:
+`Resolution`. A `RecordField` names the field's `label` and the type of the
+value it was read from, its `receiver`:
 
 ```gleam
 import girard
@@ -173,8 +174,8 @@ pub fn members(source: String) -> List(String) {
   let assert Ok(annotated) = girard.annotate(source, girard.default_options())
   list.map(annotated.resolutions, fn(reference) {
     case reference.resolution {
-      girard.RecordField(record, label) ->
-        girard.type_to_string(record) <> "." <> label
+      girard.RecordField(receiver, label) ->
+        girard.type_to_string(receiver) <> "." <> label
       girard.ModuleFn(module, name) -> module <> "." <> name <> "()"
       girard.ModuleConstant(module, name) -> module <> "." <> name
       girard.Constructor(module, name) -> module <> "." <> name <> "{}"

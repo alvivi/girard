@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that only reads fields off the result is unaffected; constructing or fully
   destructuring `AnnotatedModule` must name the two new fields (`resolutions`,
   and the `dropped` below).
+- `Resolution`'s `RecordField` names the accessed value's type `receiver`
+  rather than `record`. Positional matches (`RecordField(type_, label)`) are
+  unaffected; only a labelled access or update needs the new name. The variant
+  holds a type, not the accessed expression the compiler's own `record` field
+  holds, and `record` otherwise had to name both the whole access and one half
+  of it.
 
 ### Added
 
