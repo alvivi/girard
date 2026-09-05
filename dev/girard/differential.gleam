@@ -162,6 +162,18 @@ fn projected_n(fixture: String, why: String) -> Spec {
   )
 }
 
+// A single-variant receiver, so a real accessor exists with no narrowing at
+// all. The rows that use it put the receiver somewhere its type is only known
+// if the expected type reached it before the access was walked, so the field
+// branch must not also depend on a narrowing to be in reach.
+fn solo(fixture: String, why: String) -> Spec {
+  Spec(
+    ..narrowed(fixture, why),
+    field_availability: Some(manifest.shared),
+    narrowed_to: None,
+  )
+}
+
 // A probe: it asks only whether the program was accepted, so it contests no
 // branch and records no availability, member or return.
 fn probe(
@@ -215,6 +227,12 @@ const on_the_type = ". girard agrees because the value's type carries the varian
 // variant it was built with, and that reading is taken in call position the
 // way projection always took it.
 const field_first = "narrowing carried on the value's type, read field-first in call position since `infer_callee` resolves through `infer_field_access`"
+
+// What the rows contesting a seeded lambda parameter share: the expected
+// function type reaches the lambda before its body is walked, so the receiver
+// is a bound record at the access rather than the unbound variable that would
+// send the lookup to the module export of its name.
+const seeded = ". The parameter is bound before the body is walked, so the access reads the record it was seeded with rather than falling through to the module export of the parameter's name"
 
 /// Every case, in the order they appear in the manifest.
 pub fn specs() -> List(Spec) {
@@ -345,13 +363,9 @@ pub fn specs() -> List(Spec) {
       module_member: Some("Float"),
       module_return: Some("Float"),
     ),
-    Spec(
-      ..narrowed(
-        "only_loud",
-        "a single-variant type grants a real accessor, so the field is in reach with no narrowing at all",
-      ),
-      field_availability: Some(manifest.shared),
-      narrowed_to: None,
+    solo(
+      "only_loud",
+      "a single-variant type grants a real accessor, so the field is in reach with no narrowing at all",
     ),
     narrowed(
       "narrowed_subject",
@@ -496,6 +510,36 @@ pub fn specs() -> List(Spec) {
       field_candidates: None,
       missing_variants: None,
       reason: None,
+    ),
+    // Where the compiler seeds a lambda's parameter
+    //
+    // Each row puts the receiver in a lambda parameter whose type the caller
+    // supplies. The compiler fixes every parameter type before it walks the
+    // body — `infer_fn_with_known_types` opens the scope with the arguments
+    // already typed — so the receiver is a bound `Solo` at the access and the
+    // field is in reach. These are the rows that keep girard doing the same:
+    // a receiver whose type only arrives after the body is walked is unbound
+    // at the access, and the module export of its name wins instead, which is
+    // the over-permissive direction — the compiler *can* type this receiver.
+    solo(
+      "pipe_lambda",
+      "the compiler rewrites `left |> fn(..) { .. }` as a call of the lambda on the piped value, so the parameter is seeded from that value's type before the body is walked"
+        <> seeded,
+    ),
+    solo(
+      "applied_lambda",
+      "a lambda in callee position is seeded from its own call's arguments: the compiler infers them speculatively, seeds the parameters from what it learned, and then infers them again for real"
+        <> seeded,
+    ),
+    solo(
+      "use_callback",
+      "a `use` callback is an ordinary trailing argument to the call the `use` desugars to, so it is checked against the callee's parameter type like any other lambda argument — which means the callee is inferred before the block is walked, not after"
+        <> seeded,
+    ),
+    solo(
+      "use_callback_labelled",
+      "the callback is *not* the callee's final declared parameter here: a labelled `times:` occupies the later slot, so the reorder places the callback in slot 0 and the arguments are inferred in declared order. The row that separates seeding the callback from its declared parameter from seeding it from the last one"
+        <> seeded,
     ),
     // Where the compiler keeps a narrowing
     //

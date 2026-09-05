@@ -59,7 +59,7 @@ const expected_divergences = 0
 /// The digest over every row's recomputed evidence digest, keyed by fixture
 /// name. Pinned here rather than only in the manifest, because a hash stored
 /// beside the data it protects is edited in the same keystroke.
-const evidence_aggregate = "794606dbb917ca21c952cb52dde11c0686d03c8030ad8d29e70bd661e5eda4a3"
+const evidence_aggregate = "192d3fcc3c57e5c852da2c53ea6662c926ce20efafe23a006a8ef50396b1e1df"
 
 // The vocabularies are closed
 //

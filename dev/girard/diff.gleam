@@ -13,6 +13,7 @@
 import argv
 import girard.{type Type}
 import girard/compiler_json
+import girard/packages
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode.{type Decoder}
 import gleam/int
@@ -41,51 +42,9 @@ pub fn main() -> Nil {
   }
 }
 
-// Resolve an imported module's source from a packages root (the directory
-// holding `<pkg>/src/...`), instead of girard's own `build/packages` — so the
-// swept closure never collides with girard's own compile dependencies.
-fn dir_resolver(root: String) -> girard.Resolver {
-  fn(path: String) -> Result(String, Nil) {
-    case simplifile.read_directory(root) {
-      Ok(pkgs) ->
-        first_readable(
-          list.map(pkgs, fn(pkg) {
-            root <> "/" <> pkg <> "/src/" <> path <> ".gleam"
-          }),
-        )
-      Error(_) -> Error(Nil)
-    }
-  }
-}
-
-// Read the package's build target from its `gleam.toml`, defaulting to `Erlang`
-// when unset or unreadable. The generated manifests spell JavaScript as the
-// exact line `target = "javascript"`, so a substring check is sufficient.
-fn target_of(toml_path: String) -> girard.Target {
-  case simplifile.read(toml_path) {
-    Ok(toml) ->
-      case string.contains(toml, "target = \"javascript\"") {
-        True -> girard.JavaScript
-        False -> girard.Erlang
-      }
-    Error(_) -> girard.Erlang
-  }
-}
-
-fn first_readable(paths: List(String)) -> Result(String, Nil) {
-  case paths {
-    [] -> Error(Nil)
-    [path, ..rest] ->
-      case simplifile.read(path) {
-        Ok(source) -> Ok(source)
-        Error(_) -> first_readable(rest)
-      }
-  }
-}
-
 fn diff(package: String, json_path: String, pkg_root: String) -> Nil {
-  let resolver = dir_resolver(pkg_root)
-  let target = target_of(pkg_root <> "/" <> package <> "/gleam.toml")
+  let options = packages.options(pkg_root, package)
+  let source_root = packages.source_root(pkg_root, package)
   let assert Ok(json_string) = simplifile.read(json_path)
   let assert Ok(modules) =
     json.parse(
@@ -95,11 +54,6 @@ fn diff(package: String, json_path: String, pkg_root: String) -> Nil {
         decode.dict(decode.string, decode.list(expression_decoder())),
       ),
     )
-
-  let options =
-    girard.default_options()
-    |> girard.with_resolver(resolver)
-    |> girard.with_target(target)
 
   // Thread one interface cache across the package's modules so each shared
   // import is inferred once for the whole package, not once per importing
@@ -112,8 +66,7 @@ fn diff(package: String, json_path: String, pkg_root: String) -> Nil {
       fn(acc, entry) {
         let #(checked, mismatches, errored, cache) = acc
         let #(module_name, oracle_exprs) = entry
-        let path =
-          pkg_root <> "/" <> package <> "/src/" <> module_name <> ".gleam"
+        let path = source_root <> "/" <> module_name <> ".gleam"
         case simplifile.read(path) {
           Error(_) -> #(checked, mismatches, errored, cache)
           Ok(source) -> {

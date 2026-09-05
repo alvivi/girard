@@ -2186,6 +2186,175 @@ pub fn references_are_unique_per_span_test() {
   ])
 }
 
+// Lambdas checked against a known function type
+//
+// Wherever the type a lambda will be called at is already known, it is pushed
+// into the lambda's parameters before its body is walked — as the compiler's
+// `infer_fn_with_known_types` does. A field access on such a parameter then
+// resolves at the access, instead of being deferred and read once later
+// inference has fixed the receiver's type.
+
+// The receiver every test in this section seeds: one variant, one field, so the
+// only question at `x.value` is whether the parameter was bound before the body
+// was walked.
+const value_box = "pub type Box {\n  Box(value: Int)\n}\n"
+
+// `x.value` reached `Box`'s own field, at the field's type. Asserting both is
+// what keeps the type half from regressing while the member half is fixed.
+fn should_read_box_value(source: String) -> Nil {
+  resolution_at(source, [], span_of(source, "x.value"))
+  |> should.equal(girard.RecordField(girard.Named("", "Box", []), "value"))
+  type_of(source, "x.value") |> should.equal("Int")
+}
+
+// Every type recorded at `span`, in the order girard reports them. A call span
+// already carries two — `infer_expr`'s wrapper records it and `infer_call`
+// records the callee's own return over it — so the count is only meaningful
+// against the same shape without the seeding.
+fn annotations_at(source: String, span: glance.Span) -> List(String) {
+  let assert Ok(analysis) = girard.analyse(source, girard.default_options())
+  analysis.annotated.expressions
+  |> list.filter(fn(a) { a.span == span })
+  |> list.map(fn(a) { girard.type_to_string(a.type_) })
+}
+
+pub fn piped_lambda_reads_field_test() {
+  // `left |> fn(x) { .. }` calls the lambda on the piped value, so the piped
+  // type is the parameter's before the body is inferred.
+  let source = value_box <> "pub fn run(b: Box) {\n  b |> fn(x) { x.value }\n}"
+  should_read_box_value(source)
+}
+
+pub fn applied_lambda_reads_field_test() {
+  // `fn(x) { .. }(v)` has no signature its parameter types can be read from, so
+  // they are learned from the call's own arguments before the body is walked.
+  let source = value_box <> "pub fn run(b: Box) {\n  fn(x) { x.value }(b)\n}"
+  should_read_box_value(source)
+}
+
+pub fn applied_lambda_return_keeps_the_variant_test() {
+  // A call's value is the callee's own return, not the hole unified against it,
+  // and a lambda in callee position is no exception: `Loud`'s stamp rides out
+  // on the lambda's body type. Reading the return off a fresh variable bound to
+  // that type instead would erase the stamp — binding a variable always does —
+  // and `println`, which only `Loud` declares, would fall out of reach.
+  let source =
+    logger_type
+    <> "pub fn run(f: fn(String) -> Nil) {\n"
+    <> "  fn() { Loud(f) }().println\n"
+    <> "}"
+  signature(source, "run")
+  |> should.equal("fn(fn(String) -> Nil) -> fn(String) -> Nil")
+}
+
+pub fn applied_lambda_argument_is_inferred_once_test() {
+  // The pass that learns the argument types is invisible: it keeps what
+  // unification learned and puts back everything it reported. So a called
+  // lambda's argument leaves exactly what the same argument of an ordinary call
+  // leaves — a speculative pass whose annotations or deferrals leaked would
+  // report the argument twice over.
+  let prelude =
+    value_box
+    <> "pub fn unwrap(b: Box) -> Box {\n  b\n}\n"
+    <> "pub fn id(x: Box) -> Box {\n  x\n}\n"
+  let applied = prelude <> "pub fn run(b: Box) {\n  fn(n) { n }(unwrap(b))\n}"
+  let ordinary = prelude <> "pub fn run(b: Box) {\n  id(unwrap(b))\n}"
+
+  annotations_at(applied, span_of(applied, "unwrap(b)"))
+  |> should.equal(annotations_at(ordinary, span_of(ordinary, "unwrap(b)")))
+
+  // And the bare name in call position inside the argument resolves once, to
+  // the member the real pass reached.
+  let callee = last_span(applied, "unwrap")
+  list.filter(references(applied, []), fn(r) { r.span == callee })
+  |> list.map(fn(r) { r.resolution })
+  |> should.equal([girard.ModuleFn("", "unwrap")])
+}
+
+pub fn use_callback_reads_field_test() {
+  // The callee is inferred before the rest of the block, so the `use` binding
+  // is bound at the callee's parameter type rather than at a fresh variable the
+  // call fixes afterwards.
+  let source =
+    value_box
+    <> "pub fn with_box(b: Box, f: fn(Box) -> a) -> a {\n  f(b)\n}\n"
+    <> "pub fn run(b: Box) {\n  use x <- with_box(b)\n  x.value\n}"
+  should_read_box_value(source)
+}
+
+pub fn use_generic_callback_reads_field_test() {
+  // The callee's callback parameter is generic, so the binding's type exists
+  // only because the explicit argument was checked first: the slots are walked
+  // in declared order, and `items` comes before `f`.
+  let source =
+    value_box
+    <> "pub fn each(items: List(a), f: fn(a) -> b) -> Nil {\n  todo\n}\n"
+    <> "pub fn run(boxes: List(Box)) {\n  use x <- each(boxes)\n  x.value\n}"
+  should_read_box_value(source)
+}
+
+pub fn use_tuple_pattern_reads_field_test() {
+  // A `use` binds patterns, not parameters, so the seeding is by pattern: the
+  // tuple pattern is inferred against the expected parameter type and the name
+  // inside it binds at the element's own.
+  let source =
+    value_box
+    <> "pub fn with_pair(p: #(Box, Int), f: fn(#(Box, Int)) -> a) -> a {\n"
+    <> "  f(p)\n}\n"
+    <> "pub fn run(p: #(Box, Int)) {\n  use #(x, _) <- with_pair(p)\n  x.value\n}"
+  should_read_box_value(source)
+}
+
+pub fn use_callback_before_labelled_argument_reads_field_test() {
+  // The callback is not the callee's last declared parameter here: a labelled
+  // `times:` takes the later slot, so the reorder leaves the callback slot 0.
+  // Seeding it from the *last* parameter would hand the binding an `Int`.
+  let source =
+    value_box
+    <> "pub fn with_box_then(f: fn(Box) -> Int, times times: Int) -> Int {\n"
+    <> "  f(Box(times))\n}\n"
+    <> "pub fn run() {\n  use x <- with_box_then(times: 1)\n  x.value\n}"
+  should_read_box_value(source)
+}
+
+pub fn capture_lambda_reads_field_test() {
+  // A capture's callee is unified with its shape before any argument is typed,
+  // so a lambda argument beside the hole sees its parameter types.
+  let source =
+    value_box
+    <> "pub fn apply2(b: Box, f: fn(Box) -> Int) -> Int {\n  f(b)\n}\n"
+    <> "pub fn run() {\n  apply2(_, fn(x) { x.value })\n}"
+  should_read_box_value(source)
+}
+
+pub fn capture_labelled_lambda_reads_field_test() {
+  // The lambda is written first but declared second, so it must be checked
+  // against declared slot 1: the hole and the arguments are aligned by one
+  // reorder, and an argument checked at its source position would be handed the
+  // `Box` parameter instead of the callback's.
+  let source =
+    value_box
+    <> "pub fn apply2(box b: Box, with f: fn(Box) -> Int) -> Int {\n  f(b)\n}\n"
+    <> "pub fn run() {\n  apply2(with: fn(x) { x.value }, box: _)\n}"
+  should_read_box_value(source)
+}
+
+pub fn seeded_receiver_takes_the_field_type_test() {
+  // Seeding the receiver changes the inferred *type*, not only the member it is
+  // reported under. An unbound receiver whose name is also a module in scope
+  // falls through to that module's export; here the export and the field return
+  // different types, so reading the field is visible in the signature.
+  let io = "pub fn println(message: String) -> Nil { Nil }"
+  let source =
+    "import io\n"
+    <> "pub type Logger {\n  Logger(println: fn(String) -> Int)\n}\n"
+    <> "pub fn run(l: Logger) {\n  l |> fn(io) { io.println(\"hi\") }\n}"
+  signature_with(source, [#("io", io)], "run")
+  |> should.equal("fn(Logger) -> Int")
+  resolution_at(source, [#("io", io)], span_of(source, "io.println"))
+  |> should.equal(girard.RecordField(girard.Named("", "Logger", []), "println"))
+}
+
 pub fn every_visited_reference_is_recorded_test() {
   // The census: over a module mixing every recorded shape with several
   // unrecorded ones, the references girard reports are exactly the field

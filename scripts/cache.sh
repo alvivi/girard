@@ -16,14 +16,17 @@
 # Usage:
 #   scripts/cache.sh build <package>            populate the cache for one package
 #   scripts/cache.sh build-batch <listfile>     populate for a list (resumable, paced)
-#   scripts/cache.sh resweep [<listfile>|--all] [results.tsv]
+#   scripts/cache.sh resweep [<listfile>|--all|<pkg>...]
 #                                               offline diff from the cache
+#   scripts/cache.sh census  [<listfile>|--all|<pkg>...]
+#                                               count girard's unresolved refs
 #   scripts/cache.sh pack [out.tar.gz]          pack the cache into one artifact
 #   scripts/cache.sh unpack <in.tar.gz>         restore a packed cache
 #   scripts/cache.sh stats                      summarize cache contents
 #
 # Layout ($GIRARD_CACHE, default ~/.cache/girard-sweep):
-#   pool/<name>@<version>/   each unique package version's gleam.toml + src/, ONCE
+#   pool/<name>@<version>/   each unique package version's src/, ONCE, with its
+#                            gleam.toml when it has one (an Erlang dep has none)
 #   manifest/<pkg>.txt       the package's closure: one "<name>@<version>" per line
 #   oracle/<pkg>.json        the patched compiler's per-expression oracle
 #   index.tsv                <pkg> <TAB> built|skip-build|skip-resolve <TAB> detail
@@ -31,6 +34,7 @@
 #
 # Env overrides:
 #   GIRARD_CACHE  cache root (default ~/.cache/girard-sweep)
+#   RESULTS       where resweep/census write their .tsv (default $GIRARD_CACHE/<cmd>.tsv)
 #   GLEAM         patched compiler for the oracle (default ../gleam/target/debug/gleam)
 #   HEXGLEAM      stock gleam used to resolve/download/run (default first on PATH)
 #   For build-batch pacing: SWEEP_DELAY / SWEEP_RETRIES / SWEEP_BACKOFF (see batch_sweep.sh)
@@ -125,16 +129,40 @@ EOF
   #    storing only gleam.toml + src/ (all girard's resolver and the diff need).
   local tmp_manifest="$work/manifest.txt"
   : >"$tmp_manifest"
-  local ver dest
+  #    A closure member need not be a Gleam package — a rebar3 dependency is
+  #    `src/*.erl` and no `gleam.toml` — so the copy stays best-effort for a
+  #    dependency. It is not optional for the root package: its `gleam.toml` is
+  #    the only thing that says whether the package builds for Erlang or for
+  #    JavaScript, and a root pooled without one is censused under the wrong
+  #    target with no sign that anything went wrong.
+  local ver dest staged
   for d in "$deps"/*/; do
     name="$(basename "$d")"
     [ -d "$d/src" ] || continue
+    if [ "$name" = "$pkg" ] && [ ! -f "$d/gleam.toml" ]; then
+      printf '%s\tskip-build\tno gleam.toml for the package itself\n' "$pkg" >>"$index"
+      echo "cache build $pkg: skip-build (no gleam.toml)"
+      return 0
+    fi
     ver="$(toml_version "$d/gleam.toml")"
     dest="$pool/$name@$ver"
     if [ ! -d "$dest" ]; then
-      mkdir -p "$dest"
-      cp "$d/gleam.toml" "$dest/gleam.toml" 2>/dev/null || true
-      cp -r "$d/src" "$dest/src"
+      # Fill the entry under a temporary name and move it into place only once
+      # it is whole. A half-written `$dest` would be permanent: every later
+      # build sees the directory, takes the `[ ! -d "$dest" ]` branch's else,
+      # and adopts whatever is in it.
+      staged="$pool/.partial.$$.$name@$ver"
+      rm -rf "$staged"
+      if ! mkdir -p "$staged" \
+        || { [ -f "$d/gleam.toml" ] && ! cp "$d/gleam.toml" "$staged/gleam.toml"; } \
+        || ! cp -r "$d/src" "$staged/src" \
+        || { [ ! -d "$dest" ] && ! mv "$staged" "$dest"; }; then
+        rm -rf "$staged"
+        printf '%s\tskip-build\tcould not pool %s\n' "$pkg" "$name" >>"$index"
+        echo "cache build $pkg: skip-build (could not pool $name)"
+        return 0
+      fi
+      rm -rf "$staged"
     fi
     printf '%s@%s\n' "$name" "$ver" >>"$tmp_manifest"
   done
@@ -180,43 +208,94 @@ cmd_build_batch() {
   cmd_stats
 }
 
+# Which packages a resweep or census runs over: every cached one (`--all`, the
+# default), the ones named in a listfile, or the ones named on the command line.
+select_pkgs() {
+  if [ "$#" -eq 0 ] || [ "${1:-}" = "--all" ]; then
+    ls "$manifest_dir" 2>/dev/null | sed 's/\.txt$//'
+  elif [ "$#" -eq 1 ] && [ -f "$1" ]; then
+    cat "$1"
+  else
+    printf '%s\n' "$@"
+  fi
+}
+
+# Reconstruct one cached package's closure under $stage as symlinks into the
+# pool (zero-copy), and print the packages-root. Fails, printing why, if the
+# closure cannot be staged whole.
+#
+# Whole is the point. A closure staged with a hole in it still runs: girard just
+# walks fewer modules, and if the hole is the root package it walks none at all
+# and reports a confident zero — zero mismatches, zero unresolved references.
+# Nothing downstream can tell that apart from a package that is genuinely clean,
+# so a truncated or corrupt cache would certify itself. A hole is not only an
+# absent member, either: a root entry with no `gleam.toml` reads as Erlang
+# whatever it is, so a JavaScript package would be walked with its `@target`
+# definitions dropped and report a smaller count, again as a clean one.
+#
+# Every member the manifest names must therefore be in the pool with its `src/`
+# and must link. The root package's entry is held to more than that — its
+# `gleam.toml`, and a `src/` holding at least one module — because that is
+# where a silent zero comes from. A dependency is held to less on purpose: a
+# closure member need not be a Gleam package at all — a rebar3 dependency is
+# `src/*.erl` with no `gleam.toml`, and a real corpus is full of them — while a
+# dependency that is empty surfaces as an import that does not resolve, which
+# the callers already report rather than pass. Anything that does fail takes
+# the callers' `missing` branch instead of a result.
+stage_closure() {
+  local pkg="$1" stage="$2" pkgroot member name
+  local manifest="$manifest_dir/$pkg.txt"
+  if [ ! -s "$manifest" ]; then
+    printf 'stage %s: no manifest\n' "$pkg" >&2
+    return 1
+  fi
+  pkgroot="$stage/$pkg"
+  rm -rf "$pkgroot"
+  mkdir -p "$pkgroot" || return 1
+  while IFS= read -r member; do
+    [ -z "$member" ] && continue
+    name="${member%@*}"
+    if [ ! -d "$pool/$member/src" ]; then
+      printf 'stage %s: pool entry %s missing from the cache\n' "$pkg" "$member" >&2
+      return 1
+    fi
+    if ! ln -sfn "$pool/$member" "$pkgroot/$name"; then
+      printf 'stage %s: could not link pool entry %s\n' "$pkg" "$member" >&2
+      return 1
+    fi
+  done <"$manifest"
+  if [ ! -f "$pkgroot/$pkg/gleam.toml" ] \
+    || [ -z "$(find "$pkgroot/$pkg/src" -name '*.gleam' -print -quit 2>/dev/null)" ]; then
+    printf 'stage %s: closure has no complete entry for the package itself\n' \
+      "$pkg" >&2
+    return 1
+  fi
+  printf '%s' "$pkgroot"
+}
+
 # resweep: reconstruct each cached package's closure (symlinks into the pool)
 # and run girard's diff against the cached oracle. No hex, no oracle compile.
 cmd_resweep() {
-  local sel="${1:---all}"
-  local results="${2:-$cache/resweep.tsv}"
+  local results="${RESULTS:-$cache/resweep.tsv}"
   local flagged="${results%.tsv}.flagged.txt"
   : >"$results"
   : >"$flagged"
 
   local pkgs
-  if [ "$sel" = "--all" ]; then
-    pkgs="$(ls "$manifest_dir" 2>/dev/null | sed 's/\.txt$//')"
-  else
-    pkgs="$(cat "$sel")"
-  fi
+  pkgs="$(select_pkgs "$@")"
 
   local stage
   stage="$(mktemp -d)"
   trap 'rm -rf "$stage"' RETURN
 
-  local pkg member name ver pkgroot summary errored mism st detail
+  local pkg pkgroot summary errored mism st detail
   for pkg in $pkgs; do
     pkg="$(printf '%s' "$pkg" | tr -d '[:space:]')"
     [ -z "$pkg" ] && continue
-    if [ ! -f "$manifest_dir/$pkg.txt" ] || [ ! -f "$oracle_dir/$pkg.json" ]; then
-      printf '%s\tmissing\tnot in cache\n' "$pkg" >>"$results"
+    if [ ! -f "$oracle_dir/$pkg.json" ] || ! pkgroot="$(stage_closure "$pkg" "$stage")"; then
+      printf '%s\tmissing\tnot in cache, or closure incomplete\n' "$pkg" >>"$results"
       continue
     fi
-    # Reconstruct the packages-root with symlinks into the pool (zero-copy).
-    pkgroot="$stage/$pkg"
-    rm -rf "$pkgroot"
-    mkdir -p "$pkgroot"
-    while IFS= read -r member; do
-      [ -z "$member" ] && continue
-      name="${member%@*}"
-      [ -d "$pool/$member" ] && ln -sfn "$pool/$member" "$pkgroot/$name"
-    done <"$manifest_dir/$pkg.txt"
 
     summary="$( cd "$root" && gleam run -m girard/diff "$pkg" "$oracle_dir/$pkg.json" "$pkgroot" 2>/dev/null | grep -E '^diff ' | tail -1 )"
     if [ -n "$summary" ]; then
@@ -235,6 +314,52 @@ cmd_resweep() {
     printf '[%s] %s\n' "$st" "$pkg"
   done
   echo "resweep done -> $results (flagged: $flagged)"
+}
+
+# census: reconstruct each cached package's closure the same way and run
+# `girard/census` over it, counting the references girard published as
+# `Unresolved`. No oracle is read — the count is girard's own — so a package
+# needs only its manifest to be censused.
+cmd_census() {
+  local results="${RESULTS:-$cache/census.tsv}"
+  local sites="${results%.tsv}.sites.txt"
+  : >"$results"
+  : >"$sites"
+
+  local pkgs
+  pkgs="$(select_pkgs "$@")"
+
+  local stage
+  stage="$(mktemp -d)"
+  trap 'rm -rf "$stage"' RETURN
+
+  local pkg pkgroot out summary refs unres total
+  total=0
+  for pkg in $pkgs; do
+    pkg="$(printf '%s' "$pkg" | tr -d '[:space:]')"
+    [ -z "$pkg" ] && continue
+    if ! pkgroot="$(stage_closure "$pkg" "$stage")"; then
+      printf '%s\tmissing\t\tnot in cache, or closure incomplete\n' "$pkg" >>"$results"
+      continue
+    fi
+
+    out="$( cd "$root" && gleam run -m girard/census "$pkg" "$pkgroot" 2>/dev/null )"
+    summary="$(echo "$out" | grep -E '^census ' | tail -1)"
+    if [ -n "$summary" ]; then
+      refs="$(echo "$summary" | grep -oE '[0-9]+ references' | grep -oE '[0-9]+')"
+      unres="$(echo "$summary" | grep -oE '[0-9]+ unresolved' | grep -oE '[0-9]+')"
+      total=$((total + ${unres:-0}))
+      # Every unresolved site, prefixed with its package, for reading a residue
+      # off by shape rather than by count.
+      echo "$out" | grep -E 'RecordAccessUnknownType$' | sed "s/^/$pkg /" >>"$sites"
+      printf '%s\t%s\t%s\t%s\n' "$pkg" "${unres:-0}" "${refs:-0}" "$summary" >>"$results"
+      printf '[%s unresolved] %s\n' "${unres:-0}" "$pkg"
+    else
+      printf '%s\tcrash\t\tno census summary\n' "$pkg" >>"$results"
+      printf '[crash] %s\n' "$pkg"
+    fi
+  done
+  printf 'census done: %s unresolved -> %s (sites: %s)\n' "$total" "$results" "$sites"
 }
 
 record_meta() {
@@ -282,6 +407,7 @@ case "${1:-}" in
   build)        shift; cmd_build "$@" ;;
   build-batch)  shift; cmd_build_batch "$@" ;;
   resweep)      shift; cmd_resweep "$@" ;;
+  census)       shift; cmd_census "$@" ;;
   pack)         shift; cmd_pack "$@" ;;
   unpack)       shift; cmd_unpack "$@" ;;
   stats)        shift; cmd_stats "$@" ;;

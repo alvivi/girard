@@ -126,6 +126,19 @@ backlog of inference gaps. The per-expression Hex sweep needs a patched compiler
 and network access, so it is run locally rather than in CI; `PACKAGES.md` is the
 record of that coverage.
 
+A third package tool counts the *resolutions* rather than the types:
+
+```sh
+gleam run -m girard/census wisp   # unresolved references in an installed package
+```
+
+It reports every reference girard published as `Unresolved` — a field access
+girard deferred and read only once later inference had fixed the record's type,
+past the point where a member could be named — with a per-package summary.
+Over code the real compiler accepts, each one is a place girard's inference
+order lags the compiler's, so the count is a gate rather than a comparison: it
+needs no oracle, because the answer is girard's own.
+
 ## Conventions
 
 - **Gleam idioms.** Follow Gleam's

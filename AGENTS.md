@@ -120,6 +120,16 @@ variables are generalized explicitly. Type variables in a top-level signature
 are rigid while the definition is checked. Pending field and tuple accesses are
 revisited after inference fixes their container types.
 
+Wherever the type a lambda will be called at is already known, it is pushed
+into the lambda's parameters before its body is walked, as the compiler's
+`infer_fn_with_known_types` does: a lambda passed as a call argument, piped
+into, called directly, given as a `use` callback, or passed beside a capture's
+hole. A `use` and a capture reach it the way a call does — the callee first,
+then the complete argument list reordered through its field map, then each slot
+checked against the parameter it was placed against — so the callback and the
+hole are placed by the same reorder as everything around them rather than
+assumed to come last.
+
 **Resolution.** `Env.values` holds one `ValueConstructor` per name in scope,
 as the compiler's `Environment.scope` does: the value's scheme and a variant
 saying local, function, constant or constructor, the module-level ones carrying
