@@ -211,28 +211,33 @@ fn probe(
 // What keeps that from being an accident is the forced-field companion, which
 // must fail to compile - so the field really is unreachable, and the narrowing
 // that follows the value must not over-narrow it back into reach.
-const unreachable = ". The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so agreement is not an accident of under-narrowing: these are the rows that keep narrowing carried on the value's type from over-narrowing it back into reach"
+const unreachable =
+  ". The field branch is genuinely out of reach here, which the forced-field companion failing to compile is what proves, so agreement is not an accident of under-narrowing: these are the rows that keep narrowing carried on the value's type from over-narrowing it back into reach"
 
 // What the alias rows share: the value is re-bound under another name, and the
 // narrowing comes with it because it lives on the value's own type rather than
 // under the name it happened to be bound to.
-const rebinding = "the narrowing survives the re-binding because it lives on the value's type rather than under the name it was bound to"
+const rebinding =
+  "the narrowing survives the re-binding because it lives on the value's type rather than under the name it was bound to"
 
 // What the rows that flip when a field access selects by variant share: the
 // constructed value reaches the receiver carrying the variant it was built
 // with, and the accessor lookup reads it off the type.
-const on_the_type = ". girard agrees because the value's type carries the variant it was constructed with, and a field access selects that variant's own accessors"
+const on_the_type =
+  ". girard agrees because the value's type carries the variant it was constructed with, and a field access selects that variant's own accessors"
 
 // The mechanism the narrowed rows share: the receiver's own type says which
 // variant it was built with, and that reading is taken in call position the
 // way projection always took it.
-const field_first = "narrowing carried on the value's type, read field-first in call position since `infer_callee` resolves through `infer_field_access`"
+const field_first =
+  "narrowing carried on the value's type, read field-first in call position since `infer_callee` resolves through `infer_field_access`"
 
 // What the rows contesting a seeded lambda parameter share: the expected
 // function type reaches the lambda before its body is walked, so the receiver
 // is a bound record at the access rather than the unbound variable that would
 // send the lookup to the module export of its name.
-const seeded = ". The parameter is bound before the body is walked, so the access reads the record it was seeded with rather than falling through to the module export of the parameter's name"
+const seeded =
+  ". The parameter is bound before the body is walked, so the access reads the record it was seeded with rather than falling through to the module export of the parameter's name"
 
 /// Every case, in the order they appear in the manifest.
 pub fn specs() -> List(Spec) {

@@ -1399,7 +1399,8 @@ pub fn signature_scheme_exposes_quantified_vars_test() {
 // Call position resolves like projection: a reachable record field wins over
 // a same-named module export, and the field map follows the branch that won.
 
-const logger_type = "pub type Logger {\n  Loud(println: fn(String) -> Nil)\n  Quiet(n: Int)\n}\n"
+const logger_type =
+  "pub type Logger {\n  Loud(println: fn(String) -> Nil)\n  Quiet(n: Int)\n}\n"
 
 const io_println = "pub fn println(message: String) -> Int { 1 }"
 
@@ -1570,7 +1571,8 @@ pub fn renamed_import_alternatives_agree_test() {
 
 // A type with one label every variant declares and one only `Loud` does, so a
 // receiver's narrowing decides which of the two it can read.
-const tagged_type = "pub type Tagged {\n  Loud(tag: Int, println: fn(String) -> Nil)\n  Quiet(tag: Int)\n}\n"
+const tagged_type =
+  "pub type Tagged {\n  Loud(tag: Int, println: fn(String) -> Nil)\n  Quiet(tag: Int)\n}\n"
 
 pub fn narrowing_is_scope_local_test() {
   // A narrowing is a rebinding in the clause's own scope, so after the `case`
@@ -1738,7 +1740,8 @@ pub fn stamped_types_unify_test() {
   |> should.equal("fn(fn(String) -> Nil) -> List(Tagged)")
 }
 
-const io_labelled_println = "pub fn println(message message: String) -> Int { 1 }"
+const io_labelled_println =
+  "pub fn println(message message: String) -> Int { 1 }"
 
 pub fn narrowed_receiver_rejects_module_labels_test() {
   // The record won, so the callee has no field map — the compiler's
@@ -1812,9 +1815,11 @@ pub fn parameter_shadowed_callee_rejects_labels_test() {
   |> should.equal(girard.AmbiguousCall)
 }
 
-const logger2_type = "pub type Logger {\n  Loud(println: fn(String, Int) -> Nil)\n  Quiet(n: Int)\n}\n"
+const logger2_type =
+  "pub type Logger {\n  Loud(println: fn(String, Int) -> Nil)\n  Quiet(n: Int)\n}\n"
 
-const io_labelled_println2 = "pub fn println(message message: String, n n: Int) -> Int { 1 }"
+const io_labelled_println2 =
+  "pub fn println(message message: String, n n: Int) -> Int { 1 }"
 
 pub fn narrowed_receiver_capture_rejects_module_labels_test() {
   // A capture `io.println(message: _, n: 1)` is a call, and orders its
@@ -1843,9 +1848,11 @@ pub fn unnarrowed_receiver_capture_accepts_module_labels_test() {
   |> should.equal("fn(Logger) -> fn(String) -> Int")
 }
 
-const guarded_type = "pub type Guarded {\n  Wrapped(guard: fn(Bool, Int, fn() -> Int) -> Nil)\n  Plain(n: Int)\n}\n"
+const guarded_type =
+  "pub type Guarded {\n  Wrapped(guard: fn(Bool, Int, fn() -> Int) -> Nil)\n  Plain(n: Int)\n}\n"
 
-const io_labelled_guard = "pub fn guard(when when: Bool, return return: Int, otherwise otherwise: fn() -> Int) -> Int { 1 }"
+const io_labelled_guard =
+  "pub fn guard(when when: Bool, return return: Int, otherwise otherwise: fn() -> Int) -> Int { 1 }"
 
 pub fn narrowed_receiver_use_rejects_module_labels_test() {
   // A `use` callee with labelled arguments places them by the callee's field
@@ -2737,35 +2744,36 @@ pub fn resolutions_are_returned_by_every_entry_point_test() {
 
 const box_type = "pub type Box {\n  Box(n: Int)\n  Near(m: Int)\n}\n"
 
-const census_source = "import io\n"
+const census_source =
+  "import io\n"
   <> "import kinds.{Near}\n"
   <> "pub type Logger {\n  Logger(println: fn(String) -> Nil, tag: Int)\n}\n"
   <> "pub fn run(l: Logger) {\n"
-  <> // A field read outside call position is still a field access.
-"  let printer = l.println\n"
-  <> // A local called by name, and the same name read without calling it.
-"  printer(\"direct\")\n"
+  // A field read outside call position is still a field access.
+  <> "  let printer = l.println\n"
+  // A local called by name, and the same name read without calling it.
+  <> "  printer(\"direct\")\n"
   <> "  let again = printer\n"
-  <> // A field, a module export and a qualified constructor in call position.
-"  l.println(\"field\")\n"
+  // A field, a module export and a qualified constructor in call position.
+  <> "  l.println(\"field\")\n"
   <> "  io.println(\"module\")\n"
   <> "  kinds.Box(1)\n"
-  <> // An unqualified imported constructor, and one declared here, with a field
-// access as an argument.
-"  Near(2)\n"
+  // An unqualified imported constructor, and one declared here, with a field
+  // access as an argument.
+  <> "  Near(2)\n"
   <> "  let logger = Logger(again, l.tag)\n"
-  <> // A tuple index is not a name; a record update's constructor is not an
-// expression.\n
-"  let pair = #(l.tag, 1)\n"
+  // A tuple index is not a name; a record update's constructor is not an
+  // expression.\n
+  <> "  let pair = #(l.tag, 1)\n"
   <> "  let _ = pair.0\n"
   <> "  let updated = Logger(..logger, tag: 1)\n"
   <> "  let _ = updated.tag\n"
-  <> // A capture, a bare pipe target, and a piped call.
-"  let _ = add(_, 2)\n"
+  // A capture, a bare pipe target, and a piped call.
+  <> "  let _ = add(_, 2)\n"
   <> "  let _ = \"piped\" |> l.println\n"
   <> "  let _ = 1 |> add(2)\n"
-  <> // A `use` whose callee is a bare name, and a nested access in its body.
-"  use n <- each\n"
+  // A `use` whose callee is a bare name, and a nested access in its body.
+  <> "  use n <- each\n"
   <> "  add(n, logger.tag)\n"
   <> "}\n"
   <> "fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n"

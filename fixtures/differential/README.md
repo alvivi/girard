@@ -138,9 +138,9 @@ now lives on the value's own type, as it does in the compiler.
 
 ## Regenerating
 
-The driver needs the pinned **gleam 1.18.0** — the repo root is on 1.18.1 and is
-deliberately left alone — but no patched compiler: `package-interface` is a stock
-export.
+The driver needs the pinned **gleam 1.18.0** — the repo root pins its own
+compiler and is deliberately left alone — but no patched compiler:
+`package-interface` is a stock export.
 
 ```sh
 bash scripts/gen-differential.sh
