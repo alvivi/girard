@@ -15,7 +15,7 @@
 # silently corrupt the evidence if it did not:
 #
 #   - it copies `fixtures/differential/.tool-versions`, *not* the repo root's, which pins
-#     1.18.1 — copying the wrong one runs the whole corpus on the wrong compiler;
+#     another compiler — copying the wrong one runs the whole corpus on it;
 #   - it copies `gleam.toml` byte for byte instead of patching `name =`, so the
 #     committed template is exactly the compiled configuration and `inputs_hash`
 #     covers bytes the compiler actually saw;
@@ -37,7 +37,8 @@ fi
 
 # The version check has to run where the pin is in force and has to interrogate
 # the binary that will actually run: from the repo root `gleam --version` reports
-# the root's 1.18.1, and bare `gleam` is not necessarily what GLEAM= selected.
+# the root's own version, and bare `gleam` is not necessarily what GLEAM=
+# selected.
 ( cd "$differential" && test "$("$gleam" --version)" = "gleam 1.18.0" ) || {
   echo "expected gleam 1.18.0 from $gleam" >&2
   exit 1
