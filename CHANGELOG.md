@@ -12,8 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@target(erl)` and `@target(js)` select Erlang and JavaScript, as the
   compiler still reads them behind a deprecation warning. girard matched only
   `erlang` and `javascript`, so a definition or import marked with a shorthand
-  was dropped on both targets — listed in `dropped` on its own — and whatever
-  used it failed to type. This held in resolved modules too.
+  was dropped on both targets and whatever used it failed to type.
 
 ## [3.0.0] - 2026-09-05
 
