@@ -1862,16 +1862,23 @@ fn for_target(
 }
 
 fn on_target(definition: glance.Definition(a), target: Target) -> Bool {
-  let active = case target {
-    Erlang -> "erlang"
-    JavaScript -> "javascript"
-  }
   list.all(definition.attributes, fn(attr) {
     case attr.name, attr.arguments {
-      "target", [glance.Variable(_, t)] -> t == active
+      "target", [glance.Variable(_, name)] -> target_named(name) == Ok(target)
       _, _ -> True
     }
   })
+}
+
+// The build target a `@target` attribute names. The compiler still accepts the
+// deprecated `erl` and `js` shorthands, with a warning, so they name Erlang and
+// JavaScript here as they do there.
+fn target_named(name: String) -> Result(Target, Nil) {
+  case name {
+    "erlang" | "erl" -> Ok(Erlang)
+    "javascript" | "js" -> Ok(JavaScript)
+    _ -> Error(Nil)
+  }
 }
 
 fn public_value_names(module: glance.Module) -> List(String) {
