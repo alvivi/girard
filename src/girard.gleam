@@ -531,7 +531,11 @@ pub type ModuleResult {
 /// type — along with any that depend on it — is reported in that module's
 /// `skipped` list rather than failing the module, while every other definition
 /// is still annotated. Definition failures therefore leave the module present
-/// in the result; a fully strict check is `result.skipped == []`.
+/// in the result; a fully strict check is
+/// `result.skipped == [] && result.annotated.unavailable == []`. A non-empty
+/// `unavailable` means possibly incomplete: it over-approximates what was
+/// affected (see [`AnnotatedModule`](#AnnotatedModule), which also covers
+/// stale entries from a reused [`Cache`](#Cache)).
 pub fn annotate_package(
   modules: List(#(String, glance.Module)),
   options: Options,

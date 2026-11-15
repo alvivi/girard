@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently: a value used through it failed with an `UnboundVariable` that
   looked like any other, and a type written against it came back credited to
   the prelude or to the import's alias with nothing to say it was never seen.
+  A completeness check on `annotate_package` that tests `skipped == []` now
+  needs `annotated.unavailable == []` as well: a module with nothing skipped
+  can still hold types built against a module girard could not see.
 
 ### Changed
 
