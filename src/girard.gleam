@@ -828,6 +828,12 @@ type Env {
     // (`accessors_of_module`) is one `dict.get` rather than a transitive walk
     // of the whole interface graph on every field access.
     module_index: Dict(String, ModuleInterface),
+    // Every module this one could not load, keyed by its path, with why:
+    // imported here directly or recorded by an interface it imported, so the
+    // set is already transitive and merging one level per import is enough.
+    // `process_imports` is its only writer (see `record_unavailable` for the
+    // precedence between a direct failure and an inherited one).
+    unavailable: Dict(String, Unavailability),
     // Names of the strongly-connected-component members currently being
     // inferred. A reference to one of these resolves its bound scheme through
     // the current substitution before instantiating, so a type the provider's
@@ -864,6 +870,11 @@ type ModuleInterface {
     // discard-aliased import is in here, so an importer can still find the
     // accessors of a type this module exposes from one.
     reachable: Dict(String, ModuleInterface),
+    // The modules this one could not load while it was inferred, directly or
+    // through its own imports: its final `Env.unavailable`. It travels with the
+    // interface, so an importer that reuses it from a cache inherits the same
+    // set as one that infers it fresh.
+    unavailable: Dict(String, Unavailability),
   )
 }
 
@@ -897,6 +908,7 @@ fn new_env() -> Env {
     current_module: "",
     modules: dict.new(),
     module_index: dict.new(),
+    unavailable: dict.new(),
     live: set.new(),
   )
 }
@@ -1051,6 +1063,7 @@ fn prelude_interface() -> ModuleInterface {
     accessors: dict.new(),
     modules: dict.new(),
     reachable: dict.new(),
+    unavailable: dict.new(),
   )
 }
 
@@ -1515,8 +1528,19 @@ fn prereg_def(
 //
 // Resolve each import to a `ModuleInterface` — from the run's cache, the
 // prelude, or by inferring the imported module's source through the resolver
-// — and bring its qualified alias and unqualified items into scope.
+// — and bring its qualified alias and unqualified items into scope. An import
+// that cannot be loaded is skipped and recorded in `Env.unavailable`, beside
+// the failures each loaded interface carries from its own imports.
 
+// Why an imported module could not be loaded: the resolver found no source
+// for its path, or glance could not parse the source it returned.
+type Unavailability {
+  NotFound
+  Unparsable(error: glance.Error)
+}
+
+// Imports are met in the order glance stores them, which is the reverse of
+// source order: glance prepends each import as it parses it.
 fn process_imports(
   options: Options,
   loading: Set(String),
@@ -1534,20 +1558,43 @@ fn process_imports(
       when: set.contains(loading, path),
       return: Ok(#(env, cache)),
     )
-    use #(maybe_interface, cache) <- result.try(resolve_interface(
+    use #(resolved, cache) <- result.try(resolve_interface(
       options,
       loading,
       cache,
       path,
       best_effort:,
     ))
-    case maybe_interface {
+    case resolved {
       // Unresolvable or unparsable: best effort, skip (uses of it surface later
-      // as unbound variables).
-      None -> Ok(#(env, cache))
-      Some(interface) -> Ok(#(import_items(env, import_, interface), cache))
+      // as unbound variables), but say so.
+      Error(reason) -> Ok(#(record_unavailable(env, path, reason), cache))
+      Ok(interface) -> {
+        let env = import_items(env, import_, interface)
+        Ok(#(inherit_unavailable(env, interface), cache))
+      }
     }
   })
+}
+
+// A direct failure overwrites whatever the path already had, so it wins over
+// an entry inherited from an interface met earlier, and `inherit_unavailable`
+// never overwrites it when one is met later. The two can disagree only when
+// an interface was reused from a cache built against an older source of the
+// path, and this import's attempt is the current one.
+fn record_unavailable(env: Env, path: String, reason: Unavailability) -> Env {
+  Env(..env, unavailable: dict.insert(env.unavailable, path, reason))
+}
+
+// Merge an imported interface's failures, inserting only the paths not yet
+// recorded: a direct failure keeps its reason, and between two interfaces
+// that disagree the one met first wins, which is the import written last (see
+// `process_imports`). A path this module imported successfully keeps an entry
+// inherited this way too: the interface really was built without it, so its
+// exports really lack that module's types. `dict.merge` keeps the second
+// dict's entry on a clash, which is what leaves a recorded path alone.
+fn inherit_unavailable(env: Env, interface: ModuleInterface) -> Env {
+  Env(..env, unavailable: dict.merge(interface.unavailable, env.unavailable))
 }
 
 // Bring an import's qualified alias and unqualified values/types into scope.
@@ -1585,31 +1632,35 @@ fn resolve_interface(
   cache: InterfaceCache,
   path: String,
   best_effort best_effort: Bool,
-) -> Result(#(Option(ModuleInterface), InterfaceCache), Error) {
+) -> Result(#(Result(ModuleInterface, Unavailability), InterfaceCache), Error) {
   // `import gleam` refers to the built-in prelude module, which has no source
   // file; resolve it to a synthetic interface of the prelude's types/values.
   use <- bool.lazy_guard(when: path == prelude_module, return: fn() {
-    Ok(#(Some(prelude_interface()), cache))
+    Ok(#(Ok(prelude_interface()), cache))
   })
   case dict.get(cache, path) {
     // Already inferred in this run: reuse it rather than inferring again.
-    Ok(interface) -> Ok(#(Some(interface), cache))
+    Ok(interface) -> Ok(#(Ok(interface), cache))
     Error(_) -> resolve_uncached(options, loading, cache, path, best_effort:)
   }
 }
 
+// The inner `Result` says whether the module could be loaded at all; the
+// outer one carries a strict-mode inference failure *inside* a module that
+// did load. A failure to load is not cached, so the next import of the same
+// path asks the resolver again.
 fn resolve_uncached(
   options: Options,
   loading: Set(String),
   cache: InterfaceCache,
   path: String,
   best_effort best_effort: Bool,
-) -> Result(#(Option(ModuleInterface), InterfaceCache), Error) {
+) -> Result(#(Result(ModuleInterface, Unavailability), InterfaceCache), Error) {
   case options.resolver(path) {
-    Error(_) -> Ok(#(None, cache))
+    Error(_) -> Ok(#(Error(NotFound), cache))
     Ok(source) ->
       case glance.module(source) {
-        Error(_) -> Ok(#(None, cache))
+        Error(error) -> Ok(#(Error(Unparsable(error)), cache))
         Ok(module) -> {
           // An import's own skipped definitions (best-effort) are irrelevant to
           // the importer; only its public interface, partial or not, matters.
@@ -1622,7 +1673,7 @@ fn resolve_uncached(
             best_effort:,
           ))
           Ok(#(
-            Some(inferred.interface),
+            Ok(inferred.interface),
             dict.insert(inferred.cache, path, inferred.interface),
           ))
         }
@@ -1678,6 +1729,7 @@ fn build_interface(
     accessors: take(env.accessors, accessor_type_names),
     modules: env.modules,
     reachable: env.module_index,
+    unavailable: env.unavailable,
   )
 }
 
