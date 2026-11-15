@@ -2755,13 +2755,258 @@ pub fn target_shorthand_in_a_resolved_module_test() {
   scheme_of(js.functions, "uses") |> should.equal("fn() -> String")
 }
 
-pub fn resolutions_are_returned_by_every_entry_point_test() {
-  // One family now, so the resolutions and the dropped definitions ride on
-  // every result: the three strict entry points return the identical record,
-  // and the package's `annotated` carries both too — under the package's own
-  // module name, which is the only difference between the two.
+pub fn unavailable_import_not_found_test() {
+  // An import the resolver cannot find is skipped, as it always was, and now
+  // named. Unused, it costs nothing, so the strict result is still `Ok`.
+  let assert Ok(annotated) =
+    girard.annotate("import missing\npub fn f() { 1 }", options_with([]))
+
+  annotated.unavailable
+  |> should.equal([girard.UnavailableModule("missing", girard.NotFound)])
+}
+
+pub fn unavailable_import_unparsable_test() {
+  // The resolver found source glance could not parse. The entry carries
+  // glance's own error, computed here rather than written out so the test
+  // does not pin glance's error shape.
+  let broken = "pub fn oops( {"
+  let assert Error(error) = glance.module(broken)
+  let assert Ok(annotated) =
+    girard.annotate(
+      "import broken\npub fn f() { 1 }",
+      options_with([#("broken", broken)]),
+    )
+
+  annotated.unavailable
+  |> should.equal([
+    girard.UnavailableModule("broken", girard.Unparsable(error)),
+  ])
+}
+
+pub fn unavailable_module_reached_through_a_dependency_test() {
+  // The root never imports `missing`, but `b` does, so the types `b` exports
+  // were built without it. The root lists it, and `b` itself still works.
+  let modules = [#("b", "import missing\npub fn b() { 1 }")]
+  let assert Ok(annotated) =
+    girard.annotate("import b\npub fn f() { b.b() }", options_with(modules))
+
+  annotated.unavailable
+  |> should.equal([girard.UnavailableModule("missing", girard.NotFound)])
+  scheme_of(annotated.functions, "f") |> should.equal("fn() -> Int")
+}
+
+pub fn unavailable_module_is_listed_once_test() {
+  // `missing_00` is reached directly and through `b`, and is listed once.
+  // Forty paths are what pin the order by path: Erlang enumerates a map of up
+  // to 32 keys in key order anyway, so a shorter list would come out sorted
+  // with no sort at all.
+  let paths =
+    list.index_map(list.repeat(Nil, 40), fn(_, i) {
+      "missing_" <> string.pad_start(int.to_string(i), to: 2, with: "0")
+    })
+  let modules = [#("b", "import missing_00\npub fn b() { 1 }")]
   let source =
-    "pub type Person {\n  Person(name: String)\n}\n"
+    string.concat(list.map(paths, fn(path) { "import " <> path <> "\n" }))
+    <> "import b\npub fn f() { b.b() }"
+  let assert Ok(annotated) = girard.annotate(source, options_with(modules))
+
+  annotated.unavailable
+  |> should.equal(
+    list.map(paths, fn(path) { girard.UnavailableModule(path, girard.NotFound) }),
+  )
+}
+
+pub fn unavailable_is_carried_by_a_cached_interface_test() {
+  // An interface reused from a cache brings the failures it was built with,
+  // whether the cache is the run-local one inside `annotate_package` or the
+  // public `Cache` threaded across `annotate_with_cache` calls. In both
+  // halves the resolver cannot supply `b` where it is reused, so a lost
+  // interface fails here rather than being inferred again into the same
+  // answer.
+  let b = "import missing\npub fn b() { 1 }"
+  let expected = [girard.UnavailableModule("missing", girard.NotFound)]
+
+  // `b` is a package module the resolver cannot find, annotated first, so
+  // `app/two` reaches it only through the interface `annotate_package` keeps
+  // for each module it has annotated.
+  let results =
+    girard.annotate_package(
+      parse_package([
+        #("b", b),
+        #("app/two", "import b\npub fn two() { b.b() }"),
+      ]),
+      options_with([]),
+    )
+  let assert Ok(from_b) = dict.get(results, "b")
+  let assert Ok(two) = dict.get(results, "app/two")
+  from_b.annotated.unavailable |> should.equal(expected)
+  two.skipped |> should.equal([])
+  two.annotated.unavailable |> should.equal(expected)
+
+  // The second call's snapshot has no `b`, so only the cache the first call
+  // returned can supply it.
+  let source = "import b\npub fn f() { b.b() }"
+  let assert #(Ok(first), cache) =
+    girard.annotate_with_cache(
+      source,
+      options_with([#("b", b)]),
+      girard.new_cache(),
+    )
+  let assert #(Ok(second), _) =
+    girard.annotate_with_cache(source, options_with([]), cache)
+  first.unavailable |> should.equal(expected)
+  second.unavailable |> should.equal(expected)
+  scheme_of(second.functions, "f") |> should.equal("fn() -> Int")
+}
+
+pub fn off_target_import_is_not_unavailable_test() {
+  // An import dropped for the other target is never attempted, so it is not
+  // unavailable. On its own target it is attempted, and listed.
+  let source = "@target(javascript)\nimport missing\npub fn f() { 1 }"
+  let options = options_with([])
+
+  let assert Ok(erlang) = girard.annotate(source, options)
+  erlang.unavailable |> should.equal([])
+
+  let assert Ok(js) =
+    girard.annotate(source, girard.with_target(options, girard.JavaScript))
+  js.unavailable
+  |> should.equal([girard.UnavailableModule("missing", girard.NotFound)])
+}
+
+pub fn unavailable_explains_a_skipped_definition_test() {
+  // The pairing the docs describe: a value looked up through a failed import
+  // skips its definition with an `UnboundVariable` the error alone cannot tell
+  // from any other, and `unavailable` names the module that was missing. An
+  // independent definition is annotated as usual.
+  let source = "import d.{foo}\npub fn uses() { foo() }\npub fn ok() { 1 }"
+  let result = package_result([#("app/m", source)], "app/m")
+
+  result.skipped |> should.equal([#("uses", girard.UnboundVariable("foo"))])
+  package_signature(result, "ok") |> should.equal("fn() -> Int")
+  result.annotated.unavailable
+  |> should.equal([girard.UnavailableModule("d", girard.NotFound)])
+}
+
+pub fn written_type_from_an_unavailable_module_test() {
+  // A type written against an unavailable module is not an error: hydration
+  // credits an unknown unqualified name to the prelude and keeps a qualified
+  // one's alias as its module. Both render as `fn(T) -> T`, so the structured
+  // types are what tell the origins apart, and `unavailable` is the only sign
+  // that neither `T` was seen.
+  let unqualified = "import d.{type T}\npub fn f(x: T) -> T { x }"
+  let qualified = "import app/d as d\npub fn g(x: d.T) -> d.T { x }"
+  let options = options_with([])
+  let prelude_t = girard.Named("gleam", "T", [])
+  let alias_t = girard.Named("d", "T", [])
+  let f = girard.Scheme([], girard.Fn([prelude_t], prelude_t))
+  let g = girard.Scheme([], girard.Fn([alias_t], alias_t))
+
+  let assert Ok(annotated) = girard.annotate(unqualified, options)
+  list.key_find(annotated.functions, "f") |> should.equal(Ok(f))
+  annotated.unavailable
+  |> should.equal([girard.UnavailableModule("d", girard.NotFound)])
+
+  let assert Ok(annotated) = girard.annotate(qualified, options)
+  list.key_find(annotated.functions, "g") |> should.equal(Ok(g))
+  annotated.unavailable
+  |> should.equal([girard.UnavailableModule("app/d", girard.NotFound)])
+
+  // Nothing is skipped in a package either.
+  let one = package_result([#("app/one", unqualified)], "app/one")
+  let two = package_result([#("app/two", qualified)], "app/two")
+  one.skipped |> should.equal([])
+  two.skipped |> should.equal([])
+  list.key_find(one.annotated.functions, "f") |> should.equal(Ok(f))
+  list.key_find(two.annotated.functions, "g") |> should.equal(Ok(g))
+}
+
+pub fn conflicting_cached_reasons_test() {
+  // A cached interface keeps the reason it was built with, so one call can
+  // meet two reasons for the same path. Each snapshot below is the same
+  // module table with only `missing`'s source changed, which is what one
+  // loader sees when a file changes; a dependency is cached by annotating a
+  // wrapper root that imports it, since the root itself is never cached.
+  let b = #("b", "import missing\npub fn b() { 1 }")
+  let c = #("c", "import missing\npub fn c() { 2 }")
+  let broken = "pub fn oops( {"
+  let assert Error(error) = glance.module(broken)
+  let absent = options_with([b, c])
+  let unparsable = options_with([b, c, #("missing", broken)])
+
+  // `b` is cached while `missing` is absent, `c` once it is unparsable.
+  let #(_, cache) =
+    girard.annotate_with_cache("import b", absent, girard.new_cache())
+  let #(_, cache) = girard.annotate_with_cache("import c", unparsable, cache)
+  let reason_in = fn(source) {
+    let assert #(Ok(annotated), _) =
+      girard.annotate_with_cache(source, unparsable, cache)
+    annotated.unavailable
+  }
+
+  let as_unparsable = [
+    girard.UnavailableModule("missing", girard.Unparsable(error)),
+  ]
+  let as_not_found = [girard.UnavailableModule("missing", girard.NotFound)]
+
+  // This import's own attempt wins over the reason `b` was built with,
+  // whether it is met before `b` or after it.
+  reason_in("import missing\nimport b") |> should.equal(as_unparsable)
+  reason_in("import b\nimport missing") |> should.equal(as_unparsable)
+
+  // Between two reused interfaces that disagree, the one met first wins.
+  // glance stores imports newest-first, so that is the import written last.
+  // This pins today's order rather than a promise: only interfaces cached at
+  // different revisions of `missing` can disagree at all.
+  reason_in("import b\nimport c") |> should.equal(as_unparsable)
+  reason_in("import c\nimport b") |> should.equal(as_not_found)
+}
+
+pub fn fresh_import_keeps_a_cached_failure_test() {
+  // `b` is cached while `missing` is absent; then `missing` appears. A root
+  // importing both reads `missing` fresh and can call into it, but still
+  // lists it, because the `b` it reused really was built without it.
+  // Invalidating `b` rebuilds it over the module that now exists, and the
+  // entry is gone. One level only: a longer chain needs every cached importer
+  // invalidated too.
+  //
+  // Both import orders, each from the same stale cache. glance stores imports
+  // newest-first, so with `import missing` written first, `b`'s entry is
+  // already recorded when the fresh import succeeds, and must survive it.
+  let b = #("b", "import missing\npub fn b() { 1 }")
+  let absent = options_with([b])
+  let present = options_with([b, #("missing", "pub fn m() { 1 }")])
+  let call = "pub fn f() { missing.m() }"
+  let #(_, stale) =
+    girard.annotate_with_cache("import b", absent, girard.new_cache())
+
+  use imports <- list.each([
+    "import b\nimport missing\n",
+    "import missing\nimport b\n",
+  ])
+  let source = imports <> call
+  let assert #(Ok(annotated), cache) =
+    girard.annotate_with_cache(source, present, stale)
+  scheme_of(annotated.functions, "f") |> should.equal("fn() -> Int")
+  annotated.unavailable
+  |> should.equal([girard.UnavailableModule("missing", girard.NotFound)])
+
+  let cache = girard.invalidate(cache, "b")
+  let assert #(Ok(annotated), _) =
+    girard.annotate_with_cache(source, present, cache)
+  scheme_of(annotated.functions, "f") |> should.equal("fn() -> Int")
+  annotated.unavailable |> should.equal([])
+}
+
+pub fn resolutions_are_returned_by_every_entry_point_test() {
+  // One family now, so the resolutions, the dropped definitions and the
+  // unavailable modules ride on every result: the three strict entry points
+  // return the identical record, and the package's `annotated` carries all
+  // three too — under the package's own module name, which is the only
+  // difference between the two.
+  let source =
+    "import missing\n"
+    <> "pub type Person {\n  Person(name: String)\n}\n"
     <> "@target(javascript)\npub fn js(p: Person) { p.name }\n"
     <> "pub fn f(p: Person) { p.name }"
   let options = options_with([])
@@ -2773,6 +3018,7 @@ pub fn resolutions_are_returned_by_every_entry_point_test() {
   let dropped = [
     girard.Dropped("js", span_of(source, "pub fn js(p: Person) { p.name }")),
   ]
+  let unavailable = [girard.UnavailableModule("missing", girard.NotFound)]
 
   annotated.resolutions
   |> list.map(fn(r) { #(r.span, r.resolution) })
@@ -2783,6 +3029,7 @@ pub fn resolutions_are_returned_by_every_entry_point_test() {
     ),
   ])
   annotated.dropped |> should.equal(dropped)
+  annotated.unavailable |> should.equal(unavailable)
   girard.annotate_module(module, options) |> should.equal(Ok(annotated))
   cached |> should.equal(Ok(annotated))
 
@@ -2796,6 +3043,7 @@ pub fn resolutions_are_returned_by_every_entry_point_test() {
     ),
   ])
   from_package.annotated.dropped |> should.equal(dropped)
+  from_package.annotated.unavailable |> should.equal(unavailable)
 }
 
 // The census

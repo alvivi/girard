@@ -158,7 +158,10 @@ are the ones `render` publishes. And an access girard deferred as a
 publishes `Unresolved(RecordAccessUnknownType)` — girard reached the field type
 but never a member at the access. That last is a tripwire as much as a result:
 over code the compiler accepts, each one is a place where girard's inference
-order lags the compiler's.
+order lags the compiler's. A module girard could not load, listed in
+`AnnotatedModule.unavailable`, is not a fourth shape: it removes nothing by
+itself, but it explains skipped definitions whose lookups went through it and
+types written against it that girard hydrated without seeing.
 
 The public `Type` model has four variants:
 
@@ -179,9 +182,15 @@ its labels and its identity travel together — plus the types, aliases and
 accessors required by importing modules, and the modules it resolved keyed two
 ways: by the alias each is reachable under here, for qualified lookup, and by
 real module name, which is how accessors are addressed and the only key a
-discard-aliased import has. The reusable cache avoids parsing and
-inferring a shared import more than once and can invalidate a single module when
-its source changes.
+discard-aliased import has. It also carries the transitive `unavailable` set:
+every module that could not be loaded, by path and reason, while it or any of
+its own imports was inferred. An importer merges that set into its `Env`
+whether the interface was inferred fresh or reused from a cache — a direct
+failure overwrites, an inherited entry fills only an absent path, and a direct
+success removes nothing — so a cached interface keeps the failures it was built
+with until it and its cached importers are invalidated. The reusable cache
+avoids parsing and inferring a shared import more than once and can invalidate
+a single module when its source changes. A failure to load is not cached.
 
 ## Differential Testing
 

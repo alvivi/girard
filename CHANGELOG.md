@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- girard now says which imported modules it could not use, and why.
+  `AnnotatedModule.unavailable` lists every module the resolver found no
+  source for (`NotFound`) or returned source glance could not parse
+  (`Unparsable`, carrying glance's error), imported directly or reached
+  through any import, one `UnavailableModule` per path, sorted by path. Every
+  entry point returns it, and a cached interface carries the entries it was
+  built with to every importer. An unavailable import was always skipped
+  silently: a value used through it failed with an `UnboundVariable` that
+  looked like any other, and a type written against it came back credited to
+  the prelude or to the import's alias with nothing to say it was never seen.
+
+### Changed
+
+- `AnnotatedModule` gains the `unavailable` field. Reading fields off the
+  result works as before; constructing or fully destructuring
+  `AnnotatedModule` must name the new field.
+
 ### Fixed
 
 - `@target(erl)` and `@target(js)` select Erlang and JavaScript, as the

@@ -217,11 +217,50 @@ That closes the last gap in reading an absence. A span with no annotation and
 no resolution is one of exactly three things, and a consumer can now tell them
 apart: not a recorded position at all, inside a definition `annotate_package`
 reports as `skipped` (with the error that declined it), or inside one `dropped`
-for the target.
+for the target. An annotation that *is* there may still name a type girard
+could not see, when `unavailable` is non-empty — see [Imports girard could not
+use](#imports-girard-could-not-use).
 
 Only functions and constants are listed. `@target` drops imports, custom types
 and type aliases too, but none has a body, so no missing annotation is ever
 inside one.
+
+### Imports girard could not use
+
+When the resolver finds no source for an imported module, or returns source
+glance cannot parse, girard skips the import and carries on. `unavailable` names
+every such module — imported directly or reached through any import — with why,
+one entry per module path, sorted by path:
+
+```gleam
+import app/missing   // the resolver returns Error(Nil)
+import broken        // the resolver returns "pub fn oops( {"
+
+pub fn greet() { "hi" }
+
+// unavailable: [
+//   UnavailableModule("app/missing", NotFound),
+//   UnavailableModule("broken", Unparsable(..)),   // carrying glance's error
+// ]
+```
+
+An entry is not an error by itself: an unused import costs nothing, so
+`annotate` still returns `Ok`. A *value* used through an import that failed
+fails its definition — `annotate` returns the error and no record, and
+`annotate_package` lists the definition in `skipped`, typically as
+`UnboundVariable` — and `unavailable` is what tells that apart from a
+dependency's own failure. A *type* written against one does not fail: it is
+credited to the prelude when unqualified (`Named("gleam", "T", [])`) and named
+after the alias when qualified (`Named("d", "T", [])`), so both render as `T`
+with nothing else to say girard never saw it.
+
+An entry records a failed attempt, possibly made while building an interface
+reused from a `Cache`, and does not prove the module is missing now. A cached
+interface built while a module was missing keeps the entry, and so does every
+cached importer built over it. Once the source is fixed, invalidate the stale
+interface and every cached importer carrying it, or start again from
+`new_cache()`. To tell direct entries from transitive ones, compare them with
+the module's own imports.
 
 ### Options: resolver and target
 
@@ -269,7 +308,8 @@ invalidate cached importers, or start again from `new_cache()`.
 inferring a shared import only once across the whole run. `modules` is a list of
 `#(module_path, glance.Module)`; the result maps each path to a `ModuleResult`
 (`.annotated` plus `.skipped`; the definitions dropped for the target are in
-`.annotated.dropped`, since a module annotated on its own drops them too).
+`.annotated.dropped` and the modules girard could not use in
+`.annotated.unavailable`, since a module annotated on its own reports both too).
 
 Unlike `annotate`/`annotate_module`, it is **best-effort per definition**: a
 top-level function or constant that does not type — along with anything that
