@@ -2686,6 +2686,75 @@ pub fn dropped_definition_does_not_borrow_an_import_test() {
   |> should.equal([girard.Dropped("g", span_of(source, "pub fn g() { 1 }"))])
 }
 
+pub fn target_shorthand_function_test() {
+  // The compiler still accepts the deprecated `@target(erl)` and `@target(js)`
+  // as Erlang and JavaScript. Matched against the full names only, a shorthand
+  // definition was dropped on both targets, its own included, and so its
+  // caller failed to type.
+  let source =
+    "@target(erl)\nfn answer() { 42 }\n"
+    <> "@target(js)\nfn answer() { \"42\" }\n"
+    <> "pub fn uses() { answer() }"
+  let options = options_with([])
+
+  let assert Ok(erlang) = girard.annotate(source, options)
+  scheme_of(erlang.functions, "uses") |> should.equal("fn() -> Int")
+  erlang.dropped
+  |> should.equal([
+    girard.Dropped("answer", span_of(source, "fn answer() { \"42\" }")),
+  ])
+
+  let assert Ok(js) =
+    girard.annotate(source, girard.with_target(options, girard.JavaScript))
+  scheme_of(js.functions, "uses") |> should.equal("fn() -> String")
+  js.dropped
+  |> should.equal([
+    girard.Dropped("answer", span_of(source, "fn answer() { 42 }")),
+  ])
+}
+
+pub fn target_shorthand_import_test() {
+  // An import marked with a shorthand is kept on its own target and dropped on
+  // the other, as one marked with the full name is.
+  let source =
+    "@target(erl)\nimport on_erlang.{answer}\n"
+    <> "@target(js)\nimport on_javascript.{answer}\n"
+    <> "pub fn uses() { answer() }"
+  let options =
+    options_with([
+      #("on_erlang", "pub fn answer() -> Int { 42 }"),
+      #("on_javascript", "pub fn answer() -> String { \"42\" }"),
+    ])
+
+  let assert Ok(erlang) = girard.annotate(source, options)
+  scheme_of(erlang.functions, "uses") |> should.equal("fn() -> Int")
+
+  let assert Ok(js) =
+    girard.annotate(source, girard.with_target(options, girard.JavaScript))
+  scheme_of(js.functions, "uses") |> should.equal("fn() -> String")
+}
+
+pub fn target_shorthand_in_a_resolved_module_test() {
+  // A module loaded through the resolver is filtered by the same rule, so a
+  // shorthand export reaches its importer's interface on its own target.
+  let source = "import platform\npub fn uses() { platform.name() }"
+  let options =
+    options_with([
+      #(
+        "platform",
+        "@target(erl)\npub fn name() -> Int { 1 }\n"
+          <> "@target(js)\npub fn name() -> String { \"js\" }",
+      ),
+    ])
+
+  let assert Ok(erlang) = girard.annotate(source, options)
+  scheme_of(erlang.functions, "uses") |> should.equal("fn() -> Int")
+
+  let assert Ok(js) =
+    girard.annotate(source, girard.with_target(options, girard.JavaScript))
+  scheme_of(js.functions, "uses") |> should.equal("fn() -> String")
+}
+
 pub fn resolutions_are_returned_by_every_entry_point_test() {
   // One family now, so the resolutions and the dropped definitions ride on
   // every result: the three strict entry points return the identical record,

@@ -1862,13 +1862,15 @@ fn for_target(
 }
 
 fn on_target(definition: glance.Definition(a), target: Target) -> Bool {
-  let active = case target {
-    Erlang -> "erlang"
-    JavaScript -> "javascript"
+  // The compiler still accepts the deprecated `erl` and `js` shorthands, with a
+  // warning, so each target answers to both of its names.
+  let names = case target {
+    Erlang -> ["erlang", "erl"]
+    JavaScript -> ["javascript", "js"]
   }
   list.all(definition.attributes, fn(attr) {
     case attr.name, attr.arguments {
-      "target", [glance.Variable(_, t)] -> t == active
+      "target", [glance.Variable(_, name)] -> list.contains(names, name)
       _, _ -> True
     }
   })
