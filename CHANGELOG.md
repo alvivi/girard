@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `AnnotatedModule.expressions` no longer repeats an entry. Ordinary calls
+  and captures, and pipes into a bare function or a saturated call, were each
+  recorded twice: once by the walk that infers every expression and again by
+  the helper it handed the call to. Every copy carried the same type, so only
+  a consumer counting entries saw the difference.
+
 ## [4.0.0] - 2026-11-16
 
 ### Added

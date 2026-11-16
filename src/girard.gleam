@@ -2918,6 +2918,15 @@ fn variant_field_type(field: glance.VariantField) -> glance.Type {
 // lists, lambdas, blocks and bit arrays — with the reordering that labelled
 // and shorthand arguments need to reach their declared positions.
 
+// `infer_expr` owns recording an ordinary expression's span: it records the
+// type `infer_expr_inner` returns, so a helper reached only through it — a
+// call, a capture, a pipe — records nothing at the span it was handed, or the
+// expression would be published twice. The paths that walk an expression
+// without passing through here record it once, explicitly, where they walk
+// it: a callee resolved in `infer_callee`, a lambda seeded through `check` or
+// `infer_applied_lambda`, an annotated local lambda in `infer_statement`, and
+// the call a pipe inserts its value into, which `infer_pipe` infers through
+// `infer_call`.
 fn infer_expr(
   env: Env,
   st: State,
@@ -2981,14 +2990,14 @@ fn infer_expr_inner(
     glance.Fn(_, params, return_annotation, body) ->
       infer_fn(env, st, params, return_annotation, body)
 
-    glance.Call(span, function, arguments) ->
-      infer_call(env, st, span, function, arguments)
+    glance.Call(_, function, arguments) ->
+      infer_call(env, st, function, arguments)
 
     glance.FnCapture(span, label, function, before, after) ->
       infer_capture(env, st, span, label, function, before, after)
 
-    glance.BinaryOperator(span, op, left, right) ->
-      infer_binop(env, st, span, op, left, right)
+    glance.BinaryOperator(_, op, left, right) ->
+      infer_binop(env, st, op, left, right)
 
     glance.Block(_, statements) -> infer_statements(env, st, statements)
 
@@ -3598,7 +3607,6 @@ fn infer_callee(
 fn infer_call(
   env: Env,
   st: State,
-  span: glance.Span,
   function: glance.Expression,
   arguments: List(glance.Field(glance.Expression)),
 ) -> Result(#(ty.Type, State), Error) {
@@ -3624,17 +3632,14 @@ fn infer_call(
       }
     _ -> infer_callee(env, st, function)
   })
-  use #(return, st) <- result.try(
-    place_arguments(
-      st,
-      fn_type,
-      labels,
-      arguments,
-      fn(expression) { expression },
-      fn(st, argument, hole) { check(env, st, argument, hole) },
-    ),
+  place_arguments(
+    st,
+    fn_type,
+    labels,
+    arguments,
+    fn(expression) { expression },
+    fn(st, argument, hole) { check(env, st, argument, hole) },
   )
-  Ok(#(return, record(st, span, return)))
 }
 
 // Place a call's arguments against the callee's parameters and check each one:
@@ -3929,20 +3934,18 @@ fn infer_capture(
   )
   // A capture is a lambda whose body is the call, so its return is the
   // callee's own — `Loud(_)` returns a value known to be `Loud`.
-  let captured = ty.Fn([hole], return)
-  Ok(#(captured, record(st, span, captured)))
+  Ok(#(ty.Fn([hole], return), st))
 }
 
 fn infer_binop(
   env: Env,
   st: State,
-  span: glance.Span,
   op: glance.BinaryOperator,
   left: glance.Expression,
   right: glance.Expression,
 ) -> Result(#(ty.Type, State), Error) {
   case op {
-    glance.Pipe -> infer_pipe(env, st, span, left, right)
+    glance.Pipe -> infer_pipe(env, st, left, right)
 
     glance.And | glance.Or -> {
       use st <- result.try(check(env, st, left, prelude_bool()))
@@ -3996,7 +3999,6 @@ fn infer_binop(
 fn infer_pipe(
   env: Env,
   st: State,
-  span: glance.Span,
   left: glance.Expression,
   right: glance.Expression,
 ) -> Result(#(ty.Type, State), Error) {
@@ -4019,24 +4021,24 @@ fn infer_pipe(
       }
       case saturated {
         True -> {
-          use #(call_type, st) <- result.try(infer_call(
-            env,
-            st,
-            call_span,
-            function,
-            arguments,
-          ))
+          use #(call_type, st) <- result.try(infer_expr(env, st, right))
           use #(lt, st) <- result.try(infer_expr(env, st, left))
           let #(result, st) = fresh(st)
           use st <- result.try(unify(st, call_type, ty.Fn([lt], result)))
-          let return = call_return(st, call_type, result)
-          Ok(#(return, record(st, span, return)))
+          Ok(#(call_return(st, call_type, result), st))
         }
-        False ->
-          infer_call(env, st, call_span, function, [
-            glance.UnlabelledField(left),
-            ..arguments
-          ])
+        // `f(left, args)` has no node of its own, so the call is inferred
+        // through `infer_call` and its span recorded here, once; the whole
+        // pipe's span is `infer_expr`'s.
+        False -> {
+          use #(call_type, st) <- result.try(
+            infer_call(env, st, function, [
+              glance.UnlabelledField(left),
+              ..arguments
+            ]),
+          )
+          Ok(#(call_type, record(st, call_span, call_type)))
+        }
       }
     }
     // `left |> f` becomes `f(left)`, so the target is applied to the piped
@@ -4066,7 +4068,7 @@ fn infer_pipe(
           unify(st, ft, piped)
         }
       })
-      Ok(#(result, record(st, span, result)))
+      Ok(#(result, st))
     }
   }
 }

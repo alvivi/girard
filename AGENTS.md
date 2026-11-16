@@ -142,7 +142,10 @@ does. `infer_field_access` and `infer_callee` record a `Reference` into
 `publish_references` zonks each accessed record, converts it and keeps one
 entry per span, which is what `AnnotatedModule.resolutions` promises: no walk
 produces a duplicate today, but the guarantee is the API's rather than any one
-walk's.
+walk's. Expression types are not deduplicated at publication, so the walk
+itself keeps them unique: `infer_expr` owns recording an ordinary expression's
+span, and each path that walks an expression without it records that span
+once, explicitly, where it walks it.
 
 Absence has exactly three shapes. A definition in `ModuleResult.skipped`
 contributes no references, because `best_effort_group` discards its component's

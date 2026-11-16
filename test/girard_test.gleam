@@ -13,6 +13,7 @@ import gleam/order
 import gleam/string
 import gleeunit
 import gleeunit/should
+import simplifile
 
 pub fn main() {
   gleeunit.main()
@@ -353,6 +354,95 @@ pub fn piped_call_annotates_its_callee_once_test() {
   })
   |> list.map(fn(a) { girard.type_to_string(a.type_) })
   |> should.equal(["fn(Int, Int) -> Int"])
+}
+
+// Every span `source`'s annotated expressions report more than once. Each
+// source expression girard walks is recorded once, so over a module glance
+// parsed this is empty.
+fn repeated_spans(source: String) -> List(glance.Span) {
+  let assert Ok(annotated) = girard.annotate(source, girard.default_options())
+  annotated.expressions
+  |> list.group(by: fn(annotation) { annotation.span })
+  |> dict.filter(fn(_, annotations) { list.length(annotations) > 1 })
+  |> dict.keys
+}
+
+pub fn parameter_call_is_recorded_once_test() {
+  let source = "pub fn g(k, x: Int) { k(x) }"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "k(x)")) |> should.equal(["a"])
+}
+
+pub fn constructor_call_is_recorded_once_test() {
+  let source = "pub fn g(x: Int) { Ok(x) }"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "Ok(x)"))
+  |> should.equal(["Result(Int, a)"])
+}
+
+pub fn capture_and_its_call_are_recorded_once_test() {
+  let source =
+    "fn add(a: Int, b: Int) -> Int { a + b }\n"
+    <> "pub fn g() { add(_, 1) }\n"
+    <> "pub fn h() { add(_, 1)(2) }"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "add(_, 1)"))
+  |> should.equal(["fn(Int) -> Int"])
+  annotations_at(source, last_span(source, "add(_, 1)"))
+  |> should.equal(["fn(Int) -> Int"])
+  annotations_at(source, span_of(source, "add(_, 1)(2)"))
+  |> should.equal(["Int"])
+}
+
+pub fn pipe_into_a_bare_function_is_recorded_once_test() {
+  let source = "fn e(n: Int) -> Int { n }\n" <> "pub fn g(x: Int) { x |> e }"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "x |> e")) |> should.equal(["Int"])
+}
+
+pub fn pipe_into_a_saturated_call_is_recorded_once_test() {
+  // `make()` already takes all its arguments, so the pipe applies `x` to what
+  // it returns: the call span once, at the call's own type, and the whole pipe
+  // once, at the application's.
+  let source =
+    "fn make() -> fn(Int) -> Int { fn(n) { n } }\n"
+    <> "pub fn g(x: Int) { x |> make() }"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, last_span(source, "make()"))
+  |> should.equal(["fn(Int) -> Int"])
+  annotations_at(source, span_of(source, "x |> make()"))
+  |> should.equal(["Int"])
+}
+
+pub fn pipe_into_an_unsaturated_call_is_recorded_once_test() {
+  // `x |> add(1)` is `add(x, 1)`: the call span and the pipe span each once,
+  // both at the call's return.
+  let source =
+    "fn add(a: Int, b: Int) -> Int { a + b }\n"
+    <> "pub fn g(x: Int) { x |> add(1) }"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "add(1)")) |> should.equal(["Int"])
+  annotations_at(source, span_of(source, "x |> add(1)"))
+  |> should.equal(["Int"])
+}
+
+pub fn fixtures_record_each_span_once_test() {
+  // Every oracle and golden fixture: no span carries more than one entry.
+  ["fixtures/oracle", "fixtures/golden"]
+  |> list.flat_map(fn(directory) {
+    let assert Ok(entries) = simplifile.read_directory(directory)
+    entries
+    |> list.filter(string.ends_with(_, ".gleam"))
+    |> list.map(fn(entry) { directory <> "/" <> entry })
+  })
+  |> list.filter_map(fn(path) {
+    let assert Ok(source) = simplifile.read(path)
+    case repeated_spans(source) {
+      [] -> Error(Nil)
+      repeated -> Ok(#(path, repeated))
+    }
+  })
+  |> should.equal([])
 }
 
 // Panic and todo
@@ -2230,10 +2320,8 @@ fn should_read_box_value(source: String) -> Nil {
   type_of(source, "x.value") |> should.equal("Int")
 }
 
-// Every type recorded at `span`, in the order girard reports them. A call span
-// already carries two — `infer_expr`'s wrapper records it and `infer_call`
-// records the callee's own return over it — so the count is only meaningful
-// against the same shape without the seeding.
+// Every type recorded at `span`, in the order girard reports them: one for an
+// expression girard walked, none for one it did not.
 fn annotations_at(source: String, span: glance.Span) -> List(String) {
   let assert Ok(annotated) = girard.annotate(source, girard.default_options())
   annotated.expressions
