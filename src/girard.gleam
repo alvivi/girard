@@ -1022,6 +1022,60 @@ fn register_type_alias(env: Env, alias: glance.TypeAlias) -> Env {
   )
 }
 
+// The local aliases on a cycle — every alias in a strongly connected component
+// of more than one, and an alias that names itself — whose expansion would
+// never finish. The compiler rejects a module that declares one, used or not
+// (`RecursiveTypeAlias`, from the same toposort over the aliases). girard
+// leaves them unregistered instead, so a reference to one hydrates as any name
+// girard cannot resolve does, and the module still annotates in finite time.
+// An alias that only reaches a cycle is not on it, and stays registered.
+fn cyclic_aliases(aliases: List(glance.TypeAlias)) -> Set(String) {
+  let names = list.map(aliases, fn(alias) { alias.name })
+  let local = set.from_list(names)
+  let edges =
+    list.fold(aliases, dict.new(), fn(edges, alias) {
+      let dependencies =
+        list.filter(alias_dependencies(alias.aliased), set.contains(local, _))
+      dict.insert(edges, alias.name, dependencies)
+    })
+  scc.components(names, edges)
+  |> list.filter(is_cycle(_, edges))
+  |> list.flatten
+  |> set.from_list
+}
+
+// The unqualified type names `type_` mentions, through named types' arguments,
+// tuple elements and function types: the compiler's `get_type_dependencies`. A
+// qualified name belongs to another module, so it is never a local alias, but
+// its arguments can name one.
+fn alias_dependencies(type_: glance.Type) -> List(String) {
+  case type_ {
+    glance.NamedType(_, name, None, parameters) -> [
+      name,
+      ..list.flat_map(parameters, alias_dependencies)
+    ]
+    glance.NamedType(_, _, Some(_), parameters) ->
+      list.flat_map(parameters, alias_dependencies)
+    glance.TupleType(_, elements) -> list.flat_map(elements, alias_dependencies)
+    glance.FunctionType(_, parameters, return) ->
+      list.flat_map([return, ..parameters], alias_dependencies)
+    glance.VariableType(..) | glance.HoleType(..) -> []
+  }
+}
+
+// Whether a strongly connected component of the alias graph is a cycle: more
+// than one alias, or a single alias that depends on itself.
+fn is_cycle(
+  component: List(String),
+  edges: Dict(String, List(String)),
+) -> Bool {
+  case component {
+    [] -> False
+    [name] -> list.contains(result.unwrap(dict.get(edges, name), []), name)
+    [_, _, ..] -> True
+  }
+}
+
 fn fresh_id(st: State) -> #(Int, State) {
   #(st.next_id, State(..st, next_id: st.next_id + 1))
 }
@@ -1331,19 +1385,23 @@ fn infer_module(
   ))
 
   // 2. Pre-declare local type names so forward references resolve, then
-  //    register aliases and custom-type constructors/accessors. A function's
-  //    or constant's labels need no early pass: they are installed with its
-  //    value, by `prereg_def` before any body of its component is walked, and
-  //    no earlier component can reference it or it would not be earlier.
+  //    register aliases and custom-type constructors/accessors. An alias on a
+  //    cycle is not registered, since expanding it would never finish. A
+  //    function's or constant's labels need no early pass: they are installed
+  //    with its value, by `prereg_def` before any body of its component is
+  //    walked, and no earlier component can reference it or it would not be
+  //    earlier.
   let env =
     list.fold(module.custom_types, env, fn(env, d) {
       let ct = d.definition
       declare_type(env, ct.name, list.length(ct.parameters))
     })
+  let aliases = list.map(module.type_aliases, fn(d) { d.definition })
+  let cyclic = cyclic_aliases(aliases)
   let env =
-    list.fold(module.type_aliases, env, fn(env, d) {
-      register_type_alias(env, d.definition)
-    })
+    aliases
+    |> list.filter(fn(alias) { !set.contains(cyclic, alias.name) })
+    |> list.fold(env, register_type_alias)
   let #(env, st) =
     list.fold(module.custom_types, #(env, st), fn(acc, d) {
       let #(env, st) = acc

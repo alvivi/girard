@@ -40,9 +40,19 @@ fn signature_with(
   modules: List(#(String, String)),
   name: String,
 ) -> String {
+  girard.type_to_string(structured_signature(source, modules, name))
+}
+
+// `signature_with` before rendering, for a test that asserts on which module a
+// type is credited to rather than on how it prints.
+fn structured_signature(
+  source: String,
+  modules: List(#(String, String)),
+  name: String,
+) -> girard.Type {
   let assert Ok(annotated) = girard.annotate(source, options_with(modules))
   case list.key_find(annotated.functions, name) {
-    Ok(sig) -> girard.type_to_string(sig.type_)
+    Ok(sig) -> sig.type_
     Error(_) -> panic as { "no function named " <> name }
   }
 }
@@ -593,6 +603,99 @@ pub fn parametric_alias_test() {
     "pub type Pair(a) = #(a, a)\npub fn mk(x: a) -> Pair(a) { #(x, x) }"
   signature(source, "mk")
   |> should.equal("fn(a) -> #(a, a)")
+}
+
+// A cyclic type alias is code the compiler rejects, but girard must still
+// return on it: an alias on a cycle is left unregistered, so a reference to
+// one hydrates like any name girard cannot resolve, credited to the prelude.
+
+// `fn(A) -> A`, with `A` the name girard could not expand.
+fn identity_on_unexpanded_alias() -> girard.Type {
+  let alias = girard.Named("gleam", "A", [])
+  girard.Fn([alias], alias)
+}
+
+pub fn cyclic_aliases_return_test() {
+  // Each of these looped forever expanding `A`.
+  [
+    "type A = B\ntype B = A\npub fn f(x: A) { x }",
+    "type A = A\npub fn f(x: A) { x }",
+    "type A = List(A)\npub fn f(x: A) { x }",
+  ]
+  |> list.each(fn(source) {
+    structured_signature(source, [], "f")
+    |> should.equal(identity_on_unexpanded_alias())
+  })
+
+  // A public cycle looped while the module's interface was built, and an
+  // alias in a constructor field while the custom type was registered, used
+  // or not.
+  [
+    "pub type A = B\npub type B = A\npub fn f() { 1 }",
+    "type A = A\npub type R { R(a: A) }\npub fn f() { 1 }",
+  ]
+  |> list.each(fn(source) {
+    structured_signature(source, [], "f")
+    |> should.equal(girard.Fn([], girard.Named("gleam", "Int", [])))
+  })
+}
+
+pub fn alias_cycle_through_each_type_shape_returns_test() {
+  // The cycle is found through a tuple element, a function's parameter and
+  // its return, and the argument of a qualified named type.
+  let box = [#("m", "pub type Box(a) {\n  Box(a)\n}")]
+  [
+    "type A = #(A, Int)\npub fn f(x: A) { x }",
+    "type A = fn(A) -> Int\npub fn f(x: A) { x }",
+    "type A = fn() -> A\npub fn f(x: A) { x }",
+    "import m\ntype A = m.Box(A)\npub fn f(x: A) { x }",
+  ]
+  |> list.each(fn(source) {
+    structured_signature(source, box, "f")
+    |> should.equal(identity_on_unexpanded_alias())
+  })
+}
+
+pub fn qualified_same_name_alias_is_not_a_cycle_test() {
+  // `m.A` is another module's `A`, not this alias, so it expands.
+  let source = "import m\ntype A = m.A\npub fn f(x: A) { x }"
+  signature_with(source, [#("m", "pub type A = Int")], "f")
+  |> should.equal("fn(Int) -> Int")
+}
+
+pub fn alias_reaching_a_cycle_expands_to_it_test() {
+  // `C` is not on the cycle, so it stays an alias and expands to `A`.
+  "type A = A\ntype C = A\npub fn f(x: C) { x }"
+  |> structured_signature([], "f")
+  |> should.equal(identity_on_unexpanded_alias())
+}
+
+pub fn importer_of_a_public_alias_cycle_returns_test() {
+  // The imported module's interface build expanded every public alias, so an
+  // importer looped too. Returning is the promise here, not a meaningful
+  // type: a qualified `m.A` is named after the module, while `m`'s own
+  // signatures credit `A` to the prelude.
+  let modules = [#("m", "pub type A = A\npub fn id(x: A) { x }")]
+  "import m\npub fn f(x: m.A) { x }"
+  |> structured_signature(modules, "f")
+  |> should.equal(girard.Fn(
+    [girard.Named("m", "A", [])],
+    girard.Named("m", "A", []),
+  ))
+
+  // An unqualified import of `A` reaches the same interface build. Getting
+  // a result back at all, of either kind, is what this asserts.
+  let _ok_or_error =
+    girard.annotate(
+      "import m.{type A}\npub fn f(x: A) { x }",
+      options_with(modules),
+    )
+  Nil
+}
+
+pub fn acyclic_alias_chain_expands_test() {
+  signature("type A = B\ntype B = Int\npub fn f(x: A) { x }", "f")
+  |> should.equal("fn(Int) -> Int")
 }
 
 // Record field access and update
