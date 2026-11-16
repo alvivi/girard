@@ -10,7 +10,8 @@
 //// record field, a module function, constant or constructor under the
 //// module's canonical path, a local variable, or unresolved — for every field
 //// access and every bare name in call position, and names every top-level
-//// definition left out of the build for the other `Target`.
+//// definition left out of the build for the other `Target` and every imported
+//// module it could not use.
 ////
 //// Imported modules are resolved through a [`Resolver`](#Resolver) to obtain
 //// their public interfaces.
@@ -122,6 +123,39 @@ pub type Annotation {
 /// imported under. The module under analysis is named as girard was given it:
 /// its path under [`annotate_package`](#annotate_package), and `""` for a
 /// module annotated on its own — the same name its own types carry in `Named`.
+///
+/// `unavailable` names every module girard could not use while annotating
+/// this one, imported directly or reached through any import, with why. An
+/// entry is never an error by itself: an unused unavailable import costs
+/// nothing, which is why the strict entry points still return `Ok`. What an
+/// entry means for the rest of the record:
+///
+/// - A *value* lookup whose import failed in this inference makes the
+///   definition fail. [`annotate_package`](#annotate_package) lists it in
+///   `skipped`, typically with `UnboundVariable` naming the import's alias or
+///   the unqualified value. The strict entry points fail outright and return
+///   no `AnnotatedModule`, so no `unavailable` list either: only a successful
+///   strict result or a package result carries one. A listed path does not by
+///   itself mean a lookup failed — an entry inherited from a reused interface
+///   can sit beside a direct import of the same path that succeeded, and
+///   values from that import work normally.
+/// - A *type* written against one succeeds, and is published as girard
+///   hydrated it: credited to the prelude when unqualified
+///   (`Named("gleam", "T", [])`), named after the alias when qualified
+///   (`Named("d", "T", [])`). While `unavailable` is non-empty, an annotation
+///   may name a type girard could not see.
+/// - An entry can come from a cached interface built before the module became
+///   available, so a listed path may resolve for this module today while an
+///   interface it reused was built without it. Once the source is fixed,
+///   clearing the entry means invalidating the stale interface *and every
+///   cached importer that carries it*, or starting from
+///   [`new_cache`](#new_cache). Invalidating one importer is not enough in a
+///   longer chain: if cached `a` imports cached, stale `b`, invalidating `b`
+///   leaves `a` intact, and rebuilding `a` over a stale `b` copies the entry
+///   back.
+///
+/// To tell direct entries from transitive ones, compare them with the
+/// module's own imports, which you have in its AST.
 pub type AnnotatedModule {
   AnnotatedModule(
     /// Top-level function name to inferred signature scheme, in source order.
@@ -136,6 +170,10 @@ pub type AnnotatedModule {
     /// Top-level functions and constants dropped for the other build
     /// [`Target`](#Target), with their spans, sorted by span.
     dropped: List(Dropped),
+    /// Every module girard could not use while annotating this one, imported
+    /// directly or through any dependency, with why. One entry per module,
+    /// sorted by module path.
+    unavailable: List(UnavailableModule),
   )
 }
 
@@ -148,6 +186,26 @@ pub type AnnotatedModule {
 /// in the caller's [`Options`](#Options).
 pub type Dropped {
   Dropped(name: String, span: glance.Span)
+}
+
+/// A module girard failed to load: its path as written in the `import`, and
+/// why. The attempt was made either while annotating this module or while
+/// building one of the interfaces it imported, whether that interface was
+/// inferred fresh or reused from a cache. An entry records that failed attempt.
+/// It does not prove the path is unavailable now, and it does not say which
+/// definitions were affected (see [`AnnotatedModule`](#AnnotatedModule)).
+pub type UnavailableModule {
+  UnavailableModule(module: String, reason: Unavailability)
+}
+
+/// Why a module was unavailable.
+pub type Unavailability {
+  /// The resolver returned `Error(Nil)` for the module's path.
+  NotFound
+  /// The resolver returned source that glance could not parse. The error's
+  /// positions are offsets into that source, not into the module being
+  /// annotated.
+  Unparsable(error: glance.Error)
 }
 
 /// Which member a reference resolved to. The variants are named after the
@@ -379,6 +437,12 @@ fn parse(source: String) -> Result(glance.Module, Error) {
 /// different resolvers or targets, or it would hand back interfaces built from
 /// the wrong sources. Create one with [`new_cache`](#new_cache); when a module's
 /// source changes, drop it with [`invalidate`](#invalidate).
+///
+/// A cached interface keeps the
+/// [`AnnotatedModule.unavailable`](#AnnotatedModule) entries it was built with,
+/// and passes them to every importer built over it. After a missing module
+/// appears, invalidate the interfaces built without it and their cached
+/// importers, as for any interface change.
 pub opaque type Cache {
   Cache(interfaces: InterfaceCache)
 }
@@ -467,7 +531,8 @@ pub type ModuleResult {
 /// type — along with any that depend on it — is reported in that module's
 /// `skipped` list rather than failing the module, while every other definition
 /// is still annotated. Definition failures therefore leave the module present
-/// in the result; a fully strict check is `result.skipped == []`.
+/// in the result; check it with [`is_complete`](#is_complete), which also
+/// counts the modules girard could not load.
 pub fn annotate_package(
   modules: List(#(String, glance.Module)),
   options: Options,
@@ -493,6 +558,16 @@ pub fn annotate_package(
       }
     })
   results
+}
+
+/// Whether girard typed every definition of a package module and loaded every
+/// module it imports, directly or through its imports: `skipped` and
+/// `annotated.unavailable` are both empty. `False` means possibly incomplete,
+/// as an unavailable module may have affected nothing (see
+/// [`AnnotatedModule`](#AnnotatedModule)). Definitions in `annotated.dropped`
+/// do not count.
+pub fn is_complete(result: ModuleResult) -> Bool {
+  result.skipped == [] && result.annotated.unavailable == []
 }
 
 // Reporting
@@ -828,6 +903,12 @@ type Env {
     // (`accessors_of_module`) is one `dict.get` rather than a transitive walk
     // of the whole interface graph on every field access.
     module_index: Dict(String, ModuleInterface),
+    // Every module this one could not load, keyed by its path, with why:
+    // imported here directly or recorded by an interface it imported, so the
+    // set is already transitive and merging one level per import is enough.
+    // `process_imports` is its only writer (see `record_unavailable` for the
+    // precedence between a direct failure and an inherited one).
+    unavailable: Dict(String, Unavailability),
     // Names of the strongly-connected-component members currently being
     // inferred. A reference to one of these resolves its bound scheme through
     // the current substitution before instantiating, so a type the provider's
@@ -864,6 +945,11 @@ type ModuleInterface {
     // discard-aliased import is in here, so an importer can still find the
     // accessors of a type this module exposes from one.
     reachable: Dict(String, ModuleInterface),
+    // The modules this one could not load while it was inferred, directly or
+    // through its own imports: its final `Env.unavailable`. It travels with the
+    // interface, so an importer that reuses it from a cache inherits the same
+    // set as one that infers it fresh.
+    unavailable: Dict(String, Unavailability),
   )
 }
 
@@ -897,6 +983,7 @@ fn new_env() -> Env {
     current_module: "",
     modules: dict.new(),
     module_index: dict.new(),
+    unavailable: dict.new(),
     live: set.new(),
   )
 }
@@ -1051,6 +1138,7 @@ fn prelude_interface() -> ModuleInterface {
     accessors: dict.new(),
     modules: dict.new(),
     reachable: dict.new(),
+    unavailable: dict.new(),
   )
 }
 
@@ -1515,8 +1603,12 @@ fn prereg_def(
 //
 // Resolve each import to a `ModuleInterface` — from the run's cache, the
 // prelude, or by inferring the imported module's source through the resolver
-// — and bring its qualified alias and unqualified items into scope.
+// — and bring its qualified alias and unqualified items into scope. An import
+// that cannot be loaded is skipped and recorded in `Env.unavailable`, beside
+// the failures each loaded interface carries from its own imports.
 
+// Imports are met in the order glance stores them, which is the reverse of
+// source order: glance prepends each import as it parses it.
 fn process_imports(
   options: Options,
   loading: Set(String),
@@ -1534,20 +1626,43 @@ fn process_imports(
       when: set.contains(loading, path),
       return: Ok(#(env, cache)),
     )
-    use #(maybe_interface, cache) <- result.try(resolve_interface(
+    use #(resolved, cache) <- result.try(resolve_interface(
       options,
       loading,
       cache,
       path,
       best_effort:,
     ))
-    case maybe_interface {
+    case resolved {
       // Unresolvable or unparsable: best effort, skip (uses of it surface later
-      // as unbound variables).
-      None -> Ok(#(env, cache))
-      Some(interface) -> Ok(#(import_items(env, import_, interface), cache))
+      // as unbound variables), but say so.
+      Error(reason) -> Ok(#(record_unavailable(env, path, reason), cache))
+      Ok(interface) -> {
+        let env = import_items(env, import_, interface)
+        Ok(#(inherit_unavailable(env, interface), cache))
+      }
     }
   })
+}
+
+// A direct failure overwrites whatever the path already had, so it wins over
+// an entry inherited from an interface met earlier, and `inherit_unavailable`
+// never overwrites it when one is met later. The two can disagree only when
+// an interface was reused from a cache built against an older source of the
+// path, and this import's attempt is the current one.
+fn record_unavailable(env: Env, path: String, reason: Unavailability) -> Env {
+  Env(..env, unavailable: dict.insert(env.unavailable, path, reason))
+}
+
+// Merge an imported interface's failures, inserting only the paths not yet
+// recorded: a direct failure keeps its reason, and between two interfaces
+// that disagree the one met first wins, which is the import written last (see
+// `process_imports`). A path this module imported successfully keeps an entry
+// inherited this way too: the interface really was built without it, so its
+// exports really lack that module's types. `dict.merge` keeps the second
+// dict's entry on a clash, which is what leaves a recorded path alone.
+fn inherit_unavailable(env: Env, interface: ModuleInterface) -> Env {
+  Env(..env, unavailable: dict.merge(interface.unavailable, env.unavailable))
 }
 
 // Bring an import's qualified alias and unqualified values/types into scope.
@@ -1585,31 +1700,35 @@ fn resolve_interface(
   cache: InterfaceCache,
   path: String,
   best_effort best_effort: Bool,
-) -> Result(#(Option(ModuleInterface), InterfaceCache), Error) {
+) -> Result(#(Result(ModuleInterface, Unavailability), InterfaceCache), Error) {
   // `import gleam` refers to the built-in prelude module, which has no source
   // file; resolve it to a synthetic interface of the prelude's types/values.
   use <- bool.lazy_guard(when: path == prelude_module, return: fn() {
-    Ok(#(Some(prelude_interface()), cache))
+    Ok(#(Ok(prelude_interface()), cache))
   })
   case dict.get(cache, path) {
     // Already inferred in this run: reuse it rather than inferring again.
-    Ok(interface) -> Ok(#(Some(interface), cache))
+    Ok(interface) -> Ok(#(Ok(interface), cache))
     Error(_) -> resolve_uncached(options, loading, cache, path, best_effort:)
   }
 }
 
+// The inner `Result` says whether the module could be loaded at all; the
+// outer one carries a strict-mode inference failure *inside* a module that
+// did load. A failure to load is not cached, so the next import of the same
+// path asks the resolver again.
 fn resolve_uncached(
   options: Options,
   loading: Set(String),
   cache: InterfaceCache,
   path: String,
   best_effort best_effort: Bool,
-) -> Result(#(Option(ModuleInterface), InterfaceCache), Error) {
+) -> Result(#(Result(ModuleInterface, Unavailability), InterfaceCache), Error) {
   case options.resolver(path) {
-    Error(_) -> Ok(#(None, cache))
+    Error(_) -> Ok(#(Error(NotFound), cache))
     Ok(source) ->
       case glance.module(source) {
-        Error(_) -> Ok(#(None, cache))
+        Error(error) -> Ok(#(Error(Unparsable(error)), cache))
         Ok(module) -> {
           // An import's own skipped definitions (best-effort) are irrelevant to
           // the importer; only its public interface, partial or not, matters.
@@ -1622,7 +1741,7 @@ fn resolve_uncached(
             best_effort:,
           ))
           Ok(#(
-            Some(inferred.interface),
+            Ok(inferred.interface),
             dict.insert(inferred.cache, path, inferred.interface),
           ))
         }
@@ -1678,6 +1797,7 @@ fn build_interface(
     accessors: take(env.accessors, accessor_type_names),
     modules: env.modules,
     reachable: env.module_index,
+    unavailable: env.unavailable,
   )
 }
 
@@ -5044,12 +5164,21 @@ fn render(inferred: Inferred) -> AnnotatedModule {
       Annotation(span, to_public(zonk(st, type_)))
     })
 
+  // `Env.unavailable` is keyed by module path, so there is one entry per
+  // module already; only the order is left to decide.
+  let unavailable =
+    list.map(dict.to_list(env.unavailable), fn(entry) {
+      let #(module, reason) = entry
+      UnavailableModule(module, reason)
+    })
+
   AnnotatedModule(
     functions: collect_schemes(functions, env, declined),
     constants: collect_schemes(constants, env, declined),
     expressions: sort_by_span(expressions),
     resolutions: publish_references(st),
     dropped:,
+    unavailable: sort_unavailable(unavailable),
   )
 }
 
@@ -5118,6 +5247,14 @@ fn sort_references(
 // in one place.
 fn sort_dropped(dropped: List(Dropped)) -> List(Dropped) {
   list.sort(dropped, fn(a, b) { compare_spans(a.span, b.span) })
+}
+
+// A module girard could not load has no span in the module being annotated,
+// so its entries are sorted by path instead.
+fn sort_unavailable(
+  unavailable: List(UnavailableModule),
+) -> List(UnavailableModule) {
+  list.sort(unavailable, fn(a, b) { string.compare(a.module, b.module) })
 }
 
 // The inferred (generalized) scheme of each definition, in source order.
