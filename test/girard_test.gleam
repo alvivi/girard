@@ -1659,6 +1659,84 @@ pub fn renamed_import_alternatives_agree_test() {
   |> should.equal("fn(Remote) -> Nil")
 }
 
+// A clause's guard and body are checked once, under the first alternative's
+// bindings, as the compiler checks them: walking them once per alternative
+// recorded every expression in them once per alternative too.
+
+pub fn alternative_body_is_recorded_once_test() {
+  let source =
+    "pub fn f(x: Int) {\n"
+    <> "  case x {\n"
+    <> "    1 | 2 | 3 -> x + 1\n"
+    <> "    _ -> 0\n"
+    <> "  }\n"
+    <> "}"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "x + 1")) |> should.equal(["Int"])
+}
+
+pub fn alternative_guard_is_recorded_once_test() {
+  let source =
+    "pub fn f(x: Int) {\n"
+    <> "  case x {\n"
+    <> "    1 | 2 if x > 0 -> 1\n"
+    <> "    _ -> 0\n"
+    <> "  }\n"
+    <> "}"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "x > 0")) |> should.equal(["Bool"])
+}
+
+pub fn call_under_alternatives_is_recorded_once_test() {
+  // Three alternatives over a call: six entries before, one per alternative
+  // for the clause and two per walk for the call.
+  let source =
+    "fn inc(n: Int) -> Int { n + 1 }\n"
+    <> "pub fn f(x: Int) {\n"
+    <> "  case x {\n"
+    <> "    1 | 2 | 3 -> inc(x)\n"
+    <> "    _ -> 0\n"
+    <> "  }\n"
+    <> "}"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "inc(x)")) |> should.equal(["Int"])
+}
+
+pub fn alternatives_unify_an_unused_binding_test() {
+  // `x` binds `a` in one alternative and `b` in the other, and the compiler
+  // unifies an alternative's bindings with the first's whether or not the body
+  // uses them: 1.19.2 exports both parameters as one type variable.
+  let source = "pub fn f(a, b) {\n  case a, b {\n    x, _ | _, x -> 0\n  }\n}"
+  signature(source, "f") |> should.equal("fn(a, a) -> Int")
+}
+
+pub fn alternatives_reject_incompatible_unused_bindings_test() {
+  // The same clause over an `Int` and a `String` binds `x` at both, which the
+  // compiler rejects even though the body never reads `x`.
+  let source =
+    "pub fn f(a: Int, b: String) {\n  case a, b {\n    x, _ | _, x -> 0\n  }\n}"
+  let assert girard.TypeMismatch(..) = error_with(source, [])
+}
+
+pub fn tuple_alternative_keeps_the_first_element_variant_test() {
+  // `p` binds `#(Tagged[Loud], Int)` in the first alternative and
+  // `#(Tagged[Quiet], Int)` in the second. The compiler compares variants only
+  // at a binding's outer type, so it clears nothing here, and checks the body
+  // once in the first alternative's scope, where `p.0.println` is in reach.
+  let source =
+    "pub type Tagged {\n"
+    <> "  Loud(println: fn(String) -> Nil)\n"
+    <> "  Quiet(tag: Int)\n"
+    <> "}\n"
+    <> "pub fn f(t: Tagged) {\n"
+    <> "  case #(t, 1) {\n"
+    <> "    #(Loud(..), _) as p | #(Quiet(..), _) as p -> p.0.println\n"
+    <> "  }\n"
+    <> "}"
+  signature(source, "f")
+  |> should.equal("fn(Tagged) -> fn(String) -> Nil")
+}
+
 // A type with one label every variant declares and one only `Loud` does, so a
 // receiver's narrowing decides which of the two it can read.
 const tagged_type =

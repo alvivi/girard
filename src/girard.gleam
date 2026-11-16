@@ -103,7 +103,10 @@ pub type Annotation {
 /// `expressions` is finer-grained: the `Type` of *every* expression — literals,
 /// calls, operators, sub-expressions — keyed by its `glance` source span, so
 /// you can join inferred types onto your own AST. Render any type with
-/// [`type_to_string`](#type_to_string).
+/// [`type_to_string`](#type_to_string). For a module glance parsed, each span
+/// has one entry. A `glance.Module` built by hand that reuses one span for
+/// several nodes is outside that promise: girard does not deduplicate
+/// `expressions` when it publishes them.
 ///
 /// `resolutions` is sorted by span, with one entry per span. The contract is
 /// exact: an entry is recorded for every `glance.FieldAccess` girard walked,
@@ -162,7 +165,8 @@ pub type AnnotatedModule {
     functions: List(#(String, Scheme)),
     /// Top-level constant name to inferred scheme, in source order.
     constants: List(#(String, Scheme)),
-    /// Expression span to inferred type, sorted by start offset.
+    /// Expression span to inferred type, sorted by start offset, one entry
+    /// per expression span of a module glance parsed.
     expressions: List(Annotation),
     /// What every field access and every bare name in call position resolved
     /// to, sorted by span, one entry per span.
@@ -4367,7 +4371,9 @@ fn infer_clause(
   // Each clause may have several alternative pattern lists (`a | b ->`); each
   // binds the same variables and is checked against the subject types. Every
   // alternative is bound first, so the narrowings they disagree on can be
-  // dropped before the guard and body are checked under each of them.
+  // dropped and the names they bind unified before the guard and body are
+  // checked once, under the first alternative's bindings — as the compiler's
+  // `infer_clause` checks them once, in the first alternative's scope.
   use #(rev_envs, st) <- result.try(
     list.try_fold(clause.patterns, #([], st), fn(acc, patterns) {
       let #(envs, st) = acc
@@ -4381,29 +4387,51 @@ fn infer_clause(
       Ok(#([clause_env, ..envs], st))
     }),
   )
-  // One alternative agrees with itself, so the names it binds need not even be
-  // collected — which is every clause that does not spell `|`.
-  let envs = case rev_envs {
-    [_] | [] -> list.reverse(rev_envs)
-    _ -> {
+  case list.reverse(rev_envs) {
+    // A clause glance parsed always has a pattern list; one with none binds
+    // nothing to check a body under.
+    [] -> Ok(st)
+    // One alternative agrees with itself, so the names it binds need not even
+    // be collected — which is every clause that does not spell `|`.
+    [clause_env] -> infer_clause_body(clause_env, st, clause, result)
+    [first, ..others] -> {
       let bound = case clause.patterns {
-        [first, ..] -> list.flat_map(first, reference.pattern_names)
+        [patterns, ..] -> list.flat_map(patterns, reference.pattern_names)
         [] -> []
       }
       let subjects =
         option.values(list.map(subjects, subject_variable(_, bound)))
-      let envs = agree_subjects(st, list.reverse(rev_envs), subjects)
-      agree_bindings(st, envs, bound)
+      // Agreement reads each alternative's variants, so it runs before the
+      // bindings are unified: `unify` ignores a stamp, and binding a variable
+      // erases one, so unifying first could change what agreement reads.
+      let clause_env =
+        agree_subjects(st, first, others, subjects)
+        |> agree_bindings(st, _, others, bound)
+      use st <- result.try(unify_alternative_bindings(
+        st,
+        clause_env,
+        others,
+        bound,
+      ))
+      infer_clause_body(clause_env, st, clause, result)
     }
   }
-  list.try_fold(envs, st, fn(st, clause_env) {
-    use st <- result.try(case clause.guard {
-      Some(guard) -> check(clause_env, st, guard, prelude_bool())
-      None -> Ok(st)
-    })
-    use #(body_type, st) <- result.try(infer_expr(clause_env, st, clause.body))
-    unify(st, body_type, result)
+}
+
+// Check a clause's guard, if it has one, and unify its body with the `case`'s
+// result, under the bindings its patterns introduced.
+fn infer_clause_body(
+  env: Env,
+  st: State,
+  clause: glance.Clause,
+  result: ty.Type,
+) -> Result(State, Error) {
+  use st <- result.try(case clause.guard {
+    Some(guard) -> check(env, st, guard, prelude_bool())
+    None -> Ok(st)
   })
+  use #(body_type, st) <- result.try(infer_expr(env, st, clause.body))
+  unify(st, body_type, result)
 }
 
 // Bind one alternative's patterns against the subjects, narrowing any bare
@@ -4445,17 +4473,18 @@ fn bind_alternative(
 //
 // So the rule is order-sensitive, and measured to be: `Loud(..) | _` keeps the
 // narrowing and reads the field, while `_ | Loud(..)` is rejected — the first
-// alternative narrows nothing, and the second is not allowed to. The envs are
-// then made to agree at that answer rather than merely stripped, because the
-// body is checked under each of them and only the first binds the subject at
-// the variant the compiler ends up with.
+// alternative narrows nothing, and the second is not allowed to. Every
+// alternative's variant is read, but the answer is applied to `first` alone:
+// the guard and body are checked under it, so it is the env that must bind the
+// subject at the variant the compiler ends up with.
 fn agree_subjects(
   st: State,
-  envs: List(Env),
+  first: Env,
+  others: List(Env),
   names: List(String),
-) -> List(Env) {
-  list.fold(names, envs, fn(envs, name) {
-    let variants = list.map(envs, bound_variant(st, _, name))
+) -> Env {
+  list.fold(names, first, fn(env, name) {
+    let variants = list.map([env, ..others], bound_variant(st, _, name))
     let agreed = case variants {
       // A later alternative erases only by naming a *different* variant; `None`
       // from one is silence, not disagreement.
@@ -4466,12 +4495,10 @@ fn agree_subjects(
         }
       [] -> None
     }
-    list.map(envs, fn(env) {
-      case agreed {
-        Some(index) -> narrow(env, st, name, index)
-        None -> erase_binding(st, env, name)
-      }
-    })
+    case agreed {
+      Some(index) -> narrow(env, st, name, index)
+      None -> erase_binding(st, env, name)
+    }
   })
 }
 
@@ -4481,18 +4508,59 @@ fn agree_subjects(
 // alternative gives it the same one. Measured: `Loud(..) as io | _ as io` is
 // rejected, where the subject form `Loud(..) | _` is accepted, so the two
 // classes genuinely disagree and cannot share a pass. Equal and unstamped is
-// agreement too.
+// agreement too. As above, the answer is applied to `first`.
+//
+// Only a binding's outer type is compared, as `unify_constructor_variants`
+// compares it: a variant inside a tuple binding is not cleared where the
+// alternatives differ, so `#(Loud(..), _) as p | #(Quiet(..), _) as p` keeps
+// the first alternative's `p.0` narrowed, which the compiler accepts too.
 fn agree_bindings(
   st: State,
-  envs: List(Env),
+  first: Env,
+  others: List(Env),
   names: List(String),
-) -> List(Env) {
-  list.fold(names, envs, fn(envs, name) {
-    case list.unique(list.map(envs, bound_variant(st, _, name))) {
-      [_] | [] -> envs
-      _ -> list.map(envs, erase_binding(st, _, name))
+) -> Env {
+  list.fold(names, first, fn(env, name) {
+    case list.unique(list.map([env, ..others], bound_variant(st, _, name))) {
+      [_] | [] -> env
+      _ -> erase_binding(st, env, name)
     }
   })
+}
+
+// Unify each name a later alternative binds with the first alternative's
+// binding of it, as the compiler's alternative mode does when it inserts the
+// variable. Checking the body once relates the alternatives' bindings only
+// here: `case a, b { x, _ | _, x -> 0 }` gives `a` and `b` one type even
+// though the body never mentions `x`. A failure is the clause's error, as it
+// is the compiler's.
+fn unify_alternative_bindings(
+  st: State,
+  first: Env,
+  others: List(Env),
+  names: List(String),
+) -> Result(State, Error) {
+  list.try_fold(others, st, fn(st, other) {
+    list.try_fold(names, st, fn(st, name) {
+      unify_binding(st, first, other, name)
+    })
+  })
+}
+
+// Unify `name`'s binding in `other` with its binding in `first`. A name bound
+// by only some alternatives is a compile error in Gleam, so a missing binding
+// has nothing to unify.
+fn unify_binding(
+  st: State,
+  first: Env,
+  other: Env,
+  name: String,
+) -> Result(State, Error) {
+  case lookup(first, name), lookup(other, name) {
+    Ok(first_scheme), Ok(other_scheme) ->
+      unify(st, first_scheme.type_, other_scheme.type_)
+    Error(Nil), _ | _, Error(Nil) -> Ok(st)
+  }
 }
 
 // The variant a name is bound at in `env`, if it is bound at all. A name bound

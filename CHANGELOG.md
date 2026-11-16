@@ -12,8 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AnnotatedModule.expressions` no longer repeats an entry. Ordinary calls
   and captures, and pipes into a bare function or a saturated call, were each
   recorded twice: once by the walk that infers every expression and again by
-  the helper it handed the call to. Every copy carried the same type, so only
-  a consumer counting entries saw the difference.
+  the helper it handed the call to. Everything in a clause's guard and body
+  was recorded once per alternative pattern, so a call in `1 | 2 | 3 -> f(x)`
+  was recorded six times.
+- A clause with alternative patterns is checked as the compiler checks it. A
+  name bound in every alternative now has one type across them, so
+  `case a, b { x, _ | _, x -> 0 }` infers `fn(a, a) -> Int` where girard
+  inferred `fn(a, b) -> Int`, and the same clause over an `Int` and a `String`
+  is rejected, as the compiler rejects it. The guard and body are checked
+  once, under the first alternative's bindings, so a binding is no longer
+  rejected under a later alternative for a variant the compiler accepts:
+  `#(Loud(..), _) as p | #(Quiet(..), _) as p -> p.0.println` now types where
+  girard reported `NoSuchField`.
 
 ## [4.0.0] - 2026-11-16
 
