@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `AnnotatedModule.expressions` no longer repeats an entry. Ordinary calls
+  and captures, and pipes into a bare function or a saturated call, were each
+  recorded twice: once by the walk that infers every expression and again by
+  the helper it handed the call to. Everything in a clause's guard and body
+  was recorded once per alternative pattern, so a call in `1 | 2 | 3 -> f(x)`
+  was recorded six times.
+- A clause with alternative patterns is checked as the compiler checks it. A
+  name bound in every alternative now has one type across them, so
+  `case a, b { x, _ | _, x -> 0 }` infers `fn(a, a) -> Int` where girard
+  inferred `fn(a, b) -> Int`, and the same clause over an `Int` and a `String`
+  is rejected, as the compiler rejects it. The guard and body are checked
+  once, under the first alternative's bindings, so a binding is no longer
+  rejected under a later alternative for a variant the compiler accepts:
+  `#(Loud(..), _) as p | #(Quiet(..), _) as p -> p.0.println` now types where
+  girard reported `NoSuchField`.
+- A cyclic type alias no longer hangs girard. A module declaring one, such as
+  `type A = B` with `type B = A`, or `type A = List(A)`, never returned when a
+  type named the alias, when a constructor field did, or, for a public alias,
+  while the module's interface was built, so every importer hung too. An
+  alias on a cycle is now left unexpanded, and a reference to it hydrates as
+  any name girard cannot resolve does: credited to the prelude, or named
+  after the module alias when qualified. The compiler rejects every such
+  module, so the result is finite rather than meaningful.
+
 ## [4.0.0] - 2026-11-16
 
 ### Added

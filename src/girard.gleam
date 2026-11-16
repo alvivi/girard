@@ -103,7 +103,10 @@ pub type Annotation {
 /// `expressions` is finer-grained: the `Type` of *every* expression — literals,
 /// calls, operators, sub-expressions — keyed by its `glance` source span, so
 /// you can join inferred types onto your own AST. Render any type with
-/// [`type_to_string`](#type_to_string).
+/// [`type_to_string`](#type_to_string). For a module glance parsed, each span
+/// has one entry. A `glance.Module` built by hand that reuses one span for
+/// several nodes is outside that promise: girard does not deduplicate
+/// `expressions` when it publishes them.
 ///
 /// `resolutions` is sorted by span, with one entry per span. The contract is
 /// exact: an entry is recorded for every `glance.FieldAccess` girard walked,
@@ -162,7 +165,8 @@ pub type AnnotatedModule {
     functions: List(#(String, Scheme)),
     /// Top-level constant name to inferred scheme, in source order.
     constants: List(#(String, Scheme)),
-    /// Expression span to inferred type, sorted by start offset.
+    /// Expression span to inferred type, sorted by start offset, one entry
+    /// per expression span of a module glance parsed.
     expressions: List(Annotation),
     /// What every field access and every bare name in call position resolved
     /// to, sorted by span, one entry per span.
@@ -1018,6 +1022,60 @@ fn register_type_alias(env: Env, alias: glance.TypeAlias) -> Env {
   )
 }
 
+// The local aliases on a cycle — every alias in a strongly connected component
+// of more than one, and an alias that names itself — whose expansion would
+// never finish. The compiler rejects a module that declares one, used or not
+// (`RecursiveTypeAlias`, from the same toposort over the aliases). girard
+// leaves them unregistered instead, so a reference to one hydrates as any name
+// girard cannot resolve does, and the module still annotates in finite time.
+// An alias that only reaches a cycle is not on it, and stays registered.
+fn cyclic_aliases(aliases: List(glance.TypeAlias)) -> Set(String) {
+  let names = list.map(aliases, fn(alias) { alias.name })
+  let local = set.from_list(names)
+  let edges =
+    list.fold(aliases, dict.new(), fn(edges, alias) {
+      let dependencies =
+        list.filter(alias_dependencies(alias.aliased), set.contains(local, _))
+      dict.insert(edges, alias.name, dependencies)
+    })
+  scc.components(names, edges)
+  |> list.filter(is_cycle(_, edges))
+  |> list.flatten
+  |> set.from_list
+}
+
+// The unqualified type names `type_` mentions, through named types' arguments,
+// tuple elements and function types: the compiler's `get_type_dependencies`. A
+// qualified name belongs to another module, so it is never a local alias, but
+// its arguments can name one.
+fn alias_dependencies(type_: glance.Type) -> List(String) {
+  case type_ {
+    glance.NamedType(_, name, None, parameters) -> [
+      name,
+      ..list.flat_map(parameters, alias_dependencies)
+    ]
+    glance.NamedType(_, _, Some(_), parameters) ->
+      list.flat_map(parameters, alias_dependencies)
+    glance.TupleType(_, elements) -> list.flat_map(elements, alias_dependencies)
+    glance.FunctionType(_, parameters, return) ->
+      list.flat_map([return, ..parameters], alias_dependencies)
+    glance.VariableType(..) | glance.HoleType(..) -> []
+  }
+}
+
+// Whether a strongly connected component of the alias graph is a cycle: more
+// than one alias, or a single alias that depends on itself.
+fn is_cycle(
+  component: List(String),
+  edges: Dict(String, List(String)),
+) -> Bool {
+  case component {
+    [] -> False
+    [name] -> list.contains(result.unwrap(dict.get(edges, name), []), name)
+    [_, _, ..] -> True
+  }
+}
+
 fn fresh_id(st: State) -> #(Int, State) {
   #(st.next_id, State(..st, next_id: st.next_id + 1))
 }
@@ -1327,19 +1385,23 @@ fn infer_module(
   ))
 
   // 2. Pre-declare local type names so forward references resolve, then
-  //    register aliases and custom-type constructors/accessors. A function's
-  //    or constant's labels need no early pass: they are installed with its
-  //    value, by `prereg_def` before any body of its component is walked, and
-  //    no earlier component can reference it or it would not be earlier.
+  //    register aliases and custom-type constructors/accessors. An alias on a
+  //    cycle is not registered, since expanding it would never finish. A
+  //    function's or constant's labels need no early pass: they are installed
+  //    with its value, by `prereg_def` before any body of its component is
+  //    walked, and no earlier component can reference it or it would not be
+  //    earlier.
   let env =
     list.fold(module.custom_types, env, fn(env, d) {
       let ct = d.definition
       declare_type(env, ct.name, list.length(ct.parameters))
     })
+  let aliases = list.map(module.type_aliases, fn(d) { d.definition })
+  let cyclic = cyclic_aliases(aliases)
   let env =
-    list.fold(module.type_aliases, env, fn(env, d) {
-      register_type_alias(env, d.definition)
-    })
+    aliases
+    |> list.filter(fn(alias) { !set.contains(cyclic, alias.name) })
+    |> list.fold(env, register_type_alias)
   let #(env, st) =
     list.fold(module.custom_types, #(env, st), fn(acc, d) {
       let #(env, st) = acc
@@ -2918,6 +2980,15 @@ fn variant_field_type(field: glance.VariantField) -> glance.Type {
 // lists, lambdas, blocks and bit arrays — with the reordering that labelled
 // and shorthand arguments need to reach their declared positions.
 
+// `infer_expr` owns recording an ordinary expression's span: it records the
+// type `infer_expr_inner` returns, so a helper reached only through it — a
+// call, a capture, a pipe — records nothing at the span it was handed, or the
+// expression would be published twice. The paths that walk an expression
+// without passing through here record it once, explicitly, where they walk
+// it: a callee resolved in `infer_callee`, a lambda seeded through `check` or
+// `infer_applied_lambda`, an annotated local lambda in `infer_statement`, and
+// the call a pipe inserts its value into, which `infer_pipe` infers through
+// `infer_call`.
 fn infer_expr(
   env: Env,
   st: State,
@@ -2981,14 +3052,14 @@ fn infer_expr_inner(
     glance.Fn(_, params, return_annotation, body) ->
       infer_fn(env, st, params, return_annotation, body)
 
-    glance.Call(span, function, arguments) ->
-      infer_call(env, st, span, function, arguments)
+    glance.Call(_, function, arguments) ->
+      infer_call(env, st, function, arguments)
 
     glance.FnCapture(span, label, function, before, after) ->
       infer_capture(env, st, span, label, function, before, after)
 
-    glance.BinaryOperator(span, op, left, right) ->
-      infer_binop(env, st, span, op, left, right)
+    glance.BinaryOperator(_, op, left, right) ->
+      infer_binop(env, st, op, left, right)
 
     glance.Block(_, statements) -> infer_statements(env, st, statements)
 
@@ -3598,7 +3669,6 @@ fn infer_callee(
 fn infer_call(
   env: Env,
   st: State,
-  span: glance.Span,
   function: glance.Expression,
   arguments: List(glance.Field(glance.Expression)),
 ) -> Result(#(ty.Type, State), Error) {
@@ -3624,17 +3694,14 @@ fn infer_call(
       }
     _ -> infer_callee(env, st, function)
   })
-  use #(return, st) <- result.try(
-    place_arguments(
-      st,
-      fn_type,
-      labels,
-      arguments,
-      fn(expression) { expression },
-      fn(st, argument, hole) { check(env, st, argument, hole) },
-    ),
+  place_arguments(
+    st,
+    fn_type,
+    labels,
+    arguments,
+    fn(expression) { expression },
+    fn(st, argument, hole) { check(env, st, argument, hole) },
   )
-  Ok(#(return, record(st, span, return)))
 }
 
 // Place a call's arguments against the callee's parameters and check each one:
@@ -3929,20 +3996,18 @@ fn infer_capture(
   )
   // A capture is a lambda whose body is the call, so its return is the
   // callee's own — `Loud(_)` returns a value known to be `Loud`.
-  let captured = ty.Fn([hole], return)
-  Ok(#(captured, record(st, span, captured)))
+  Ok(#(ty.Fn([hole], return), st))
 }
 
 fn infer_binop(
   env: Env,
   st: State,
-  span: glance.Span,
   op: glance.BinaryOperator,
   left: glance.Expression,
   right: glance.Expression,
 ) -> Result(#(ty.Type, State), Error) {
   case op {
-    glance.Pipe -> infer_pipe(env, st, span, left, right)
+    glance.Pipe -> infer_pipe(env, st, left, right)
 
     glance.And | glance.Or -> {
       use st <- result.try(check(env, st, left, prelude_bool()))
@@ -3996,7 +4061,6 @@ fn infer_binop(
 fn infer_pipe(
   env: Env,
   st: State,
-  span: glance.Span,
   left: glance.Expression,
   right: glance.Expression,
 ) -> Result(#(ty.Type, State), Error) {
@@ -4019,24 +4083,24 @@ fn infer_pipe(
       }
       case saturated {
         True -> {
-          use #(call_type, st) <- result.try(infer_call(
-            env,
-            st,
-            call_span,
-            function,
-            arguments,
-          ))
+          use #(call_type, st) <- result.try(infer_expr(env, st, right))
           use #(lt, st) <- result.try(infer_expr(env, st, left))
           let #(result, st) = fresh(st)
           use st <- result.try(unify(st, call_type, ty.Fn([lt], result)))
-          let return = call_return(st, call_type, result)
-          Ok(#(return, record(st, span, return)))
+          Ok(#(call_return(st, call_type, result), st))
         }
-        False ->
-          infer_call(env, st, call_span, function, [
-            glance.UnlabelledField(left),
-            ..arguments
-          ])
+        // `f(left, args)` has no node of its own, so the call is inferred
+        // through `infer_call` and its span recorded here, once; the whole
+        // pipe's span is `infer_expr`'s.
+        False -> {
+          use #(call_type, st) <- result.try(
+            infer_call(env, st, function, [
+              glance.UnlabelledField(left),
+              ..arguments
+            ]),
+          )
+          Ok(#(call_type, record(st, call_span, call_type)))
+        }
       }
     }
     // `left |> f` becomes `f(left)`, so the target is applied to the piped
@@ -4066,7 +4130,7 @@ fn infer_pipe(
           unify(st, ft, piped)
         }
       })
-      Ok(#(result, record(st, span, result)))
+      Ok(#(result, st))
     }
   }
 }
@@ -4365,7 +4429,9 @@ fn infer_clause(
   // Each clause may have several alternative pattern lists (`a | b ->`); each
   // binds the same variables and is checked against the subject types. Every
   // alternative is bound first, so the narrowings they disagree on can be
-  // dropped before the guard and body are checked under each of them.
+  // dropped and the names they bind unified before the guard and body are
+  // checked once, under the first alternative's bindings — as the compiler's
+  // `infer_clause` checks them once, in the first alternative's scope.
   use #(rev_envs, st) <- result.try(
     list.try_fold(clause.patterns, #([], st), fn(acc, patterns) {
       let #(envs, st) = acc
@@ -4379,29 +4445,51 @@ fn infer_clause(
       Ok(#([clause_env, ..envs], st))
     }),
   )
-  // One alternative agrees with itself, so the names it binds need not even be
-  // collected — which is every clause that does not spell `|`.
-  let envs = case rev_envs {
-    [_] | [] -> list.reverse(rev_envs)
-    _ -> {
+  case list.reverse(rev_envs) {
+    // A clause glance parsed always has a pattern list; one with none binds
+    // nothing to check a body under.
+    [] -> Ok(st)
+    // One alternative agrees with itself, so the names it binds need not even
+    // be collected — which is every clause that does not spell `|`.
+    [clause_env] -> infer_clause_body(clause_env, st, clause, result)
+    [first, ..others] -> {
       let bound = case clause.patterns {
-        [first, ..] -> list.flat_map(first, reference.pattern_names)
+        [patterns, ..] -> list.flat_map(patterns, reference.pattern_names)
         [] -> []
       }
       let subjects =
         option.values(list.map(subjects, subject_variable(_, bound)))
-      let envs = agree_subjects(st, list.reverse(rev_envs), subjects)
-      agree_bindings(st, envs, bound)
+      // Agreement reads each alternative's variants, so it runs before the
+      // bindings are unified: `unify` ignores a stamp, and binding a variable
+      // erases one, so unifying first could change what agreement reads.
+      let clause_env =
+        agree_subjects(st, first, others, subjects)
+        |> agree_bindings(st, _, others, bound)
+      use st <- result.try(unify_alternative_bindings(
+        st,
+        clause_env,
+        others,
+        bound,
+      ))
+      infer_clause_body(clause_env, st, clause, result)
     }
   }
-  list.try_fold(envs, st, fn(st, clause_env) {
-    use st <- result.try(case clause.guard {
-      Some(guard) -> check(clause_env, st, guard, prelude_bool())
-      None -> Ok(st)
-    })
-    use #(body_type, st) <- result.try(infer_expr(clause_env, st, clause.body))
-    unify(st, body_type, result)
+}
+
+// Check a clause's guard, if it has one, and unify its body with the `case`'s
+// result, under the bindings its patterns introduced.
+fn infer_clause_body(
+  env: Env,
+  st: State,
+  clause: glance.Clause,
+  result: ty.Type,
+) -> Result(State, Error) {
+  use st <- result.try(case clause.guard {
+    Some(guard) -> check(env, st, guard, prelude_bool())
+    None -> Ok(st)
   })
+  use #(body_type, st) <- result.try(infer_expr(env, st, clause.body))
+  unify(st, body_type, result)
 }
 
 // Bind one alternative's patterns against the subjects, narrowing any bare
@@ -4443,17 +4531,18 @@ fn bind_alternative(
 //
 // So the rule is order-sensitive, and measured to be: `Loud(..) | _` keeps the
 // narrowing and reads the field, while `_ | Loud(..)` is rejected — the first
-// alternative narrows nothing, and the second is not allowed to. The envs are
-// then made to agree at that answer rather than merely stripped, because the
-// body is checked under each of them and only the first binds the subject at
-// the variant the compiler ends up with.
+// alternative narrows nothing, and the second is not allowed to. Every
+// alternative's variant is read, but the answer is applied to `first` alone:
+// the guard and body are checked under it, so it is the env that must bind the
+// subject at the variant the compiler ends up with.
 fn agree_subjects(
   st: State,
-  envs: List(Env),
+  first: Env,
+  others: List(Env),
   names: List(String),
-) -> List(Env) {
-  list.fold(names, envs, fn(envs, name) {
-    let variants = list.map(envs, bound_variant(st, _, name))
+) -> Env {
+  list.fold(names, first, fn(env, name) {
+    let variants = list.map([env, ..others], bound_variant(st, _, name))
     let agreed = case variants {
       // A later alternative erases only by naming a *different* variant; `None`
       // from one is silence, not disagreement.
@@ -4464,12 +4553,10 @@ fn agree_subjects(
         }
       [] -> None
     }
-    list.map(envs, fn(env) {
-      case agreed {
-        Some(index) -> narrow(env, st, name, index)
-        None -> erase_binding(st, env, name)
-      }
-    })
+    case agreed {
+      Some(index) -> narrow(env, st, name, index)
+      None -> erase_binding(st, env, name)
+    }
   })
 }
 
@@ -4479,18 +4566,59 @@ fn agree_subjects(
 // alternative gives it the same one. Measured: `Loud(..) as io | _ as io` is
 // rejected, where the subject form `Loud(..) | _` is accepted, so the two
 // classes genuinely disagree and cannot share a pass. Equal and unstamped is
-// agreement too.
+// agreement too. As above, the answer is applied to `first`.
+//
+// Only a binding's outer type is compared, as `unify_constructor_variants`
+// compares it: a variant inside a tuple binding is not cleared where the
+// alternatives differ, so `#(Loud(..), _) as p | #(Quiet(..), _) as p` keeps
+// the first alternative's `p.0` narrowed, which the compiler accepts too.
 fn agree_bindings(
   st: State,
-  envs: List(Env),
+  first: Env,
+  others: List(Env),
   names: List(String),
-) -> List(Env) {
-  list.fold(names, envs, fn(envs, name) {
-    case list.unique(list.map(envs, bound_variant(st, _, name))) {
-      [_] | [] -> envs
-      _ -> list.map(envs, erase_binding(st, _, name))
+) -> Env {
+  list.fold(names, first, fn(env, name) {
+    case list.unique(list.map([env, ..others], bound_variant(st, _, name))) {
+      [_] | [] -> env
+      _ -> erase_binding(st, env, name)
     }
   })
+}
+
+// Unify each name a later alternative binds with the first alternative's
+// binding of it, as the compiler's alternative mode does when it inserts the
+// variable. Checking the body once relates the alternatives' bindings only
+// here: `case a, b { x, _ | _, x -> 0 }` gives `a` and `b` one type even
+// though the body never mentions `x`. A failure is the clause's error, as it
+// is the compiler's.
+fn unify_alternative_bindings(
+  st: State,
+  first: Env,
+  others: List(Env),
+  names: List(String),
+) -> Result(State, Error) {
+  list.try_fold(others, st, fn(st, other) {
+    list.try_fold(names, st, fn(st, name) {
+      unify_binding(st, first, other, name)
+    })
+  })
+}
+
+// Unify `name`'s binding in `other` with its binding in `first`. A name bound
+// by only some alternatives is a compile error in Gleam, so a missing binding
+// has nothing to unify.
+fn unify_binding(
+  st: State,
+  first: Env,
+  other: Env,
+  name: String,
+) -> Result(State, Error) {
+  case lookup(first, name), lookup(other, name) {
+    Ok(first_scheme), Ok(other_scheme) ->
+      unify(st, first_scheme.type_, other_scheme.type_)
+    Error(Nil), _ | _, Error(Nil) -> Ok(st)
+  }
 }
 
 // The variant a name is bound at in `env`, if it is bound at all. A name bound

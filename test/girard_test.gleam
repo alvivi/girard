@@ -13,6 +13,7 @@ import gleam/order
 import gleam/string
 import gleeunit
 import gleeunit/should
+import simplifile
 
 pub fn main() {
   gleeunit.main()
@@ -39,9 +40,19 @@ fn signature_with(
   modules: List(#(String, String)),
   name: String,
 ) -> String {
+  girard.type_to_string(structured_signature(source, modules, name))
+}
+
+// `signature_with` before rendering, for a test that asserts on which module a
+// type is credited to rather than on how it prints.
+fn structured_signature(
+  source: String,
+  modules: List(#(String, String)),
+  name: String,
+) -> girard.Type {
   let assert Ok(annotated) = girard.annotate(source, options_with(modules))
   case list.key_find(annotated.functions, name) {
-    Ok(sig) -> girard.type_to_string(sig.type_)
+    Ok(sig) -> sig.type_
     Error(_) -> panic as { "no function named " <> name }
   }
 }
@@ -355,6 +366,95 @@ pub fn piped_call_annotates_its_callee_once_test() {
   |> should.equal(["fn(Int, Int) -> Int"])
 }
 
+// Every span `source`'s annotated expressions report more than once. Each
+// source expression girard walks is recorded once, so over a module glance
+// parsed this is empty.
+fn repeated_spans(source: String) -> List(glance.Span) {
+  let assert Ok(annotated) = girard.annotate(source, girard.default_options())
+  annotated.expressions
+  |> list.group(by: fn(annotation) { annotation.span })
+  |> dict.filter(fn(_, annotations) { list.length(annotations) > 1 })
+  |> dict.keys
+}
+
+pub fn parameter_call_is_recorded_once_test() {
+  let source = "pub fn g(k, x: Int) { k(x) }"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "k(x)")) |> should.equal(["a"])
+}
+
+pub fn constructor_call_is_recorded_once_test() {
+  let source = "pub fn g(x: Int) { Ok(x) }"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "Ok(x)"))
+  |> should.equal(["Result(Int, a)"])
+}
+
+pub fn capture_and_its_call_are_recorded_once_test() {
+  let source =
+    "fn add(a: Int, b: Int) -> Int { a + b }\n"
+    <> "pub fn g() { add(_, 1) }\n"
+    <> "pub fn h() { add(_, 1)(2) }"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "add(_, 1)"))
+  |> should.equal(["fn(Int) -> Int"])
+  annotations_at(source, last_span(source, "add(_, 1)"))
+  |> should.equal(["fn(Int) -> Int"])
+  annotations_at(source, span_of(source, "add(_, 1)(2)"))
+  |> should.equal(["Int"])
+}
+
+pub fn pipe_into_a_bare_function_is_recorded_once_test() {
+  let source = "fn e(n: Int) -> Int { n }\n" <> "pub fn g(x: Int) { x |> e }"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "x |> e")) |> should.equal(["Int"])
+}
+
+pub fn pipe_into_a_saturated_call_is_recorded_once_test() {
+  // `make()` already takes all its arguments, so the pipe applies `x` to what
+  // it returns: the call span once, at the call's own type, and the whole pipe
+  // once, at the application's.
+  let source =
+    "fn make() -> fn(Int) -> Int { fn(n) { n } }\n"
+    <> "pub fn g(x: Int) { x |> make() }"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, last_span(source, "make()"))
+  |> should.equal(["fn(Int) -> Int"])
+  annotations_at(source, span_of(source, "x |> make()"))
+  |> should.equal(["Int"])
+}
+
+pub fn pipe_into_an_unsaturated_call_is_recorded_once_test() {
+  // `x |> add(1)` is `add(x, 1)`: the call span and the pipe span each once,
+  // both at the call's return.
+  let source =
+    "fn add(a: Int, b: Int) -> Int { a + b }\n"
+    <> "pub fn g(x: Int) { x |> add(1) }"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "add(1)")) |> should.equal(["Int"])
+  annotations_at(source, span_of(source, "x |> add(1)"))
+  |> should.equal(["Int"])
+}
+
+pub fn fixtures_record_each_span_once_test() {
+  // Every oracle and golden fixture: no span carries more than one entry.
+  ["fixtures/oracle", "fixtures/golden"]
+  |> list.flat_map(fn(directory) {
+    let assert Ok(entries) = simplifile.read_directory(directory)
+    entries
+    |> list.filter(string.ends_with(_, ".gleam"))
+    |> list.map(fn(entry) { directory <> "/" <> entry })
+  })
+  |> list.filter_map(fn(path) {
+    let assert Ok(source) = simplifile.read(path)
+    case repeated_spans(source) {
+      [] -> Error(Nil)
+      repeated -> Ok(#(path, repeated))
+    }
+  })
+  |> should.equal([])
+}
+
 // Panic and todo
 //
 // `panic` and `todo` are bottom — they unify with anything — but their optional
@@ -503,6 +603,99 @@ pub fn parametric_alias_test() {
     "pub type Pair(a) = #(a, a)\npub fn mk(x: a) -> Pair(a) { #(x, x) }"
   signature(source, "mk")
   |> should.equal("fn(a) -> #(a, a)")
+}
+
+// A cyclic type alias is code the compiler rejects, but girard must still
+// return on it: an alias on a cycle is left unregistered, so a reference to
+// one hydrates like any name girard cannot resolve, credited to the prelude.
+
+// `fn(A) -> A`, with `A` the name girard could not expand.
+fn identity_on_unexpanded_alias() -> girard.Type {
+  let alias = girard.Named("gleam", "A", [])
+  girard.Fn([alias], alias)
+}
+
+pub fn cyclic_aliases_return_test() {
+  // Each of these looped forever expanding `A`.
+  [
+    "type A = B\ntype B = A\npub fn f(x: A) { x }",
+    "type A = A\npub fn f(x: A) { x }",
+    "type A = List(A)\npub fn f(x: A) { x }",
+  ]
+  |> list.each(fn(source) {
+    structured_signature(source, [], "f")
+    |> should.equal(identity_on_unexpanded_alias())
+  })
+
+  // A public cycle looped while the module's interface was built, and an
+  // alias in a constructor field while the custom type was registered, used
+  // or not.
+  [
+    "pub type A = B\npub type B = A\npub fn f() { 1 }",
+    "type A = A\npub type R { R(a: A) }\npub fn f() { 1 }",
+  ]
+  |> list.each(fn(source) {
+    structured_signature(source, [], "f")
+    |> should.equal(girard.Fn([], girard.Named("gleam", "Int", [])))
+  })
+}
+
+pub fn alias_cycle_through_each_type_shape_returns_test() {
+  // The cycle is found through a tuple element, a function's parameter and
+  // its return, and the argument of a qualified named type.
+  let box = [#("m", "pub type Box(a) {\n  Box(a)\n}")]
+  [
+    "type A = #(A, Int)\npub fn f(x: A) { x }",
+    "type A = fn(A) -> Int\npub fn f(x: A) { x }",
+    "type A = fn() -> A\npub fn f(x: A) { x }",
+    "import m\ntype A = m.Box(A)\npub fn f(x: A) { x }",
+  ]
+  |> list.each(fn(source) {
+    structured_signature(source, box, "f")
+    |> should.equal(identity_on_unexpanded_alias())
+  })
+}
+
+pub fn qualified_same_name_alias_is_not_a_cycle_test() {
+  // `m.A` is another module's `A`, not this alias, so it expands.
+  let source = "import m\ntype A = m.A\npub fn f(x: A) { x }"
+  signature_with(source, [#("m", "pub type A = Int")], "f")
+  |> should.equal("fn(Int) -> Int")
+}
+
+pub fn alias_reaching_a_cycle_expands_to_it_test() {
+  // `C` is not on the cycle, so it stays an alias and expands to `A`.
+  "type A = A\ntype C = A\npub fn f(x: C) { x }"
+  |> structured_signature([], "f")
+  |> should.equal(identity_on_unexpanded_alias())
+}
+
+pub fn importer_of_a_public_alias_cycle_returns_test() {
+  // The imported module's interface build expanded every public alias, so an
+  // importer looped too. Returning is the promise here, not a meaningful
+  // type: a qualified `m.A` is named after the module, while `m`'s own
+  // signatures credit `A` to the prelude.
+  let modules = [#("m", "pub type A = A\npub fn id(x: A) { x }")]
+  "import m\npub fn f(x: m.A) { x }"
+  |> structured_signature(modules, "f")
+  |> should.equal(girard.Fn(
+    [girard.Named("m", "A", [])],
+    girard.Named("m", "A", []),
+  ))
+
+  // An unqualified import of `A` reaches the same interface build. Getting
+  // a result back at all, of either kind, is what this asserts.
+  let _ok_or_error =
+    girard.annotate(
+      "import m.{type A}\npub fn f(x: A) { x }",
+      options_with(modules),
+    )
+  Nil
+}
+
+pub fn acyclic_alias_chain_expands_test() {
+  signature("type A = B\ntype B = Int\npub fn f(x: A) { x }", "f")
+  |> should.equal("fn(Int) -> Int")
 }
 
 // Record field access and update
@@ -1569,6 +1762,84 @@ pub fn renamed_import_alternatives_agree_test() {
   |> should.equal("fn(Remote) -> Nil")
 }
 
+// A clause's guard and body are checked once, under the first alternative's
+// bindings, as the compiler checks them: walking them once per alternative
+// recorded every expression in them once per alternative too.
+
+pub fn alternative_body_is_recorded_once_test() {
+  let source =
+    "pub fn f(x: Int) {\n"
+    <> "  case x {\n"
+    <> "    1 | 2 | 3 -> x + 1\n"
+    <> "    _ -> 0\n"
+    <> "  }\n"
+    <> "}"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "x + 1")) |> should.equal(["Int"])
+}
+
+pub fn alternative_guard_is_recorded_once_test() {
+  let source =
+    "pub fn f(x: Int) {\n"
+    <> "  case x {\n"
+    <> "    1 | 2 if x > 0 -> 1\n"
+    <> "    _ -> 0\n"
+    <> "  }\n"
+    <> "}"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "x > 0")) |> should.equal(["Bool"])
+}
+
+pub fn call_under_alternatives_is_recorded_once_test() {
+  // Three alternatives over a call: six entries before, one per alternative
+  // for the clause and two per walk for the call.
+  let source =
+    "fn inc(n: Int) -> Int { n + 1 }\n"
+    <> "pub fn f(x: Int) {\n"
+    <> "  case x {\n"
+    <> "    1 | 2 | 3 -> inc(x)\n"
+    <> "    _ -> 0\n"
+    <> "  }\n"
+    <> "}"
+  repeated_spans(source) |> should.equal([])
+  annotations_at(source, span_of(source, "inc(x)")) |> should.equal(["Int"])
+}
+
+pub fn alternatives_unify_an_unused_binding_test() {
+  // `x` binds `a` in one alternative and `b` in the other, and the compiler
+  // unifies an alternative's bindings with the first's whether or not the body
+  // uses them: 1.19.2 exports both parameters as one type variable.
+  let source = "pub fn f(a, b) {\n  case a, b {\n    x, _ | _, x -> 0\n  }\n}"
+  signature(source, "f") |> should.equal("fn(a, a) -> Int")
+}
+
+pub fn alternatives_reject_incompatible_unused_bindings_test() {
+  // The same clause over an `Int` and a `String` binds `x` at both, which the
+  // compiler rejects even though the body never reads `x`.
+  let source =
+    "pub fn f(a: Int, b: String) {\n  case a, b {\n    x, _ | _, x -> 0\n  }\n}"
+  let assert girard.TypeMismatch(..) = error_with(source, [])
+}
+
+pub fn tuple_alternative_keeps_the_first_element_variant_test() {
+  // `p` binds `#(Tagged[Loud], Int)` in the first alternative and
+  // `#(Tagged[Quiet], Int)` in the second. The compiler compares variants only
+  // at a binding's outer type, so it clears nothing here, and checks the body
+  // once in the first alternative's scope, where `p.0.println` is in reach.
+  let source =
+    "pub type Tagged {\n"
+    <> "  Loud(println: fn(String) -> Nil)\n"
+    <> "  Quiet(tag: Int)\n"
+    <> "}\n"
+    <> "pub fn f(t: Tagged) {\n"
+    <> "  case #(t, 1) {\n"
+    <> "    #(Loud(..), _) as p | #(Quiet(..), _) as p -> p.0.println\n"
+    <> "  }\n"
+    <> "}"
+  signature(source, "f")
+  |> should.equal("fn(Tagged) -> fn(String) -> Nil")
+}
+
 // A type with one label every variant declares and one only `Loud` does, so a
 // receiver's narrowing decides which of the two it can read.
 const tagged_type =
@@ -2230,10 +2501,8 @@ fn should_read_box_value(source: String) -> Nil {
   type_of(source, "x.value") |> should.equal("Int")
 }
 
-// Every type recorded at `span`, in the order girard reports them. A call span
-// already carries two — `infer_expr`'s wrapper records it and `infer_call`
-// records the callee's own return over it — so the count is only meaningful
-// against the same shape without the seeding.
+// Every type recorded at `span`, in the order girard reports them: one for an
+// expression girard walked, none for one it did not.
 fn annotations_at(source: String, span: glance.Span) -> List(String) {
   let assert Ok(annotated) = girard.annotate(source, girard.default_options())
   annotated.expressions
