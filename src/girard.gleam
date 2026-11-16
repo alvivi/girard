@@ -531,11 +531,8 @@ pub type ModuleResult {
 /// type — along with any that depend on it — is reported in that module's
 /// `skipped` list rather than failing the module, while every other definition
 /// is still annotated. Definition failures therefore leave the module present
-/// in the result; a fully strict check is
-/// `result.skipped == [] && result.annotated.unavailable == []`. A non-empty
-/// `unavailable` means possibly incomplete: it over-approximates what was
-/// affected (see [`AnnotatedModule`](#AnnotatedModule), which also covers
-/// stale entries from a reused [`Cache`](#Cache)).
+/// in the result; check it with [`is_complete`](#is_complete), which also
+/// counts the modules girard could not load.
 pub fn annotate_package(
   modules: List(#(String, glance.Module)),
   options: Options,
@@ -561,6 +558,16 @@ pub fn annotate_package(
       }
     })
   results
+}
+
+/// Whether girard typed every definition of a package module and loaded every
+/// module it imports, directly or through its imports: `skipped` and
+/// `annotated.unavailable` are both empty. `False` means possibly incomplete,
+/// as an unavailable module may have affected nothing (see
+/// [`AnnotatedModule`](#AnnotatedModule)). Definitions in `annotated.dropped`
+/// do not count.
+pub fn is_complete(result: ModuleResult) -> Bool {
+  result.skipped == [] && result.annotated.unavailable == []
 }
 
 // Reporting

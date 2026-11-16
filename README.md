@@ -315,11 +315,10 @@ Unlike `annotate`/`annotate_module`, it is **best-effort per definition**: a
 top-level function or constant that does not type — along with anything that
 depends on it — is listed in that module's `.skipped` (with the error that
 declined it) rather than failing the module, and every other definition is still
-annotated. A strict check is
-`result.skipped == [] && result.annotated.unavailable == []`. A non-empty
-`unavailable` means possibly incomplete: it over-approximates what was affected
-(see [Imports girard could not use](#imports-girard-could-not-use), which also
-covers stale entries from a reused `Cache`).
+annotated. `girard.is_complete(result)` is the strict check: nothing in
+`.skipped` and nothing in `.annotated.unavailable`. `False` means possibly
+incomplete, as an unavailable module may have affected nothing (see
+[Imports girard could not use](#imports-girard-could-not-use)).
 
 The resolver must be able to load package-local imports as well as external
 dependencies. Supplying a module in `modules` gives girard its AST to annotate;

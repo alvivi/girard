@@ -3320,6 +3320,33 @@ pub fn annotate_package_cascades_to_dependents_test() {
     list.key_find(m.skipped, "uses_it")
 }
 
+pub fn is_complete_counts_skipped_and_unavailable_test() {
+  // A skipped definition or an unavailable import each makes a result
+  // incomplete, even when every other definition is annotated, and so do both
+  // together. A definition dropped for the other target does not.
+  let complete = "@target(javascript)\npub fn js() { 1 }\npub fn ok() { 1 }"
+  let skipped = "pub fn ok() { 1 }\npub fn bad() { 1 + \"oops\" }"
+  let unavailable = "import missing\npub fn ok() { 1 }"
+  let both = "import missing\npub fn ok() { 1 }\npub fn bad() { 1 + \"oops\" }"
+
+  let result = package_result([#("app/m", complete)], "app/m")
+  result.annotated.dropped |> should.not_equal([])
+  girard.is_complete(result) |> should.be_true
+
+  let result = package_result([#("app/m", skipped)], "app/m")
+  result.annotated.unavailable |> should.equal([])
+  girard.is_complete(result) |> should.be_false
+
+  let result = package_result([#("app/m", unavailable)], "app/m")
+  result.skipped |> should.equal([])
+  girard.is_complete(result) |> should.be_false
+
+  let result = package_result([#("app/m", both)], "app/m")
+  result.skipped |> should.not_equal([])
+  result.annotated.unavailable |> should.not_equal([])
+  girard.is_complete(result) |> should.be_false
+}
+
 pub fn definition_shadowed_import_rejects_labels_test() {
   // A top-level definition replaces an unqualified import of its name, labels
   // and all: the imported `greet`'s `name:` is out of reach even though the
