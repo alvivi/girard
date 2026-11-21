@@ -362,7 +362,11 @@ let results = girard.annotate_package(modules, options)
   source that [`glance`](https://hexdocs.pm/glance/) cannot parse, girard cannot
   annotate. Since imports are resolved by parsing, an unparseable module also
   makes its dependents fail with `unbound variable`. Such failures are `glance`
-  limitations, not girard inference errors.
+  limitations, not girard inference errors. glance also reads an operator after
+  an `as` message into the message, where the compiler reads it after: girard
+  declines an `echo`, `assert` or `let assert` message when glance puts a binary
+  operator at the root of the parsed message, and types `todo` and `panic`
+  messages as glance reads them.
 
 - **Inferred types, not diagnostics.** girard reproduces the types the compiler
   infers, but it is not a full type checker: when a module cannot be typed it

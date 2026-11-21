@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `x |> echo` and `x |> echo as "label"` now type as the piped value instead
   of failing with a `Nil` type mismatch.
+- The `as` message of `echo`, `assert` and `let assert` is now checked
+  against `String`, as `todo` and `panic` messages are.
+- Such a message that glance parsed with an operator at its root, as in
+  `x |> echo as "label" |> f`, is now `Unsupported`: glance reads the
+  operator into the message. Wrap the step in braces as a workaround.
 
 ## [4.0.1] - 2026-11-16
 

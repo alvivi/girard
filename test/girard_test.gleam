@@ -578,6 +578,281 @@ pub fn wrapped_piped_echo_is_rejected_test() {
   let assert girard.TypeMismatch(..) = error_with(source, [])
 }
 
+// Messages
+//
+// The `as` message of an `echo`, an `assert` and a `let assert` is checked
+// against `String`, as `todo`'s and `panic`'s are; a `let assert`'s before its
+// pattern binds, outside the pattern's scope. A message glance parsed with an
+// operator at its root is declined (see `check_message`).
+
+// What a message of `42` gives: its type, then the `String` it is checked at.
+const int_message =
+  girard.TypeMismatch(
+    girard.Named("gleam", "Int", []),
+    girard.Named("gleam", "String", []),
+  )
+
+const declined_message = girard.Unsupported("an operator after an `as` message")
+
+// The span of `message` written right after `as `, for a message whose text
+// also appears elsewhere in the source.
+fn message_span(source: String, message: String) -> glance.Span {
+  let as_message = span_of(source, "as " <> message)
+  glance.Span(as_message.start + 3, as_message.end)
+}
+
+pub fn echo_message_is_a_string_test() {
+  let source = "pub fn f(x: Int, label: String) { echo x as label }"
+  annotations_at(source, last_span(source, "label")) |> should.equal(["String"])
+}
+
+pub fn piped_echo_message_is_a_string_test() {
+  let source = "pub fn f(x: Int, label: String) { x |> echo as label }"
+  annotations_at(source, last_span(source, "label")) |> should.equal(["String"])
+}
+
+pub fn assert_message_is_a_string_test() {
+  let source = "pub fn f(x: Bool, label: String) { assert x as label }"
+  annotations_at(source, last_span(source, "label")) |> should.equal(["String"])
+}
+
+pub fn let_assert_message_is_a_string_test() {
+  let source =
+    "pub fn f(x: Result(Int, Nil), label: String) {\n"
+    <> "  let assert Ok(n) = x as label\n"
+    <> "  n\n"
+    <> "}"
+  annotations_at(source, last_span(source, "label")) |> should.equal(["String"])
+}
+
+pub fn non_string_echo_message_is_error_test() {
+  error_with("pub fn f(x: Int) { echo x as 42 }", [])
+  |> should.equal(int_message)
+}
+
+pub fn non_string_piped_echo_message_is_error_test() {
+  error_with("pub fn f(x: Int) { x |> echo as 42 }", [])
+  |> should.equal(int_message)
+}
+
+pub fn non_string_assert_message_is_error_test() {
+  error_with("pub fn f(x: Bool) { assert x as 42 }", [])
+  |> should.equal(int_message)
+}
+
+pub fn non_string_let_assert_message_is_error_test() {
+  let source =
+    "pub fn f(x: Result(Int, Nil)) {\n"
+    <> "  let assert Ok(n) = x as 42\n"
+    <> "  n\n"
+    <> "}"
+  error_with(source, []) |> should.equal(int_message)
+}
+
+// `infer_statement` has three ways into a `let assert`, and each checks the
+// message: an unannotated `label` only becomes a `String` if it does.
+
+pub fn let_assert_message_is_checked_test() {
+  let source =
+    "pub fn f(r: Result(Int, Nil), label) {\n"
+    <> "  let assert Ok(n) = r as label\n"
+    <> "  n\n"
+    <> "}"
+  signature(source, "f") |> should.equal("fn(Result(Int, Nil), String) -> Int")
+}
+
+pub fn let_assert_lambda_message_is_checked_test() {
+  let source =
+    "pub fn f(label) {\n"
+    <> "  let assert id = fn(x) { x } as label\n"
+    <> "  id(1)\n"
+    <> "}"
+  signature(source, "f") |> should.equal("fn(String) -> Int")
+}
+
+pub fn let_assert_generic_lambda_message_is_checked_test() {
+  let source =
+    "pub fn f(label) {\n"
+    <> "  let assert id = fn(x: a) -> a { x } as label\n"
+    <> "  id(1)\n"
+    <> "}"
+  signature(source, "f") |> should.equal("fn(String) -> Int")
+  let source =
+    "pub fn f() {\n"
+    <> "  let assert id = fn(x: a) -> a { x } as 42\n"
+    <> "  id(1)\n"
+    <> "}"
+  error_with(source, []) |> should.equal(int_message)
+}
+
+pub fn let_assert_message_cannot_see_the_pattern_test() {
+  // The message `x` is the `String` parameter, not the `Int` the pattern binds.
+  let source =
+    "pub fn f(r: Result(Int, Nil), x: String) -> Int {\n"
+    <> "  let assert Ok(x) = r as x\n"
+    <> "  x\n"
+    <> "}"
+  signature(source, "f") |> should.equal("fn(Result(Int, Nil), String) -> Int")
+  annotations_at(source, message_span(source, "x")) |> should.equal(["String"])
+}
+
+pub fn let_assert_message_comes_before_the_pattern_test() {
+  // The message reads `note` before the pattern constrains it to `Item`, so
+  // `note.text` is still the imported module's function, which returns a
+  // `String`. Read after the pattern, it would be the `Int` field.
+  let note = "pub fn text() -> String {\n  \"note\"\n}"
+  let source =
+    "import note\n"
+    <> "pub type Item {\n  Item(text: fn() -> Int)\n}\n"
+    <> "pub fn run(note) {\n"
+    <> "  let assert Item(_) = note as note.text()\n"
+    <> "  Nil\n"
+    <> "}"
+  signature_with(source, [#("note", note)], "run")
+  |> should.equal("fn(Item) -> Nil")
+  resolution_at(source, [#("note", note)], span_of(source, "note.text"))
+  |> should.equal(girard.ModuleFn("note", "text"))
+}
+
+pub fn let_assert_message_is_a_dependency_test() {
+  // `aaa_describe` is called only from the message, so it is ordered first
+  // only if the message is a dependency.
+  let source =
+    "fn aaa_describe() -> String {\n  \"r\"\n}\n"
+    <> "pub fn zzz_first(r: Result(Int, Nil)) -> Int {\n"
+    <> "  let assert Ok(n) = r as aaa_describe()\n"
+    <> "  n\n"
+    <> "}"
+  signature(source, "zzz_first") |> should.equal("fn(Result(Int, Nil)) -> Int")
+  resolution_at(source, [], message_span(source, "aaa_describe"))
+  |> should.equal(girard.ModuleFn("", "aaa_describe"))
+}
+
+pub fn let_assert_message_dependency_ignores_the_pattern_test() {
+  // The pattern binds `aaa_describe` too, but the message still calls the
+  // top-level function, so the dependency is collected outside the pattern.
+  let source =
+    "fn aaa_describe() -> String {\n  \"r\"\n}\n"
+    <> "pub fn run(r: Result(Int, Nil)) -> Int {\n"
+    <> "  let assert Ok(aaa_describe) = r as aaa_describe()\n"
+    <> "  aaa_describe\n"
+    <> "}"
+  signature(source, "run") |> should.equal("fn(Result(Int, Nil)) -> Int")
+  resolution_at(source, [], message_span(source, "aaa_describe"))
+  |> should.equal(girard.ModuleFn("", "aaa_describe"))
+}
+
+// glance reads an operator after a message into the message, where the
+// compiler reads it after, so girard declines these. Each comment gives the
+// compiler's (1.19.2) signature: a glance release that parses a message as a
+// unit should turn the test into a positive one with that signature.
+
+pub fn message_before_a_pipe_is_declined_test() {
+  // fn(Int) -> String. glance's message is `"m" |> int.to_string`.
+  let source =
+    "import gleam/int\n"
+    <> "pub fn f(x) { x |> echo as \"m\" |> int.to_string }"
+  error_with(source, []) |> should.equal(declined_message)
+}
+
+pub fn message_before_a_generic_pipe_is_declined_test() {
+  // fn(Int) -> String. Checking glance's message would publish the wrong
+  // fn(Int) -> Int.
+  let source =
+    "fn render(_value) -> String {\n  \"done\"\n}\n"
+    <> "pub fn f(x: Int) { x |> echo as \"m\" |> render }"
+  error_with(source, []) |> should.equal(declined_message)
+}
+
+pub fn message_before_an_operator_is_declined_test() {
+  // fn(Bool) -> Bool. girard typed this before only by coincidence: the
+  // message `"label" && x` was never walked.
+  let source = "pub fn f(x: Bool) { echo x as \"label\" && x }"
+  error_with(source, []) |> should.equal(declined_message)
+}
+
+pub fn assert_message_before_a_negation_is_declined_test() {
+  // fn(Bool, String, Int) -> String. glance's message is
+  // `label - x |> int.to_string`, so checking it would publish the wrong
+  // fn(Bool, Int, Int) -> Nil.
+  let source =
+    "import gleam/int\n"
+    <> "pub fn f(c: Bool, label, x: Int) {\n"
+    <> "  assert c as label\n"
+    <> "  -x |> int.to_string\n"
+    <> "}"
+  error_with(source, []) |> should.equal(declined_message)
+}
+
+pub fn let_assert_message_before_a_negation_is_declined_test() {
+  // fn(Result(Int, Nil), String, Int) -> String. Checking glance's message
+  // would publish the wrong fn(Result(Int, Nil), Int, Int) -> Result(Int, Nil).
+  let source =
+    "import gleam/int\n"
+    <> "pub fn f(r: Result(Int, Nil), label, x: Int) {\n"
+    <> "  let assert Ok(_) = r as label\n"
+    <> "  -x |> int.to_string\n"
+    <> "}"
+  error_with(source, []) |> should.equal(declined_message)
+}
+
+pub fn assert_message_before_a_last_negation_is_declined_test() {
+  // fn(Bool, Int) -> Int. glance's message is `"m" - x`, which takes the last
+  // statement with it.
+  let source =
+    "pub fn f(c: Bool, x: Int) {\n"
+    <> "  assert c as \"m\"\n"
+    <> "  -x\n"
+    <> "}"
+  error_with(source, []) |> should.equal(declined_message)
+}
+
+pub fn let_assert_message_before_a_last_negation_is_declined_test() {
+  // fn(Result(Int, Nil)) -> Int. glance's message is `"m" - x`, which takes the
+  // last statement with it.
+  let source =
+    "pub fn f(v: Result(Int, Nil)) {\n"
+    <> "  let assert Ok(x) = v as \"m\"\n"
+    <> "  -x\n"
+    <> "}"
+  error_with(source, []) |> should.equal(declined_message)
+}
+
+pub fn braced_statement_after_a_message_test() {
+  // The braces keep the negation out of the message, as the compiler reads it.
+  let source =
+    "import gleam/int\n"
+    <> "pub fn f(c: Bool, label, x: Int) {\n"
+    <> "  assert c as label\n"
+    <> "  { -x |> int.to_string }\n"
+    <> "}"
+  signature(source, "f") |> should.equal("fn(Bool, String, Int) -> String")
+}
+
+pub fn grouped_message_is_checked_test() {
+  // A grouped message is one unit to the compiler as well, so the operator
+  // inside it is no reason to decline.
+  let source =
+    "pub fn f(x: Int, tail: String) { echo x as { \"prefix \" <> tail } }"
+  signature(source, "f") |> should.equal("fn(Int, String) -> Int")
+  annotations_at(source, span_of(source, "\"prefix \" <> tail"))
+  |> should.equal(["String"])
+  let source =
+    "pub fn f(x: Int, tail: String) { x |> echo as { \"prefix \" <> tail } }"
+  signature(source, "f") |> should.equal("fn(Int, String) -> Int")
+  annotations_at(source, span_of(source, "\"prefix \" <> tail"))
+  |> should.equal(["String"])
+}
+
+pub fn panic_message_with_an_operator_is_typed_test() {
+  // `todo` and `panic` messages are typed as glance reads them, as they always
+  // were: published code holds messages such as this, and declining them would
+  // skip those definitions. glance's message is `"a" <> b`, so the result is
+  // still bottom; the compiler reads `(panic as "a") <> b`: fn(String) -> String.
+  signature("pub fn run(b) { panic as \"a\" <> b }", "run")
+  |> should.equal("fn(String) -> a")
+}
+
 // Module-level polymorphism and dependency-ordered inference
 //
 // Generalization at the definition boundary and inference in
@@ -3400,10 +3675,10 @@ pub fn resolutions_are_returned_by_every_entry_point_test() {
 // else, which is what makes "no entry at this span" mean "girard never walked
 // it".
 //
-// The walk mirrors girard's own traversal choices — an `assert`'s message and
-// an `echo`'s are not walked, and a shorthand field names no expression — so
-// this pins what girard *records*, not what it *walks*: a change to the latter
-// moves both sides together.
+// The walk mirrors girard's own traversal choices — every `as` message is
+// walked, and a shorthand field names no expression — so this pins what girard
+// *records*, not what it *walks*: a change to the latter moves both sides
+// together.
 
 const box_type = "pub type Box {\n  Box(n: Int)\n  Near(m: Int)\n}\n"
 
@@ -3435,12 +3710,19 @@ const census_source =
   <> "  let _ = add(_, 2)\n"
   <> "  let _ = \"piped\" |> l.println\n"
   <> "  let _ = 1 |> add(2)\n"
+  // The messages of a prefix `echo`, an `assert` and a `let assert`, and of a
+  // piped `echo`, which is not a name itself.
+  <> "  let _ = echo l.tag as describe(l.tag)\n"
+  <> "  assert l.tag == 1 as describe(l.tag)\n"
+  <> "  let assert _ = l.tag as describe(l.tag)\n"
+  <> "  let _ = l.tag |> echo as describe(l.tag)\n"
   // A `use` whose callee is a bare name, and a nested access in its body.
   <> "  use n <- each\n"
   <> "  add(n, logger.tag)\n"
   <> "}\n"
   <> "fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n"
   <> "fn each(f: fn(Int) -> Int) -> Int {\n  f(1)\n}\n"
+  <> "fn describe(_tag: Int) -> String {\n  \"tag\"\n}\n"
 
 fn sorted_spans(spans: List(glance.Span)) -> List(glance.Span) {
   list.sort(spans, fn(a, b) {
@@ -3463,10 +3745,11 @@ fn reference_spans(module: glance.Module) -> List(glance.Span) {
 fn statement_spans(statement: glance.Statement) -> List(glance.Span) {
   case statement {
     glance.Use(_, _, function) -> callee_spans(function)
-    glance.Assignment(_, _, _, _, value) -> expression_spans(value)
-    // girard checks an `assert`'s subject and ignores its message, as the
-    // walk below does.
-    glance.Assert(_, expression, _message) -> expression_spans(expression)
+    glance.Assignment(_, glance.Let, _, _, value) -> expression_spans(value)
+    glance.Assignment(_, glance.LetAssert(message), _, _, value) ->
+      list.append(expression_spans(value), optional_spans(message))
+    glance.Assert(_, expression, message) ->
+      list.append(expression_spans(expression), optional_spans(message))
     glance.Expression(expression) -> expression_spans(expression)
   }
 }
@@ -3536,8 +3819,8 @@ fn expression_spans(expression: glance.Expression) -> List(glance.Span) {
       list.append(expression_spans(left), callee_spans(right))
     glance.BinaryOperator(_, _, left, right) ->
       list.append(expression_spans(left), expression_spans(right))
-    // girard walks an `echo`'s subject and ignores its message.
-    glance.Echo(_, expression, _message) -> optional_spans(expression)
+    glance.Echo(_, expression, message) ->
+      list.append(optional_spans(expression), optional_spans(message))
   }
 }
 
