@@ -1310,13 +1310,6 @@ fn def_span(def: Def) -> glance.Span {
 }
 
 // `#(value references, field-access qualifier names)` of a definition.
-fn def_refs(def: Def) -> #(List(String), List(String)) {
-  case def {
-    FunctionDef(f) -> reference.in_function(f)
-    ConstantDef(c) -> reference.in_constant(c)
-  }
-}
-
 fn infer_def(
   env: Env,
   st: State,
@@ -1414,17 +1407,15 @@ fn infer_module(
   let constants =
     list.map(module.constants, fn(d) { ConstantDef(d.definition) })
   let defs = list.append(functions, constants)
-  // Names in scope as imported modules. A field access `name.member` whose
-  // `name` is one of these is qualified module access, not a dependency on a
-  // same-named local definition.
-  let module_aliases =
-    set.from_list(
-      list.filter_map(module.imports, fn(d) { qualified_alias(d.definition) }),
+  let order =
+    reference.dependency_order(
+      list.map(module.functions, fn(d) { d.definition }),
+      list.map(module.constants, fn(d) { d.definition }),
     )
   use #(#(final_env, st), skipped) <- result.try(infer_defs(
     env,
     st,
-    module_aliases,
+    order,
     defs,
     best_effort:,
   ))
@@ -1453,37 +1444,15 @@ fn infer_module(
 fn infer_defs(
   env: Env,
   st: State,
-  module_aliases: Set(String),
+  order: List(List(String)),
   defs: List(Def),
   best_effort best_effort: Bool,
 ) -> Result(#(#(Env, State), List(#(String, Error))), Error) {
   let by_name = dict.from_list(list.map(defs, fn(d) { #(def_name(d), d) }))
-  let names = list.map(defs, def_name)
-  let name_set = set.from_list(names)
-  let edges =
-    dict.from_list(
-      list.map(defs, fn(d) {
-        let #(values, qualifiers) = def_refs(d)
-        // A qualifier edge survives only for a local definition that is not a
-        // shadowed module name; value references always count.
-        let kept_qualifiers =
-          list.filter(qualifiers, fn(name) {
-            !set.contains(module_aliases, name)
-          })
-        let refs =
-          list.filter(list.append(values, kept_qualifiers), set.contains(
-            name_set,
-            _,
-          ))
-        #(def_name(d), refs)
-      }),
-    )
-  // Each component is a group of mutually recursive definitions, in dependency
-  // order. Resolve the names back to definitions up front.
+  // Each component is a group of mutually recursive definitions, in the
+  // compiler's dependency order. Resolve the names back to definitions.
   let groups =
-    list.map(scc.components(names, edges), fn(group) {
-      list.filter_map(group, dict.get(by_name, _))
-    })
+    list.map(order, fn(group) { list.filter_map(group, dict.get(by_name, _)) })
 
   // Strict mode stops at the first component that fails to type, returning its
   // error. Best-effort mode keeps the pre-component environment on a failure —
@@ -3480,13 +3449,6 @@ fn positional_labels(variant: ValueVariant) -> FieldMap {
   option.unwrap(field_map(variant), [])
 }
 
-fn is_upper(name: String) -> Bool {
-  case string.first(name) {
-    Ok(c) -> string.uppercase(c) == c && string.lowercase(c) != c
-    Error(_) -> False
-  }
-}
-
 fn infer_each(
   env: Env,
   st: State,
@@ -4720,7 +4682,7 @@ fn erase_binding(st: State, env: Env, name: String) -> Env {
 fn subject_of(expr: glance.Expression) -> Option(String) {
   case expr {
     glance.Variable(_, name) ->
-      case is_upper(name) {
+      case reference.is_upper(name) {
         True -> None
         False -> Some(name)
       }
