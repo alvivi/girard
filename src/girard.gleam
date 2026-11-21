@@ -758,6 +758,10 @@ type State {
     // with a concrete type or a different rigid — matching the compiler, which
     // keeps annotated type variables generic and rejects pinning them.
     rigid: Set(Int),
+    // The type each module constant has in a clause guard once generalized,
+    // by module and name: one copy per constant, shared by every guard read
+    // of it, as the compiler's stored literal is (see `guard_constant_read`).
+    literals: Dict(#(String, String), ty.Type),
   )
 }
 
@@ -921,7 +925,19 @@ type Env {
     // variables are not in the set, so they stay rigid in its body. Empty
     // outside a group.
     foreign_rigid: Set(Int),
+    // What kind of syntax is being inferred: see `Syntax`.
+    syntax: Syntax,
   )
+}
+
+// The compiler parses three kinds of value syntax differently. In a constant
+// initializer, or a guard subtree the compiler parses as a constant,
+// `name.member` is module access only, as the compiler's constant parser reads
+// it. A clause guard is a guard until such a subtree turns it into a constant.
+type Syntax {
+  ExpressionSyntax
+  GuardSyntax
+  ConstantSyntax
 }
 
 // The public surface of a module, used when importing it elsewhere.
@@ -965,6 +981,7 @@ fn new_state() -> State {
     references: [],
     pending: [],
     rigid: set.new(),
+    literals: dict.new(),
   )
 }
 
@@ -989,6 +1006,7 @@ fn new_env() -> Env {
     module_index: dict.new(),
     unavailable: dict.new(),
     foreign_rigid: set.new(),
+    syntax: ExpressionSyntax,
   )
 }
 
@@ -2504,6 +2522,34 @@ fn reaches_any(st: State, type_: ty.Type, ids: Set(Int)) -> Bool {
   }
 }
 
+// A module constant named by a bare variable in a clause guard. The compiler
+// takes the constant's stored literal (`infer_clause_guard_variable`,
+// `type_/guard.rs:322-324`) rather than instantiating its scheme, so the read
+// is not copied: a constant of the current group is read at its own type, and
+// one already generalized at a single copy of its scheme, made on its first
+// guard read and shared by every later one, as the literal's cells are shared.
+fn guard_constant_read(
+  st: State,
+  scheme: ty.Scheme,
+  module: String,
+  name: String,
+) -> #(ty.Type, State) {
+  use <- bool.guard(when: scheme.vars == [], return: #(scheme.type_, st))
+  case dict.get(st.literals, #(module, name)) {
+    Ok(literal) -> #(literal, st)
+    Error(_) -> {
+      let #(literal, st) = instantiate(st, scheme)
+      #(
+        literal,
+        State(
+          ..st,
+          literals: dict.insert(st.literals, #(module, name), literal),
+        ),
+      )
+    }
+  }
+}
+
 // Read a name in scope as a value: its scope entry, and the type this read
 // gets from `read_value`. Every value read goes through here (a variable, a
 // callee name, a record-update shorthand, a pattern size), so none can skip
@@ -2640,7 +2686,11 @@ fn infer_constant(
   st: State,
   constant: glance.Constant,
 ) -> Result(#(ty.Type, State), Error) {
-  use #(value_type, st) <- result.try(infer_expr(env, st, constant.value))
+  use #(value_type, st) <- result.try(infer_expr(
+    Env(..env, syntax: ConstantSyntax),
+    st,
+    constant.value,
+  ))
   case constant.annotation {
     Some(ann) -> {
       let #(t, st) = hydrate(env, st, ann)
@@ -2959,6 +3009,12 @@ fn infer_expr(
   st: State,
   expr: glance.Expression,
 ) -> Result(#(ty.Type, State), Error) {
+  // A guard subtree the compiler parses as a constant is typed as one
+  // (`type_/guard.rs:164-166`), all the way down.
+  let env = case env.syntax == GuardSyntax && reference.guard_constant(expr) {
+    True -> Env(..env, syntax: ConstantSyntax)
+    False -> env
+  }
   use #(type_, st) <- result.try(infer_expr_inner(env, st, expr))
   Ok(#(type_, record(st, span(expr), type_)))
 }
@@ -2973,10 +3029,15 @@ fn infer_expr_inner(
     glance.Float(..) -> Ok(#(prelude_float(), st))
     glance.String(..) -> Ok(#(prelude_string(), st))
 
-    glance.Variable(_, name) -> {
-      use #(_, type_, st) <- result.map(read_name(env, st, name))
-      #(type_, st)
-    }
+    glance.Variable(_, name) ->
+      case env.syntax, dict.get(env.values, name) {
+        GuardSyntax, Ok(ValueConstructor(scheme, ConstantValue(module, name)))
+        -> Ok(guard_constant_read(st, scheme, module, name))
+        _, _ -> {
+          use #(_, type_, st) <- result.map(read_name(env, st, name))
+          #(type_, st)
+        }
+      }
 
     glance.NegateInt(_, value) -> {
       use #(t, st) <- result.try(infer_expr(env, st, value))
@@ -3201,6 +3262,12 @@ fn infer_field_access(
 ) -> Result(#(ty.Type, Access, State), Error) {
   let spans = access_spans(access, container, label)
   use #(type_, branch, st) <- result.try(case container {
+    // In a constant, `name.member` is module access only, whatever else
+    // `name` is bound to (`parse.rs:3636`).
+    glance.Variable(_, name) if env.syntax == ConstantSyntax -> {
+      use entry <- result.try(qualified_entry(env, name, label))
+      module_export(st, entry)
+    }
     // Only a bare name can also denote a module, so only there is there a
     // module export for a failing record access to fall through to.
     glance.Variable(_, name) -> {
@@ -4498,7 +4565,8 @@ fn infer_clause_body(
   result: ty.Type,
 ) -> Result(State, Error) {
   use st <- result.try(case clause.guard {
-    Some(guard) -> check(env, st, guard, prelude_bool())
+    Some(guard) ->
+      check(Env(..env, syntax: GuardSyntax), st, guard, prelude_bool())
     None -> Ok(st)
   })
   use #(body_type, st) <- result.try(infer_expr(env, st, clause.body))
@@ -5017,16 +5085,25 @@ fn constructor_entry(
   constructor: String,
 ) -> Result(ValueConstructor, Error) {
   case module {
-    Some(alias) ->
-      case dict.get(env.modules, alias) {
-        Ok(interface) ->
-          dict.get(interface.values, constructor)
-          |> result.replace_error(NoSuchExport(alias, constructor))
-        Error(_) -> Error(UnknownModule(alias))
-      }
+    Some(alias) -> qualified_entry(env, alias, constructor)
     None ->
       dict.get(env.values, constructor)
       |> result.replace_error(UnknownConstructor(constructor))
+  }
+}
+
+// The export `alias.name` names: the imported module's scope entry, or why
+// there is none.
+fn qualified_entry(
+  env: Env,
+  alias: String,
+  name: String,
+) -> Result(ValueConstructor, Error) {
+  case dict.get(env.modules, alias) {
+    Ok(interface) ->
+      dict.get(interface.values, name)
+      |> result.replace_error(NoSuchExport(alias, name))
+    Error(_) -> Error(UnknownModule(alias))
   }
 }
 
