@@ -3318,8 +3318,8 @@ fn value_field(
   label: String,
   export: Option(ValueConstructor),
 ) -> Result(#(ty.Type, Access, State), Error) {
-  use #(container_type, st) <- result.try(infer_expr(env, st, container))
-  case resolve(st, container_type) {
+  use #(container_type, st) <- result.try(infer_expr_inner(env, st, container))
+  use #(type_, access, st) <- result.try(case resolve(st, container_type) {
     ty.Named(_, _, _, _) as record ->
       case accessor(env, record, label) {
         Ok(_) -> {
@@ -3345,7 +3345,15 @@ fn value_field(
         Some(export) -> module_export(st, export)
         None -> Error(NotARecord)
       }
+  })
+  // The container's span is recorded only while the access stays a record
+  // access. One that falls through to a module export is a module select in
+  // the compiler's typed AST, with no expression at the container's span.
+  let st = case access {
+    Export(_) -> st
+    Field(_) | Deferred -> record(st, span(container), container_type)
   }
+  Ok(#(type_, access, st))
 }
 
 // Field access where the container is not a bound value: a qualified module

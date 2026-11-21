@@ -1403,6 +1403,28 @@ pub fn module_and_value_share_name_test() {
   |> should.equal("fn() -> String")
 }
 
+pub fn module_select_container_is_unannotated_test() {
+  // `helper.twice(x)` with a top-level `fn helper` in scope: the access falls
+  // through from the local value to the module export, which is a module
+  // select in the compiler's typed AST, with no expression at `helper`. Both
+  // declaration orders, since `main` used to annotate the container whenever
+  // its order inferred `fn helper` first. Probe: `.misc/spike-knot/m3/quirk/`.
+  let helper = "pub fn twice(x: Int) -> Int { x * 2 }"
+  let run = "pub fn run(x: Int) -> Int {\n  helper.twice(x)\n}\n"
+  let local = "pub fn helper() -> Int {\n  1\n}\n"
+  list.each([run <> local, local <> run], fn(body) {
+    let source = "import helper\n\n" <> body
+    let access = span_of(source, "helper.twice")
+    let container = glance.Span(access.start, access.start + 6)
+    annotations_with(source, [#("helper", helper)], container)
+    |> should.equal([])
+    annotations_with(source, [#("helper", helper)], access)
+    |> should.equal(["fn(Int) -> Int"])
+    resolution_at(source, [#("helper", helper)], access)
+    |> should.equal(girard.ModuleFn("helper", "twice"))
+  })
+}
+
 pub fn alias_body_references_imported_type_test() {
   // `mid.Pair`'s body uses a type `mid` imported from `base`. Resolving the
   // alias must keep that type attributed to `base`, not the prelude (the bug
@@ -2856,7 +2878,24 @@ fn should_read_box_value(source: String) -> Nil {
 // Every type recorded at `span`, in the order girard reports them: one for an
 // expression girard walked, none for one it did not.
 fn annotations_at(source: String, span: glance.Span) -> List(String) {
-  let assert Ok(annotated) = girard.annotate(source, girard.default_options())
+  annotations_under(source, girard.default_options(), span)
+}
+
+// `annotations_at`, resolving imports from the given in-memory modules.
+fn annotations_with(
+  source: String,
+  modules: List(#(String, String)),
+  span: glance.Span,
+) -> List(String) {
+  annotations_under(source, options_with(modules), span)
+}
+
+fn annotations_under(
+  source: String,
+  options: girard.Options,
+  span: glance.Span,
+) -> List(String) {
+  let assert Ok(annotated) = girard.annotate(source, options)
   annotated.expressions
   |> list.filter(fn(a) { a.span == span })
   |> list.map(fn(a) { girard.type_to_string(a.type_) })
