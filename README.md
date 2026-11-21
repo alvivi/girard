@@ -377,6 +377,15 @@ let results = girard.annotate_package(modules, options)
   compiler accepts; packages that do not compile with current tooling are out of
   scope, since the compiler cannot type them either.
 
+- **A few references are missed when ordering definitions.** girard infers
+  top-level definitions in dependency order, but misses a reference in an
+  expression bit array's `size(...)` option, in a record update's shorthand
+  `label:`, in `name.label` when `name` is also a module alias, and in a pattern
+  `size` whose name a later segment rebinds. Unless something else orders the
+  referenced definition first, girard reports it as an unbound variable or
+  resolves it to a same-named unqualified import. No published Hex package is
+  known to hit this.
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development workflow,
