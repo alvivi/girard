@@ -13,6 +13,12 @@
 //// reference (a `let assert` message reading a top-level function its own
 //// pattern shadows), inference finds the function through its module-wide
 //// registration, as the compiler does.
+////
+//// `strict_edges` builds a second graph for best-effort annotation only: the
+//// edges the typer really follows, which drop the compiler's edges that only
+//// order two definitions and keep the `let assert` message reads its walk
+//// misses. When a group fails, girard re-splits it along those edges so that a
+//// failure does not take an independent definition with it.
 
 import girard/internal/scc
 import glance
@@ -46,7 +52,36 @@ pub fn dependency_edges(
   let function_names = list.map(functions, fn(f) { f.name })
   let constant_names = list.map(constants, fn(c) { c.name })
   let context =
-    Context(nodes: set.from_list(list.append(function_names, constant_names)))
+    Context(
+      nodes: set.from_list(list.append(function_names, constant_names)),
+      aliases: set.new(),
+      strict: False,
+    )
+  list.append(
+    list.map(functions, fn(f) { #(f.name, in_function(context, f)) }),
+    list.map(constants, fn(c) { #(c.name, in_constant(context, c)) }),
+  )
+}
+
+/// The edges between the given definitions that the typer really follows:
+/// the compiler's walk, except that a bare field receiver named like an
+/// import alias (`value` in `value.number`, beside `import cfg as value`) is
+/// module access, not a read of a same-named definition (Q1), a string
+/// prefix's `as` name shadows a same-named definition, as the typer binds it
+/// (Q3), and a `let assert` message is walked before its pattern binds, as the
+/// typer checks it (Q4). Nodes are the given definitions only, so the edges
+/// stay inside a group.
+pub fn strict_edges(
+  functions: List(glance.Function),
+  constants: List(glance.Constant),
+  aliases: Set(String),
+) -> List(#(String, List(String))) {
+  let names =
+    list.append(
+      list.map(functions, fn(f) { f.name }),
+      list.map(constants, fn(c) { c.name }),
+    )
+  let context = Context(nodes: set.from_list(names), aliases:, strict: True)
   list.append(
     list.map(functions, fn(f) { #(f.name, in_function(context, f)) }),
     list.map(constants, fn(c) { #(c.name, in_constant(context, c)) }),
@@ -106,9 +141,13 @@ pub fn is_upper(name: String) -> Bool {
 
 // The walk
 
-// What every walk step needs to know about the module.
+// What every walk step needs to know about the module: the top-level names,
+// and, for `strict_edges` only, the import aliases a bare receiver can be
+// module access to and whether the walk follows the typer (`strict`): a string
+// prefix's `as` name shadows, and a `let assert` message is walked before its
+// pattern.
 type Context {
-  Context(nodes: Set(String))
+  Context(nodes: Set(String), aliases: Set(String), strict: Bool)
 }
 
 // The compiler's `names`: the names the walk has defined locally, which shadow
@@ -163,6 +202,18 @@ fn referenced(
   [name, ..refs]
 }
 
+// A bare field receiver: the compiler's rule, except in `strict_edges`, where
+// a receiver named like an import alias is module access.
+fn receiver(
+  context: Context,
+  scope: Scope,
+  name: String,
+  refs: List(String),
+) -> List(String) {
+  use <- bool.guard(when: set.contains(context.aliases, name), return: refs)
+  referenced(context, scope, name, refs)
+}
+
 // `call_graph.rs:142-148`: a statement's bindings last until the end of the
 // enclosing statement list.
 fn statements(
@@ -189,14 +240,21 @@ fn in_statement(
     glance.Expression(expr) -> #(scope, expression(context, expr, scope, refs))
 
     // Value, then the pattern, then the message (`call_graph.rs:155-166`),
-    // so the pattern's names shadow in the message (Q4).
+    // so the pattern's names shadow in the message (Q4). `strict_edges` walks
+    // the message before the pattern, in the scope the typer checks it in.
     glance.Assignment(_, kind, pattern, _, value) -> {
       let refs = expression(context, value, scope, refs)
-      let #(after, refs) = in_pattern(context, pattern, scope, refs)
-      #(
-        after,
-        optional(expression, context, assignment_message(kind), after, refs),
-      )
+      let message = assignment_message(kind)
+      case context.strict {
+        True -> {
+          let refs = optional(expression, context, message, scope, refs)
+          in_pattern(context, pattern, scope, refs)
+        }
+        False -> {
+          let #(after, refs) = in_pattern(context, pattern, scope, refs)
+          #(after, optional(expression, context, message, after, refs))
+        }
+      }
     }
 
     glance.Use(_, use_patterns, function) -> {
@@ -328,7 +386,7 @@ fn expression(
     // Any container is walked, so `name.label` references a top-level `name`
     // even when it is module access (Q1).
     glance.FieldAccess(_, glance.Variable(_, name), _) ->
-      referenced(context, scope, name, refs)
+      receiver(context, scope, name, refs)
     glance.FieldAccess(_, container, _) ->
       expression(context, container, scope, refs)
 
@@ -393,11 +451,15 @@ fn in_pattern(
 
     glance.PatternVariable(_, name) -> #(define(scope, name), refs)
 
-    // Only the right-hand name is defined (Q3).
-    glance.PatternConcatenate(_, _, _, rest_name) -> #(
-      list.fold(assignment_name(rest_name), scope, define),
-      refs,
-    )
+    // Only the right-hand name is defined (Q3), except in `strict_edges`,
+    // where the prefix's `as` name is too, as the typer binds it.
+    glance.PatternConcatenate(_, _, prefix_name, rest_name) -> {
+      let names = case context.strict, prefix_name {
+        True, Some(prefix_name) -> [prefix_name, rest_name]
+        _, _ -> [rest_name]
+      }
+      #(list.fold(list.flat_map(names, assignment_name), scope, define), refs)
+    }
 
     glance.PatternTuple(_, elements) -> patterns(context, elements, scope, refs)
 
@@ -480,7 +542,7 @@ fn in_guard(
   case guard {
     glance.Variable(_, name) -> referenced(context, scope, name, refs)
     glance.FieldAccess(_, glance.Variable(_, name), _) ->
-      referenced(context, scope, name, refs)
+      receiver(context, scope, name, refs)
     glance.FieldAccess(_, container, _)
     | glance.TupleIndex(_, container, _)
     | glance.NegateBool(_, container) ->

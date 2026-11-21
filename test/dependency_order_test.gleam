@@ -16,6 +16,7 @@ import girard
 import girard/internal/reference
 import glance
 import gleam/list
+import gleam/set
 import gleam/string
 import gleeunit/should
 
@@ -858,6 +859,44 @@ pub fn target_filtered_pair_orders_the_kept_definition_test() {
   signature(javascript, "run") |> should.equal("fn() -> String")
 }
 
+// Strict edges
+//
+// Best-effort annotation re-splits a failed group along the edges the typer
+// follows (`reference.strict_edges`), which walk a `let assert` message
+// before its pattern binds, as the typer checks it.
+
+pub fn strict_edges_keep_a_message_read_the_pattern_shadows_test() {
+  // The compiler's walk binds `later` before the message, so `early` has no
+  // edge to it (Q4); the typer reads the top-level `later` there.
+  let source =
+    "pub fn early() -> String {\n"
+    <> "  let assert [later] = [1] as later()\n"
+    <> "  \"ok\"\n"
+    <> "}\n\n"
+    <> "pub fn later() -> String {\n"
+    <> "  early()\n"
+    <> "}\n"
+  edges_of(source) |> should.equal([#("early", []), #("later", ["early"])])
+  strict_edges_of(source)
+  |> should.equal([#("early", ["later"]), #("later", ["early"])])
+}
+
+pub fn strict_edges_read_a_message_before_a_prefix_name_test() {
+  // The strict walk lets a string prefix's `as` name shadow (Q3), but only
+  // once the pattern binds it: the message reads the top-level `bad`.
+  let source =
+    "pub fn good(s: String) -> String {\n"
+    <> "  let assert \"x\" as bad <> rest = s as bad(s)\n"
+    <> "  rest\n"
+    <> "}\n\n"
+    <> "pub fn bad(s: String) -> String {\n"
+    <> "  let _ = good(s)\n"
+    <> "  s\n"
+    <> "}\n"
+  strict_edges_of(source)
+  |> should.equal([#("bad", ["good"]), #("good", ["bad"])])
+}
+
 // Helpers
 
 // Render the compiler test's functions and constants as a module and order
@@ -903,6 +942,14 @@ fn order_of(source: String) -> List(List(String)) {
 fn edges_of(source: String) -> List(#(String, List(String))) {
   let #(functions, constants) = definitions(source)
   reference.dependency_edges(functions, constants)
+}
+
+// The edges `strict_edges` gives between all of a module's definitions, with
+// no import aliases, by definition name: it keeps the order it is given.
+fn strict_edges_of(source: String) -> List(#(String, List(String))) {
+  let #(functions, constants) = definitions(source)
+  reference.strict_edges(functions, constants, set.new())
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
 }
 
 // The functions and constants glance parses from `source`, in glance's order:

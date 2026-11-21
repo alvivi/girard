@@ -913,14 +913,14 @@ type Env {
     // `process_imports` is its only writer (see `record_unavailable` for the
     // precedence between a direct failure and an inherited one).
     unavailable: Dict(String, Unavailability),
-    // Names of the strongly-connected-component members currently being
-    // inferred. A reference to one of these resolves its bound scheme through
-    // the current substitution before instantiating, so a type the provider's
-    // already-inferred body has settled (an unannotated parameter absorbed into
-    // a signature variable, say) is seen by a later sibling — the compiler's
-    // shared mutable type cells, in girard's threaded substitution. Empty
-    // outside an SCC, so finished schemes instantiate verbatim.
-    live: Set(String),
+    // The signature variables of every function of the module but the one
+    // being inferred. Every value read copies each of them it reaches into a
+    // fresh variable, as the compiler's `instantiate` copies a generic that is
+    // not rigid in the current function's hydrator (`environment.rs:717-731`),
+    // whether or not its owner is generalized yet. A function's own signature
+    // variables are not in the set, so they stay rigid in its body. Empty
+    // outside a group.
+    foreign_rigid: Set(Int),
   )
 }
 
@@ -988,7 +988,7 @@ fn new_env() -> Env {
     modules: dict.new(),
     module_index: dict.new(),
     unavailable: dict.new(),
-    live: set.new(),
+    foreign_rigid: set.new(),
   )
 }
 
@@ -1093,18 +1093,6 @@ fn var_id(type_: ty.Type) -> Result(Int, Nil) {
     ty.Var(id) -> Ok(id)
     _ -> Error(Nil)
   }
-}
-
-// Mint a fresh type variable (a thin wrapper over `fresh`).
-fn fresh_var(st: State) -> #(ty.Type, State) {
-  fresh(st)
-}
-
-// Mark `names` as the live members of the strongly-connected component being
-// inferred, so a reference to one resolves its scheme through the current
-// substitution before instantiating (see `Env.live`).
-fn mark_live(env: Env, names: List(String)) -> Env {
-  Env(..env, live: set.from_list(names))
 }
 
 // The prelude value constructors (`True`, `False`, `Nil`, `Ok`, `Error`) as
@@ -1309,18 +1297,6 @@ fn def_span(def: Def) -> glance.Span {
   }
 }
 
-// `#(value references, field-access qualifier names)` of a definition.
-fn infer_def(
-  env: Env,
-  st: State,
-  def: Def,
-) -> Result(#(ty.Type, State), Error) {
-  case def {
-    FunctionDef(f) -> infer_function(env, st, f)
-    ConstantDef(c) -> infer_constant(env, st, c)
-  }
-}
-
 // Interfaces resolved so far in this run, keyed by module path. Resolving a
 // module is expensive (it infers the whole module), and a deep import graph
 // imports the same dependency many times; memoizing keeps each module inferred
@@ -1380,10 +1356,9 @@ fn infer_module(
   // 2. Pre-declare local type names so forward references resolve, then
   //    register aliases and custom-type constructors/accessors. An alias on a
   //    cycle is not registered, since expanding it would never finish. A
-  //    function's or constant's labels need no early pass: they are installed
-  //    with its value, by `prereg_def` before any body of its component is
-  //    walked, and no earlier component can reference it or it would not be
-  //    earlier.
+  //    function's labels need no early pass: they are installed with its
+  //    value, by `register_member` before any body of its group is walked,
+  //    and no earlier group can reference it or it would not be earlier.
   let env =
     list.fold(module.custom_types, env, fn(env, d) {
       let ct = d.definition
@@ -1412,11 +1387,18 @@ fn infer_module(
       list.map(module.functions, fn(d) { d.definition }),
       list.map(module.constants, fn(d) { d.definition }),
     )
+  // The names in scope as imported modules, which a best-effort split treats
+  // as module access rather than reads of a same-named definition.
+  let aliases =
+    set.from_list(
+      list.filter_map(module.imports, fn(d) { qualified_alias(d.definition) }),
+    )
   use #(#(final_env, st), skipped) <- result.try(infer_defs(
     env,
     st,
     order,
     defs,
+    aliases,
     best_effort:,
   ))
 
@@ -1446,13 +1428,24 @@ fn infer_defs(
   st: State,
   order: List(List(String)),
   defs: List(Def),
+  aliases: Set(String),
   best_effort best_effort: Bool,
 ) -> Result(#(#(Env, State), List(#(String, Error))), Error) {
-  let by_name = dict.from_list(list.map(defs, fn(d) { #(def_name(d), d) }))
+  // Every function is registered before any group is inferred, at the shape
+  // its annotations give, as the compiler registers them (`analyse.rs:261-263`).
+  // A function the compiler's graph does not order first, read in a
+  // `let assert` message its own pattern shadows, is still found.
+  let base = env
+  let #(#(env, st), items) =
+    defs
+    |> list.sort(fn(a, b) { int.compare(def_start(a), def_start(b)) })
+    |> list.map_fold(#(env, st), fn(acc, def) { register(acc.0, acc.1, def) })
+  let by_name = dict.from_list(list.map(items, fn(i) { #(item_name(i), i) }))
   // Each component is a group of mutually recursive definitions, in the
   // compiler's dependency order. Resolve the names back to definitions.
   let groups =
     list.map(order, fn(group) { list.filter_map(group, dict.get(by_name, _)) })
+  let initial = Groups(env:, st:, rigid: rigid_ids_of(items), skipped: [])
 
   // Strict mode stops at the first component that fails to type, returning its
   // error. Best-effort mode keeps the pre-component environment on a failure —
@@ -1462,95 +1455,182 @@ fn infer_defs(
   // cascades naturally.
   case best_effort {
     False -> {
-      use #(env, st) <- result.map(
-        list.try_fold(groups, #(env, st), fn(acc, group) {
-          let #(env, st) = acc
-          infer_group(env, st, group)
+      use done <- result.map(
+        list.try_fold(groups, initial, fn(groups, group) {
+          use #(env, st) <- result.map(infer_group(groups, group, base))
+          inferred(groups, env, st)
         }),
       )
-      #(#(env, st), [])
+      #(#(done.env, done.st), [])
     }
-    True -> Ok(list.fold(groups, #(#(env, st), []), best_effort_group))
+    True -> {
+      let done =
+        list.fold(groups, initial, fn(groups, group) {
+          best_effort_group(groups, group, base, aliases)
+        })
+      Ok(#(#(done.env, done.st), done.skipped))
+    }
   }
+}
+
+// What inferring a module's groups carries from one group to the next.
+type Groups {
+  Groups(
+    env: Env,
+    st: State,
+    // The signature variables of every registered function: a read in any
+    // group copies those that are not its own function's.
+    rigid: Set(Int),
+    skipped: List(#(String, Error)),
+  )
+}
+
+// Adopt a group's result.
+fn inferred(groups: Groups, env: Env, st: State) -> Groups {
+  Groups(..groups, env:, st:)
+}
+
+fn rigid_ids_of(items: List(GroupItem)) -> Set(Int) {
+  list.fold(items, set.new(), fn(ids, item) {
+    case item {
+      FunctionItem(rigid_ids:, ..) -> set.union(ids, set.from_list(rigid_ids))
+      ConstantItem(..) -> ids
+    }
+  })
 }
 
 // One best-effort step over a strongly-connected component: on success adopt
 // the new environment; on failure keep the prior one (discarding the
-// component's partial work) and record every definition in it as skipped.
+// component's partial work) and skip the component. A component of several
+// members is first re-split along the edges the typer really follows, so that
+// an edge that only orders two definitions (`reference.strict_edges`) does not
+// take an independent one down with a failing one. Code the compiler accepts
+// never fails, so the split never changes a result it gives.
 fn best_effort_group(
-  acc: #(#(Env, State), List(#(String, Error))),
-  group: List(Def),
-) -> #(#(Env, State), List(#(String, Error))) {
-  let #(#(env, st), skipped) = acc
-  case infer_group(env, st, group) {
-    Ok(env_st) -> #(env_st, skipped)
-    Error(error) -> {
-      let entries = list.map(group, fn(d) { #(def_name(d), error) })
-      #(#(env, st), list.append(skipped, entries))
-    }
+  groups: Groups,
+  group: List(GroupItem),
+  base: Env,
+  aliases: Set(String),
+) -> Groups {
+  case infer_group(groups, group, base), group {
+    Ok(#(env, st)), _ -> inferred(groups, env, st)
+    Error(_), [_, _, ..] -> split_group(groups, group, base, aliases)
+    Error(error), _ -> skip_group(groups, group, base, error)
   }
 }
 
-// Infer one strongly-connected component of mutually recursive definitions,
-// then generalize each against the surrounding environment and add it back for
-// later components.
-//
-// A function with signature variables is pre-registered at a scheme over those
-// variables so recursion and siblings see it polymorphically; its body is
-// checked against the signature with those variables rigid, and within its own
-// body it sees itself at the rigid monotype (no polymorphic recursion). Every
-// other definition is inferred monomorphically against a fresh placeholder.
-// The members are marked *live* (see `mark_live`): a reference to a
-// sibling resolves its scheme through the current substitution, so once a
-// member's body has settled an unannotated part (absorbing it into a signature
-// variable) a later sibling sees the resolved type — the compiler's shared
-// mutable cells, reproduced through girard's threaded substitution. Because of
-// that, bodies are inferred *provider-first*: a member whose signature has an
-// unannotated part is typed before the fully-annotated members that consume it
-// (a dependency-respecting order within the component, as Tarjan provides).
-fn infer_group(
-  env: Env,
-  st: State,
-  group: List(Def),
-) -> Result(#(Env, State), Error) {
-  let #(group_env, rev_items, st) =
-    list.fold(group, #(env, [], st), fn(acc, def) {
-      let #(env, items, st) = acc
-      prereg_def(env, items, st, def)
-    })
-  let group_env = mark_live(group_env, list.map(group, def_name))
-  let items = list.reverse(rev_items)
-  // Type members with an unannotated parameter or return first: their bodies
-  // settle those placeholders, which a later sibling reference then resolves.
-  let #(providers, consumers) =
-    list.partition(items, fn(item) {
+// Infer a failed component's strict sub-components in turn, in the order
+// Pearce's algorithm gives them over the compiler's member order, skipping
+// only those that fail.
+fn split_group(
+  groups: Groups,
+  group: List(GroupItem),
+  base: Env,
+  aliases: Set(String),
+) -> Groups {
+  let functions =
+    list.filter_map(group, fn(item) {
       case item {
-        AnnotatedDef(_, f, _, _) ->
-          f.return == option.None
-          || list.any(f.parameters, fn(p) { p.type_ == option.None })
-        PlaceholderDef(..) -> False
+        FunctionItem(function:, ..) -> Ok(function)
+        ConstantItem(..) -> Error(Nil)
       }
     })
-  use st <- result.try(
-    list.try_fold(list.append(providers, consumers), st, fn(st, item) {
+  let constants =
+    list.filter_map(group, fn(item) {
       case item {
-        AnnotatedDef(def, f, params, return_type) -> {
-          // Inside its own body the function sees itself at the rigid
-          // (un-generalized) signature, so a self-recursive call must be at
-          // the same type — no polymorphic recursion. Bind the self-name
-          // first, then the parameters on top, so a parameter that shares the
-          // function's name shadows it (as in the source).
+        ConstantItem(constant:) -> Ok(constant)
+        FunctionItem(..) -> Error(Nil)
+      }
+    })
+  let by_name = dict.from_list(list.map(group, fn(i) { #(item_name(i), i) }))
+  let edges = reference.strict_edges(functions, constants, aliases)
+  scc.components(list.map(group, item_name), dict.from_list(edges))
+  |> list.fold(groups, fn(groups, names) {
+    let sub = list.filter_map(names, dict.get(by_name, _))
+    case infer_group(groups, sub, base) {
+      Ok(#(env, st)) -> inferred(groups, env, st)
+      Error(error) -> skip_group(groups, sub, base, error)
+    }
+  })
+}
+
+// Skip a component: record each member with the error, and take its
+// functions' registrations out of scope, giving back whatever the name had
+// before registration (an unqualified import, say), so a reader fails as if
+// the definition were absent.
+fn skip_group(
+  groups: Groups,
+  group: List(GroupItem),
+  base: Env,
+  error: Error,
+) -> Groups {
+  let names = list.map(group, item_name)
+  let env =
+    list.fold(names, groups.env, fn(env, name) {
+      case dict.get(base.values, name) {
+        Ok(entry) -> install_entry(env, name, entry)
+        Error(_) ->
+          Env(
+            ..env,
+            values: dict.delete(env.values, name),
+            open_values: dict.delete(env.open_values, name),
+          )
+      }
+    })
+  Groups(
+    ..groups,
+    env:,
+    skipped: list.append(
+      groups.skipped,
+      list.map(names, fn(name) { #(name, error) }),
+    ),
+  )
+}
+
+// Infer one group of mutually recursive definitions as the compiler does
+// (`analyse.rs:297-320`), then generalize each against the environment before
+// registration and add it back for later groups.
+//
+// Every function is already registered (`infer_defs`) at the shape its
+// annotations give (`register_value_from_function`, `analyse.rs:1578-1700`):
+// its signature variables rigid, each missing part a fresh variable shared by
+// every reader until its group is generalized. A constant is not registered:
+// the compiler brings it into scope only once it has inferred it. The members
+// are inferred in the group's own order. A function's body binds the
+// registered parameter types and is checked against the registered return
+// (`analyse.rs:553-640`), and every value read copies the signature variables
+// of every other function (`Env.foreign_rigid`), which is what lets a
+// function's generic reach another one through a shared, unannotated part
+// without pinning it there.
+fn infer_group(
+  groups: Groups,
+  group: List(GroupItem),
+  base: Env,
+) -> Result(#(Env, State), Error) {
+  let Groups(env:, st:, rigid:, ..) = groups
+  // Each member's type, in the group's order, to generalize once all are
+  // inferred.
+  use #(group_env, st, rev_inferred) <- result.try(
+    list.try_fold(group, #(env, st, []), fn(acc, item) {
+      let #(group_env, st, inferred) = acc
+      case item {
+        FunctionItem(f, params, return_type, rigid_ids) -> {
+          let foreign_rigid = set.difference(rigid, set.from_list(rigid_ids))
           let body_env =
-            bind_params(
-              define_def(group_env, def, rigid_self_scheme(params, return_type)),
-              f,
-              params,
-            )
-          check_body(body_env, st, f, return_type)
+            bind_params(Env(..group_env, foreign_rigid:), f, params)
+          use st <- result.try(check_body(body_env, st, f, return_type))
+          let entry = #(FunctionDef(f), ty.Fn(params, return_type))
+          Ok(#(group_env, st, [entry, ..inferred]))
         }
-        PlaceholderDef(def, var) -> {
-          use #(inferred, st) <- result.try(infer_def(group_env, st, def))
-          unify(st, var, inferred)
+        ConstantItem(c) -> {
+          use #(type_, st) <- result.try(infer_constant(
+            Env(..group_env, foreign_rigid: rigid),
+            st,
+            c,
+          ))
+          let def = ConstantDef(c)
+          let group_env = define_def(group_env, def, ty.Scheme([], type_))
+          Ok(#(group_env, st, [#(def, type_), ..inferred]))
         }
       }
     }),
@@ -1559,73 +1639,55 @@ fn infer_group(
   // because their record type was unknown can now be resolved — before we
   // generalize, so the field types are reflected in the schemes.
   use st <- result.try(resolve_pending(group_env, st))
+  // Generalized as the compiler's `generalise` does, over every variable still
+  // free: against the environment before any registration, so the registered
+  // functions of later groups do not hold a variable back.
   let env =
-    list.fold(items, env, fn(env, item) {
-      case item {
-        AnnotatedDef(def, _, params, return_type) ->
-          define_def(env, def, function_scheme(env, st, params, return_type))
-        PlaceholderDef(def, var) ->
-          define_def(env, def, generalize(st, env, var))
-      }
+    list.fold(list.reverse(rev_inferred), env, fn(env, entry) {
+      let #(def, type_) = entry
+      define_def(env, def, generalize(st, base, type_))
     })
   Ok(#(env, st))
 }
 
-// A member of a strongly-connected component during inference.
+// A top-level definition, registered for inference.
 type GroupItem {
-  // A fully-annotated function: bound at its declared scheme up front; its body
-  // is checked against the signature (rigid variables).
-  AnnotatedDef(
-    def: Def,
+  // A function, registered at its annotation shape before any group is
+  // inferred, with the signature variables it owns: rigid in its own body,
+  // copied at every read anywhere else.
+  FunctionItem(
     function: glance.Function,
     params: List(ty.Type),
     return_type: ty.Type,
+    rigid_ids: List(Int),
   )
-  // Any other definition: inferred monomorphically against `var`, then
-  // generalized.
-  PlaceholderDef(def: Def, var: ty.Type)
+  // A constant, in scope only once inferred.
+  ConstantItem(constant: glance.Constant)
 }
 
-fn placeholder(
-  env: Env,
-  items: List(GroupItem),
-  st: State,
-  def: Def,
-) -> #(Env, List(GroupItem), State) {
-  let #(var, st) = fresh_var(st)
-  #(
-    define_def(env, def, ty.Scheme([], var)),
-    [PlaceholderDef(def, var), ..items],
-    st,
-  )
-}
-
-// Pre-register one SCC member: a function with signature variables is bound at
-// its declared scheme (`AnnotatedDef`); any other definition gets a fresh
-// monomorphic placeholder.
-fn prereg_def(
-  env: Env,
-  items: List(GroupItem),
-  st: State,
-  def: Def,
-) -> #(Env, List(GroupItem), State) {
-  let annotated = case def {
-    FunctionDef(f) ->
-      case has_annotation_vars(f) {
-        True -> Ok(f)
-        False -> Error(Nil)
-      }
-    ConstantDef(_) -> Error(Nil)
+fn item_name(item: GroupItem) -> String {
+  case item {
+    FunctionItem(function:, ..) -> function.name
+    ConstantItem(constant:) -> constant.name
   }
-  case annotated {
-    Error(_) -> placeholder(env, items, st, def)
-    Ok(f) -> {
+}
+
+fn def_start(def: Def) -> Int {
+  case def {
+    FunctionDef(f) -> f.location.start
+    ConstantDef(c) -> c.location.start
+  }
+}
+
+// Register a definition: a function at its annotation shape, monomorphic until
+// its group is generalized; a constant not at all.
+fn register(env: Env, st: State, def: Def) -> #(#(Env, State), GroupItem) {
+  case def {
+    ConstantDef(c) -> #(#(env, st), ConstantItem(c))
+    FunctionDef(f) -> {
       let #(params, return_type, rigid_ids, st) = signature_skeleton(env, st, f)
-      #(
-        define_def(env, def, rigid_scheme(rigid_ids, params, return_type)),
-        [AnnotatedDef(def, f, params, return_type), ..items],
-        st,
-      )
+      let env = define_def(env, def, ty.Scheme([], ty.Fn(params, return_type)))
+      #(#(env, st), FunctionItem(f, params, return_type, rigid_ids))
     }
   }
 }
@@ -2409,21 +2471,54 @@ fn instantiate(st: State, scheme: ty.Scheme) -> #(ty.Type, State) {
   #(substitute(mapping, scheme.type_), st)
 }
 
-// Instantiate `name`'s scheme. For a live SCC member, resolve its type through
-// the current substitution first, so a variable the provider's body has since
-// settled (e.g. an unannotated parameter absorbed into a quantified signature
-// variable) is reflected — and then freshened along with the quantified set,
-// exactly as the compiler's shared mutable cells propagate to a sibling. For
-// any other binding the scheme is already final, so this is plain instantiate.
-fn instantiate_in(
+// Read a value: instantiate its scheme, then copy every signature variable of
+// another group member the type reaches, one fresh variable per id, as the
+// compiler's `instantiate` does at every variable read, locals included
+// (`expression.rs:3320`, `environment.rs:717-731`).
+fn read_value(env: Env, st: State, scheme: ty.Scheme) -> #(ty.Type, State) {
+  let #(type_, st) = instantiate(st, scheme)
+  use <- bool.guard(when: !reaches_any(st, type_, env.foreign_rigid), return: #(
+    type_,
+    st,
+  ))
+  let zonked = zonk(st, type_)
+  let foreign =
+    list.filter(free_vars_loop(zonked, []), set.contains(env.foreign_rigid, _))
+  case foreign {
+    [] -> #(type_, st)
+    _ -> instantiate(st, ty.Scheme(foreign, zonked))
+  }
+}
+
+// Whether `type_`, resolved through the substitution, mentions any of `ids`:
+// a walk that allocates nothing, so a read that reaches no foreign signature
+// variable, which is nearly every read, costs no zonk.
+fn reaches_any(st: State, type_: ty.Type, ids: Set(Int)) -> Bool {
+  use <- bool.guard(when: set.is_empty(ids), return: False)
+  case resolve(st, type_) {
+    ty.Var(id) -> set.contains(ids, id)
+    ty.Named(_, _, args, _) -> list.any(args, reaches_any(st, _, ids))
+    ty.Fn(args, ret) ->
+      list.any(args, reaches_any(st, _, ids)) || reaches_any(st, ret, ids)
+    ty.Tuple(elements) -> list.any(elements, reaches_any(st, _, ids))
+  }
+}
+
+// Read a name in scope as a value: its scope entry, and the type this read
+// gets from `read_value`. Every value read goes through here (a variable, a
+// callee name, a record-update shorthand, a pattern size), so none can skip
+// the copy of another function's signature variables.
+fn read_name(
   env: Env,
   st: State,
   name: String,
-  scheme: ty.Scheme,
-) -> #(ty.Type, State) {
-  case set.contains(env.live, name) {
-    True -> instantiate(st, ty.Scheme(scheme.vars, zonk(st, scheme.type_)))
-    False -> instantiate(st, scheme)
+) -> Result(#(ValueConstructor, ty.Type, State), Error) {
+  case dict.get(env.values, name) {
+    Error(_) -> Error(UnboundVariable(name))
+    Ok(entry) -> {
+      let #(type_, st) = read_value(env, st, entry.scheme)
+      Ok(#(entry, type_, st))
+    }
   }
 }
 
@@ -2448,15 +2543,7 @@ fn substitute(mapping: Dict(Int, ty.Type), type_: ty.Type) -> ty.Type {
 // constructors and accessors, then resolve the field and tuple accesses
 // deferred until inference fixed their container types.
 
-// Whether a function's signature names any type variable. The compiler makes
-// such a variable rigid for the body and keeps the function polymorphic over it
-// in its own recursion / SCC (rather than inferring it monomorphically against
-// a placeholder, which would pin a phantom parameter). A function with only
-// concrete annotations, or none, takes the ordinary placeholder path.
-fn has_annotation_vars(function: glance.Function) -> Bool {
-  function_annotation_var_names(function) != []
-}
-
+// The type-variable names a function's parameter and return annotations write.
 fn function_annotation_var_names(function: glance.Function) -> List(String) {
   let from_params =
     list.flat_map(function.parameters, fn(p) {
@@ -2473,9 +2560,9 @@ fn function_annotation_var_names(function: glance.Function) -> List(String) {
 
 // Hydrate a function's signature into a *skeleton*: each annotated part uses
 // its written type with the signature's type variables made rigid (skolemized)
-// for the body; each unannotated part is a fresh flexible variable (inferred
-// and shared monomorphically, like a placeholder). Returns the parameter types,
-// return type, and the ids made rigid; those ids are also recorded in `State`.
+// for the body; each unannotated part is a fresh flexible variable, shared by
+// the whole group until it is generalized. Returns the parameter types, return
+// type, and the ids made rigid; those ids are also recorded in `State`.
 fn signature_skeleton(
   env: Env,
   st: State,
@@ -2525,8 +2612,8 @@ fn bind_params(
   })
 }
 
-// Infer a fully-annotated function's body and check it against the declared
-// return type. `@external` functions have no body and pass trivially.
+// Infer a function's body and check it against its registered return type.
+// `@external` functions have no body and pass trivially.
 fn check_body(
   env: Env,
   st: State,
@@ -2542,97 +2629,6 @@ fn check_body(
         function.body,
       ))
       unify(st, body_type, return_type)
-    }
-  }
-}
-
-// The scheme a function with signature variables is bound at within its SCC:
-// polymorphic over its rigid signature variables, but with any unannotated
-// (flexible placeholder) parts left free, so they stay shared/monomorphic
-// across the component until the body fixes them.
-fn rigid_scheme(
-  rigid_ids: List(Int),
-  param_types: List(ty.Type),
-  return_type: ty.Type,
-) -> ty.Scheme {
-  ty.Scheme(rigid_ids, ty.Fn(param_types, return_type))
-}
-
-// Generalize a function's final parameter/return types into a scheme,
-// quantifying every variable still free after the body is inferred.
-fn function_scheme(
-  env: Env,
-  st: State,
-  param_types: List(ty.Type),
-  return_type: ty.Type,
-) -> ty.Scheme {
-  generalize(st, env, ty.Fn(param_types, return_type))
-}
-
-// The *monomorphic* scheme a fully-annotated function sees for itself inside
-// its own body. Its signature variables stay rigid (un-quantified), so a
-// self-recursive call must be at the same type — Gleam has no polymorphic
-// recursion, and recursing at a concrete type where the signature is generic
-// is a mismatch, exactly as the compiler reports.
-fn rigid_self_scheme(
-  param_types: List(ty.Type),
-  return_type: ty.Type,
-) -> ty.Scheme {
-  ty.Scheme([], ty.Fn(param_types, return_type))
-}
-
-// Infer a top-level function, returning its (still ungeneralized) `Fn` type.
-fn infer_function(
-  env: Env,
-  st: State,
-  function: glance.Function,
-) -> Result(#(ty.Type, State), Error) {
-  // Type-variable names are shared across the whole signature so that, e.g.,
-  // a parameter `a` and the return `a` refer to the same variable.
-  let #(rev_param_types, body_env, st, names) =
-    list.fold(function.parameters, #([], env, st, dict.new()), fn(acc, param) {
-      let #(types_, env, st, names) = acc
-      let #(t, st, names) = case param.type_ {
-        Some(ann) -> hydrate_threaded(env, names, st, ann)
-        None -> {
-          let #(t, st) = fresh(st)
-          #(t, st, names)
-        }
-      }
-      let env = case param.name {
-        glance.Named(name) -> bind_local(env, name, ty.Scheme([], t))
-        glance.Discarded(_) -> env
-      }
-      #([t, ..types_], env, st, names)
-    })
-  let param_types = list.reverse(rev_param_types)
-  case function.body {
-    // External functions (e.g. `@external`) have no body; their type comes
-    // entirely from the signature annotations.
-    [] -> {
-      let #(return_type, st) = case function.return {
-        Some(ann) -> {
-          let #(t, st, _names) = hydrate_threaded(env, names, st, ann)
-          #(t, st)
-        }
-        None -> fresh(st)
-      }
-      Ok(#(ty.Fn(param_types, return_type), st))
-    }
-    _ -> {
-      use #(body_type, st) <- result.try(infer_statements(
-        body_env,
-        st,
-        function.body,
-      ))
-      use st <- result.try(case function.return {
-        Some(ann) -> {
-          let #(t, st, _names) = hydrate_threaded(env, names, st, ann)
-          unify(st, body_type, t)
-        }
-        None -> Ok(st)
-      })
-      Ok(#(ty.Fn(param_types, body_type), st))
     }
   }
 }
@@ -2977,11 +2973,10 @@ fn infer_expr_inner(
     glance.Float(..) -> Ok(#(prelude_float(), st))
     glance.String(..) -> Ok(#(prelude_string(), st))
 
-    glance.Variable(_, name) ->
-      case lookup(env, name) {
-        Ok(scheme) -> Ok(instantiate_in(env, st, name, scheme))
-        Error(_) -> Error(UnboundVariable(name))
-      }
+    glance.Variable(_, name) -> {
+      use #(_, type_, st) <- result.map(read_name(env, st, name))
+      #(type_, st)
+    }
 
     glance.NegateInt(_, value) -> {
       use #(t, st) <- result.try(infer_expr(env, st, value))
@@ -3116,11 +3111,10 @@ fn update_field(
   use #(value_type, st) <- result.try(case field.item {
     Some(value) -> infer_expr(env, st, value)
     // Shorthand `label:` refers to the variable named `label`.
-    None ->
-      case lookup(env, field.label) {
-        Ok(scheme) -> Ok(instantiate(st, scheme))
-        Error(_) -> Error(UnboundVariable(field.label))
-      }
+    None -> {
+      use #(_, type_, st) <- result.map(read_name(env, st, field.label))
+      #(type_, st)
+    }
   })
   case dict.get(label_types, field.label) {
     Ok(expected) -> unify(st, value_type, expected)
@@ -3621,20 +3615,16 @@ fn infer_callee(
     // Reading it once is also what makes an unbound name one answer — the
     // error — rather than an answer here and an error there. All three of the
     // reference's spans are the variable's.
-    glance.Variable(name_span, name) ->
-      case dict.get(env.values, name) {
-        Error(_) -> Error(UnboundVariable(name))
-        Ok(entry) -> {
-          let #(type_, st) = instantiate_in(env, st, name, entry.scheme)
-          let st = record(st, name_span, type_)
-          let spans = Spans(name_span, name_span, name_span)
-          Ok(#(
-            type_,
-            field_map(entry.variant),
-            reference(st, spans, ResolvedValue(entry.variant)),
-          ))
-        }
-      }
+    glance.Variable(name_span, name) -> {
+      use #(entry, type_, st) <- result.map(read_name(env, st, name))
+      let st = record(st, name_span, type_)
+      let spans = Spans(name_span, name_span, name_span)
+      #(
+        type_,
+        field_map(entry.variant),
+        reference(st, spans, ResolvedValue(entry.variant)),
+      )
+    }
     // A lambda, another call's result: neither a name nor a reference, and no
     // labels to call it with.
     _ -> {
@@ -4996,14 +4986,10 @@ fn check_bit_array_size(
 ) -> Result(State, Error) {
   case size {
     glance.BitArraySizeInt(..) -> Ok(st)
-    glance.BitArraySizeVariable(_, name) ->
-      case lookup(env, name) {
-        Ok(scheme) -> {
-          let #(t, st) = instantiate(st, scheme)
-          unify(st, t, prelude_int())
-        }
-        Error(_) -> Error(UnboundVariable(name))
-      }
+    glance.BitArraySizeVariable(_, name) -> {
+      use #(_, type_, st) <- result.try(read_name(env, st, name))
+      unify(st, type_, prelude_int())
+    }
     glance.BitArraySizeBinaryOperator(_, _, left, right) -> {
       use st <- result.try(check_bit_array_size(env, st, left))
       check_bit_array_size(env, st, right)
@@ -5273,18 +5259,6 @@ fn hydrate_in(
   ast: glance.Type,
 ) -> #(ty.Type, State) {
   hydrate_with(env, names, st, ast).0
-}
-
-// Hydrate while threading the type-variable name map so repeated names within
-// one signature resolve to the same variable.
-fn hydrate_threaded(
-  env: Env,
-  names: Dict(String, ty.Type),
-  st: State,
-  ast: glance.Type,
-) -> #(ty.Type, State, Dict(String, ty.Type)) {
-  let #(#(t, st), names) = hydrate_with(env, names, st, ast)
-  #(t, st, names)
 }
 
 // Building the annotated module
