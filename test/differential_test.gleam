@@ -1674,6 +1674,36 @@ fn companion_path(
   option.map(outcome, fn(_) { companion_source_path(companion, fixture) })
 }
 
+// The walks reach a `let assert` message
+//
+// No case in the corpus has a `let assert` message, so nothing above shows
+// that the two walks over a function body descend into one: the access walk
+// behind `source.accesses`, and the statement traversal behind
+// `source.declaration_spans`. A module of its own pins both, without touching
+// the manifest.
+
+pub fn let_assert_message_is_walked_test() {
+  let text =
+    "pub type Box {\n  Box(label: String)\n}\n"
+    <> "pub fn run(r: Result(Int, Nil), b: Box) -> Int {\n"
+    <> "  let assert Ok(n) = r as b.label\n"
+    <> "  let assert Ok(m) = r as {\n    let named = \"m\"\n    named\n  }\n"
+    <> "  n + m\n"
+    <> "}\n"
+  let assert Ok(module) = source.parse(text)
+  let accessed =
+    list.map(source.accesses(module), fn(access) {
+      #(access.receiver, access.label)
+    })
+  assert accessed == [#("b", "label")]
+    as "the field access in a `let assert` message is not among the accesses"
+  let assert Ok(#(before, _)) = string.split_once(text, "let named")
+  let start = string.byte_size(before) + string.byte_size("let ")
+  assert source.declaration_spans(module, text, "named")
+    == [glance.Span(start, start + string.byte_size("named"))]
+    as "the name bound inside a `let assert` message is not among the declarations"
+}
+
 // Reading a case
 //
 // The manifest, the fixture it names, and the access it claims — resolved once

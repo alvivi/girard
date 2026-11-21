@@ -6,7 +6,9 @@
 #
 # `expression-types` requires the patched compiler built from the
 # `expression-type-export` branch in ../gleam. Override its path with GLEAM=.
-# Run from the project root: `bash scripts/gen-oracle.sh`.
+# Run from the project root: `bash scripts/gen-oracle.sh`. Name fixtures to
+# regenerate only those (`bash scripts/gen-oracle.sh echoes`); with no names,
+# every fixture is regenerated.
 #
 # Each export runs in its own fresh project: `root_package.modules` only
 # contains freshly-compiled modules, so the two exports must not share a build.
@@ -38,7 +40,21 @@ generate() {
   rm -rf "$work"
 }
 
-for src in "$oracle_dir"/*.gleam; do
+if [ "$#" -gt 0 ]; then
+  sources=()
+  for name in "$@"; do
+    src="$oracle_dir/$name.gleam"
+    if [ ! -f "$src" ]; then
+      echo "no oracle fixture named $name ($src)" >&2
+      exit 1
+    fi
+    sources+=("$src")
+  done
+else
+  sources=("$oracle_dir"/*.gleam)
+fi
+
+for src in "${sources[@]}"; do
   name="$(basename "$src" .gleam)"
   generate "$name" "$src" package-interface "$oracle_dir/$name.interface.json"
   generate "$name" "$src" expression-types "$oracle_dir/$name.expr.json"

@@ -41,6 +41,16 @@ pub fn in_constant(constant: glance.Constant) -> #(List(String), List(String)) {
   in_expr(constant.value, set.new(), #([], []))
 }
 
+/// The `as` message of a `let assert`, which a plain `let` cannot have.
+pub fn assignment_message(
+  kind: glance.AssignmentKind,
+) -> Option(glance.Expression) {
+  case kind {
+    glance.LetAssert(message:) -> message
+    glance.Let -> None
+  }
+}
+
 type Acc =
   #(List(String), List(String))
 
@@ -66,8 +76,11 @@ fn in_statements(
       let #(bound, acc) = state
       case statement {
         glance.Expression(expr) -> #(bound, in_expr(expr, bound, acc))
-        glance.Assignment(_, _, pattern, _, value) -> {
+        glance.Assignment(_, kind, pattern, _, value) -> {
           let acc = in_expr(value, bound, acc)
+          // A `let assert` message is checked after the value and before the
+          // pattern binds, so it sees the scope the value does.
+          let acc = in_optional(assignment_message(kind), bound, acc)
           let inner = set.union(bound, set.from_list(pattern_names(pattern)))
           #(inner, pattern_refs(pattern, inner, acc))
         }

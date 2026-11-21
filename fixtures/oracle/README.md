@@ -20,6 +20,13 @@ bash scripts/gen-oracle.sh
 gleam test
 ```
 
+Name fixtures to regenerate only their pairs and leave the rest as committed,
+for example after adding one fixture:
+
+```sh
+bash scripts/gen-oracle.sh echoes
+```
+
 The expression export requires the patched compiler from the
 `expression-type-export` branch in `../gleam`. Set `GLEAM` to use another build:
 

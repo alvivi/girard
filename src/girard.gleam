@@ -3087,6 +3087,7 @@ fn infer_expr_inner(
     // `panic` and `todo` are bottom, so the result is a fresh variable that
     // unifies with anything. The message is still walked — and checked against
     // `String`, as the compiler requires — so its subexpressions get annotated.
+    // It is checked directly, not through `check_message`, which says why.
     glance.Todo(_, message) | glance.Panic(_, message) ->
       case message {
         Some(m) -> {
@@ -3096,11 +3097,18 @@ fn infer_expr_inner(
         None -> Ok(fresh(st))
       }
 
-    glance.Echo(_, expression, _message) ->
-      case expression {
-        Some(e) -> infer_expr(env, st, e)
-        None -> Ok(#(prelude_nil(), st))
-      }
+    glance.Echo(_, Some(expression), message) -> {
+      use #(type_, st) <- result.try(infer_expr(env, st, expression))
+      use st <- result.try(check_message(env, st, message))
+      Ok(#(type_, st))
+    }
+
+    // glance builds an `echo` with no expression only as the unit right after
+    // `|>`, which `infer_pipe` types as the piped value. It reaches here only
+    // when that unit is wrapped, as in `x |> echo(1)` or `x |> echo + 1`, and
+    // the compiler rejects both: `Nil` rejects them too, where a fresh
+    // variable would accept them with a type.
+    glance.Echo(_, None, _message) -> Ok(#(prelude_nil(), st))
 
     glance.FieldAccess(access, container, label) -> {
       use #(type_, _, st) <- result.try(infer_field_access(
@@ -4103,6 +4111,12 @@ fn infer_pipe(
         }
       }
     }
+    // `left |> echo` is `echo left`: it prints the piped value and returns it,
+    // so the `echo` and the pipe both have its type, as the compiler's pipeline
+    // typer gives them. Inferred as that `echo`, through `infer_expr`, it
+    // records its span like any expression and names nothing to resolve.
+    glance.Echo(echo_span, None, message) ->
+      infer_expr(env, st, glance.Echo(echo_span, Some(left), message))
     // `left |> f` becomes `f(left)`, so the target is applied to the piped
     // value's type whatever it is. How it is walked is what differs: a lambda
     // is checked against that application, and anything else resolves as a
@@ -4166,6 +4180,35 @@ fn check(
       use #(t, st) <- result.try(infer_expr(env, st, expr))
       unify(st, t, expected)
     }
+  }
+}
+
+// Check the `as` message of an `echo`, an `assert` or a `let assert` against
+// `String`, as the compiler does.
+//
+// The compiler reads a message as one expression unit. glance reads a whole
+// expression, so an operator after the message lands inside it: the compiler
+// reads `x |> echo as "m" |> f` as `(x |> echo as "m") |> f`, glance as a
+// message `"m" |> f`. After an assertion, a next statement starting with a
+// minus is read into the message the same way, the rest of that statement with
+// it. A unit is never a bare binary operator (a grouped one is a block), so a
+// message glance hands over as one is a reading the compiler never made.
+// Typing it would give a false error or a wrong signature, so it is declined.
+//
+// `todo` and `panic` check their message without this guard: girard has typed
+// their messages as glance reads them all along, and published code holds
+// messages such as `panic as "x: " <> y`, which the guard would decline. Once
+// glance parses a message as a unit, the guard can never match and goes.
+fn check_message(
+  env: Env,
+  st: State,
+  message: Option(glance.Expression),
+) -> Result(State, Error) {
+  case message {
+    Some(glance.BinaryOperator(..)) ->
+      Error(Unsupported("an operator after an `as` message"))
+    Some(message) -> check(env, st, message, prelude_string())
+    None -> Ok(st)
   }
 }
 
@@ -4329,13 +4372,13 @@ fn infer_statement(
     // monomorphic.
     glance.Assignment(
       _,
-      _kind,
+      kind,
       glance.PatternVariable(_, name) as pattern,
       None,
       glance.Fn(fspan, fparams, freturn, fbody) as value,
     ) ->
       case fn_annotation_var_names(fparams, freturn) {
-        [] -> infer_expr_assignment(env, st, pattern, None, value)
+        [] -> infer_expr_assignment(env, st, kind, pattern, None, value)
         _ -> {
           let #(names, ann_ids, st) = annotation_var_names(st, fparams, freturn)
           let #(seeds, st) = fresh_n(st, list.length(fparams))
@@ -4350,16 +4393,19 @@ fn infer_statement(
             names,
           ))
           let st = record(st, fspan, value_type)
+          let message = reference.assignment_message(kind)
+          use st <- result.try(check_message(env, st, message))
           let scheme = generalize_over(st, env, value_type, ann_ids)
           Ok(#(value_type, bind_local(env, name, scheme), st))
         }
       }
 
-    glance.Assignment(_, _kind, pattern, annotation, value) ->
-      infer_expr_assignment(env, st, pattern, annotation, value)
+    glance.Assignment(_, kind, pattern, annotation, value) ->
+      infer_expr_assignment(env, st, kind, pattern, annotation, value)
 
-    glance.Assert(_, expression, _message) -> {
+    glance.Assert(_, expression, message) -> {
       use st <- result.try(check(env, st, expression, prelude_bool()))
+      use st <- result.try(check_message(env, st, message))
       Ok(#(prelude_nil(), env, st))
     }
 
@@ -4368,16 +4414,23 @@ fn infer_statement(
   }
 }
 
-// The general `let pattern = value` case: infer the value, optionally check it
-// against the binding's annotation, then bind the pattern monomorphically.
+// The general `let pattern = value` case: infer the value, check a `let
+// assert`'s message, optionally check the value against the binding's
+// annotation, then bind the pattern monomorphically. The message is checked
+// under the incoming `env`, before the pattern binds, as the compiler's
+// `infer_assignment` checks it: it sees neither the pattern's names nor what
+// the pattern constrains.
 fn infer_expr_assignment(
   env: Env,
   st: State,
+  kind: glance.AssignmentKind,
   pattern: glance.Pattern,
   annotation: Option(glance.Type),
   value: glance.Expression,
 ) -> Result(#(ty.Type, Env, State), Error) {
   use #(value_type, st) <- result.try(infer_expr(env, st, value))
+  let message = reference.assignment_message(kind)
+  use st <- result.try(check_message(env, st, message))
   use st <- result.try(case annotation {
     Some(ann) -> {
       let #(t, st) = hydrate(env, st, ann)

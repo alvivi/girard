@@ -299,12 +299,26 @@ fn walk_statements(
   list.flat_map(statements, fn(statement) {
     case statement {
       glance.Use(_, _, function) -> walk(function, site)
-      glance.Assignment(_, _, _, _, value) -> walk(value, manifest.site_bare)
+      glance.Assignment(_, kind, _, _, value) ->
+        list.append(
+          walk(value, manifest.site_bare),
+          walk_option(assignment_message(kind)),
+        )
       glance.Assert(_, expression, message) ->
         list.append(walk(expression, manifest.site_bare), walk_option(message))
       glance.Expression(expression) -> walk(expression, manifest.site_bare)
     }
   })
+}
+
+// The `as` message of a `let assert`, which a plain `let` cannot have.
+fn assignment_message(
+  kind: glance.AssignmentKind,
+) -> Option(glance.Expression) {
+  case kind {
+    glance.LetAssert(message:) -> message
+    glance.Let -> None
+  }
 }
 
 fn field_item(field: glance.Field(glance.Expression)) -> glance.Expression {
@@ -432,7 +446,10 @@ fn statement_expressions(
 ) -> List(glance.Expression) {
   case statement {
     glance.Use(_, _, function) -> [function]
-    glance.Assignment(_, _, _, _, value) -> [value]
+    glance.Assignment(_, kind, _, _, value) -> [
+      value,
+      ..option.values([assignment_message(kind)])
+    ]
     glance.Assert(_, expression, message) -> [
       expression,
       ..option.values([message])
