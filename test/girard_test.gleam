@@ -501,6 +501,83 @@ pub fn message_less_panic_and_todo_are_bottom_test() {
   |> should.equal("fn() -> Int")
 }
 
+// Echo
+//
+// `echo x` prints `x` and returns it, and so does `x |> echo`: glance gives the
+// piped form an `echo` with no expression of its own, and the pipe types it as
+// the piped value, as the compiler's pipeline typer does.
+
+pub fn piped_echo_is_the_piped_value_test() {
+  let source = "pub fn f(x: Int) -> Int { x |> echo }"
+  signature(source, "f") |> should.equal("fn(Int) -> Int")
+  annotations_at(source, span_of(source, "echo")) |> should.equal(["Int"])
+  annotations_at(source, span_of(source, "x |> echo")) |> should.equal(["Int"])
+  repeated_spans(source) |> should.equal([])
+}
+
+pub fn piped_echo_keeps_the_value_generic_test() {
+  let source = "pub fn f(x) { x |> echo }"
+  signature(source, "f") |> should.equal("fn(a) -> a")
+  annotations_at(source, span_of(source, "echo")) |> should.equal(["a"])
+  annotations_at(source, span_of(source, "x |> echo")) |> should.equal(["a"])
+  repeated_spans(source) |> should.equal([])
+}
+
+pub fn echo_in_the_middle_of_a_pipeline_test() {
+  let source =
+    "import gleam/int\n"
+    <> "pub fn f(x: Int) -> String { x |> echo |> int.to_string }"
+  signature(source, "f") |> should.equal("fn(Int) -> String")
+  annotations_at(source, span_of(source, "echo")) |> should.equal(["Int"])
+  annotations_at(source, span_of(source, "x |> echo |> int.to_string"))
+  |> should.equal(["String"])
+  repeated_spans(source) |> should.equal([])
+}
+
+pub fn piped_echo_span_covers_its_message_test() {
+  let source = "pub fn f(x: Int) -> Int { x |> echo as \"x\" }"
+  signature(source, "f") |> should.equal("fn(Int) -> Int")
+  annotations_at(source, span_of(source, "echo as \"x\""))
+  |> should.equal(["Int"])
+  annotations_at(source, span_of(source, "x |> echo as \"x\""))
+  |> should.equal(["Int"])
+  repeated_spans(source) |> should.equal([])
+}
+
+pub fn piped_echo_binds_tighter_than_concatenation_test() {
+  // `|>` binds tighter than `<>`, so this is `(x |> echo) <> s`.
+  let source = "pub fn f(x: String, s: String) -> String { x |> echo <> s }"
+  signature(source, "f") |> should.equal("fn(String, String) -> String")
+  annotations_at(source, span_of(source, "echo")) |> should.equal(["String"])
+  annotations_at(source, span_of(source, "x |> echo"))
+  |> should.equal(["String"])
+  annotations_at(source, span_of(source, "x |> echo <> s"))
+  |> should.equal(["String"])
+  repeated_spans(source) |> should.equal([])
+}
+
+pub fn grouped_piped_echo_with_a_message_test() {
+  // The braces keep the next step out of the message (glance would otherwise
+  // read `"m" |> int.to_string` as the message).
+  let source =
+    "import gleam/int\n"
+    <> "pub fn f(x: Int) { { x |> echo as \"m\" } |> int.to_string }"
+  signature(source, "f") |> should.equal("fn(Int) -> String")
+}
+
+pub fn prefix_echo_is_its_expression_test() {
+  signature("pub fn f(x: Int) { echo x }", "f")
+  |> should.equal("fn(Int) -> Int")
+}
+
+pub fn wrapped_piped_echo_is_rejected_test() {
+  // An `echo` with no expression wrapped in a call is not a pipeline step: the
+  // compiler rejects it, and girard keeps rejecting it rather than accept it
+  // at whatever type the call is used at.
+  let source = "pub fn run(x: Int) -> String { x |> echo(1) }"
+  let assert girard.TypeMismatch(..) = error_with(source, [])
+}
+
 // Module-level polymorphism and dependency-ordered inference
 //
 // Generalization at the definition boundary and inference in

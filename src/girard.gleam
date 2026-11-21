@@ -3096,6 +3096,11 @@ fn infer_expr_inner(
         None -> Ok(fresh(st))
       }
 
+    // glance builds an `echo` with no expression only as the unit right after
+    // `|>`, which `infer_pipe` types as the piped value. It reaches here only
+    // when that unit is wrapped, as in `x |> echo(1)` or `x |> echo + 1`, and
+    // the compiler rejects both: `Nil` rejects them too, where a fresh
+    // variable would accept them with a type.
     glance.Echo(_, expression, _message) ->
       case expression {
         Some(e) -> infer_expr(env, st, e)
@@ -4103,6 +4108,12 @@ fn infer_pipe(
         }
       }
     }
+    // `left |> echo` is `echo left`: it prints the piped value and returns it,
+    // so the `echo` and the pipe both have its type, as the compiler's pipeline
+    // typer gives them. Inferred as that `echo`, through `infer_expr`, it
+    // records its span like any expression and names nothing to resolve.
+    glance.Echo(echo_span, None, message) ->
+      infer_expr(env, st, glance.Echo(echo_span, Some(left), message))
     // `left |> f` becomes `f(left)`, so the target is applied to the piped
     // value's type whatever it is. How it is walked is what differs: a lambda
     // is checked against that application, and anything else resolves as a
