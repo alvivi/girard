@@ -13,7 +13,8 @@
 import girard
 import gleeunit/should
 import probe_support.{
-  annotations, callee_annotations, repeated_spans, resolution, signature,
+  annotations, callee_annotations, repeated_spans, resolution, scheme_of,
+  signature,
 }
 
 pub fn block_value_is_not_a_read_test() {
@@ -354,4 +355,102 @@ pub fn run(x: Int) -> Int {
   annotations(source, modules, "fn(f) { f(x) }", 1)
   |> should.equal(["fn(fn(Int) -> Int) -> Int"])
   repeated_spans(source, modules) |> should.equal([])
+}
+
+pub fn guard_reads_a_constant_literal_variant_test() {
+  // Probe `k_r6_constant_variant`.
+  // A guard reads the constant's literal, which keeps the variant its value
+  // was built with. `main` rejected it: type `Row` has no field `field`.
+  let source =
+    "pub type Row {
+  A(field: Int)
+  B
+}
+
+const value: Row = A(0)
+
+pub fn run(x) {
+  case x {
+    _ if value.field == 0 -> 1
+    _ -> 0
+  }
+}
+"
+  let modules = []
+  signature(source, modules, "run") |> should.equal("fn(a) -> Int")
+  resolution(source, modules, "value.field", 1)
+  |> should.equal(girard.RecordField(girard.Named("", "Row", []), "field"))
+  repeated_spans(source, modules) |> should.equal([])
+}
+
+pub fn guard_reads_an_imported_constant_literal_variant_test() {
+  // Probe `k_c2_import_constant_variant`.
+  // The same through an unqualified import: the interface carries the
+  // literal.
+  let source =
+    "import helper.{value}
+
+pub fn run(x) {
+  case x {
+    _ if value.field == 0 -> 1
+    _ -> 0
+  }
+}
+"
+  let modules = [
+    #(
+      "helper",
+      "pub type Row {
+  A(field: Int)
+  B
+}
+
+pub const value: Row = A(0)
+",
+    ),
+  ]
+  signature(source, modules, "run") |> should.equal("fn(a) -> Int")
+  resolution(source, modules, "value.field", 1)
+  |> should.equal(girard.RecordField(girard.Named("helper", "Row", []), "field"))
+  repeated_spans(source, modules) |> should.equal([])
+}
+
+pub fn imported_constant_literal_survives_a_cache_hit_test() {
+  // Probe `k_c2_import_constant_variant`, once inferring `helper` and once
+  // reusing its interface from the cache, with a resolver that no longer has
+  // it: a reused interface carries the literal's variant too.
+  let source =
+    "import helper.{value}
+
+pub fn run(x) {
+  case x {
+    _ if value.field == 0 -> 1
+    _ -> 0
+  }
+}
+"
+  let helper = [
+    #(
+      "helper",
+      "pub type Row {
+  A(field: Int)
+  B
+}
+
+pub const value: Row = A(0)
+",
+    ),
+  ]
+  let #(fresh, cache) =
+    girard.annotate_with_cache(
+      source,
+      probe_support.options_with(helper),
+      girard.new_cache(),
+    )
+  let assert Ok(fresh) = fresh
+  scheme_of(fresh.functions, "run") |> should.equal("fn(a) -> Int")
+  let #(cached, _) =
+    girard.annotate_with_cache(source, probe_support.options_with([]), cache)
+  let assert Ok(cached) = cached
+  scheme_of(cached.functions, "run") |> should.equal("fn(a) -> Int")
 }

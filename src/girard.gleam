@@ -819,8 +819,20 @@ type ValueConstructor {
 type ValueVariant {
   LocalValue(name: String)
   FunctionValue(module: String, name: String, field_map: Option(FieldMap))
-  ConstantValue(module: String, name: String)
+  ConstantValue(module: String, name: String, literal: ConstantLiteral)
   ConstructorValue(module: String, name: String, field_map: Option(FieldMap))
+}
+
+// A module constant's stored literal, which the compiler keeps beside its
+// generalized type (`ValueConstructorVariant::ModuleConstant`,
+// `analyse.rs:473-485`) and a clause guard reads instead of instantiating the
+// type (`guard.rs:322-324`): the type as inferred, before generalization
+// erased its variants, and which of its ids are generics an annotation
+// created. A snapshot taken when the constant is inferred: a guard that later
+// pins one of its variables in the defining module does not reach an
+// importer, where the compiler's literal is one live type.
+type ConstantLiteral {
+  ConstantLiteral(type_: ty.Type, generics: Set(Int))
 }
 
 // The label of each of a callable's positional parameters, `None` where the
@@ -1285,20 +1297,36 @@ type Def {
 // a name it shadowed reverts whole — an unqualified import of the same name
 // keeps its scheme, its labels and its origin together, rather than any two of
 // the three.
-fn define_def(env: Env, def: Def, scheme: ty.Scheme) -> Env {
-  install(env, def_name(def), scheme, def_variant(env, def))
+fn define_function(
+  env: Env,
+  function: glance.Function,
+  scheme: ty.Scheme,
+) -> Env {
+  install(
+    env,
+    function.name,
+    scheme,
+    FunctionValue(
+      env.current_module,
+      function.name,
+      field_map_of(list.map(function.parameters, fn(p) { p.label })),
+    ),
+  )
 }
 
-fn def_variant(env: Env, def: Def) -> ValueVariant {
-  case def {
-    FunctionDef(f) ->
-      FunctionValue(
-        env.current_module,
-        f.name,
-        field_map_of(list.map(f.parameters, fn(p) { p.label })),
-      )
-    ConstantDef(c) -> ConstantValue(env.current_module, c.name)
-  }
+// A constant's entry carries its literal beside its scheme.
+fn define_constant(
+  env: Env,
+  constant: glance.Constant,
+  scheme: ty.Scheme,
+  literal: ConstantLiteral,
+) -> Env {
+  install(
+    env,
+    constant.name,
+    scheme,
+    ConstantValue(env.current_module, constant.name, literal),
+  )
 }
 
 fn def_name(def: Def) -> String {
@@ -1638,18 +1666,20 @@ fn infer_group(
           let body_env =
             bind_params(Env(..group_env, foreign_rigid:), names, params)
           use st <- result.try(check_body(body_env, st, f, return_type))
-          let entry = #(FunctionDef(f), ty.Fn(params, return_type))
-          Ok(#(group_env, st, [entry, ..inferred]))
+          let member = FunctionMember(f, ty.Fn(params, return_type))
+          Ok(#(group_env, st, [member, ..inferred]))
         }
         ConstantItem(c) -> {
-          use #(type_, st) <- result.try(infer_constant(
+          use #(literal, st) <- result.try(infer_constant(
             Env(..group_env, foreign_rigid: rigid),
             st,
             c,
           ))
-          let def = ConstantDef(c)
-          let group_env = define_def(group_env, def, ty.Scheme([], type_))
-          Ok(#(group_env, st, [#(def, type_), ..inferred]))
+          // Until the group is generalized, the constant's literal is its own
+          // type, live.
+          let scheme = ty.Scheme([], literal.type_)
+          let group_env = define_constant(group_env, c, scheme, literal)
+          Ok(#(group_env, st, [ConstantMember(c, literal), ..inferred]))
         }
       }
     }),
@@ -1661,12 +1691,30 @@ fn infer_group(
   // Generalized as the compiler's `generalise` does, over every variable still
   // free: against the environment before any registration, so the registered
   // functions of later groups do not hold a variable back.
+  // A constant's literal is its type as inferred, before the erasure.
   let env =
-    list.fold(list.reverse(rev_inferred), env, fn(env, entry) {
-      let #(def, type_) = entry
-      define_def(env, def, generalize(st, base, type_))
+    list.fold(list.reverse(rev_inferred), env, fn(env, member) {
+      case member {
+        FunctionMember(function, type_) ->
+          define_function(env, function, generalize(st, base, type_))
+        ConstantMember(constant, literal) ->
+          define_constant(
+            env,
+            constant,
+            generalize(st, base, literal.type_),
+            ConstantLiteral(..literal, type_: zonk(st, literal.type_)),
+          )
+      }
     })
   Ok(#(env, st))
+}
+
+// A member's type as its group inferred it, to generalize once every member
+// is inferred: a constant's is its literal's, which also marks the ids its
+// annotation made generics.
+type Member {
+  FunctionMember(function: glance.Function, type_: ty.Type)
+  ConstantMember(constant: glance.Constant, literal: ConstantLiteral)
 }
 
 // A top-level definition, registered for inference.
@@ -1705,7 +1753,8 @@ fn register(env: Env, st: State, def: Def) -> #(#(Env, State), GroupItem) {
     ConstantDef(c) -> #(#(env, st), ConstantItem(c))
     FunctionDef(f) -> {
       let #(params, return_type, rigid_ids, st) = signature_skeleton(env, st, f)
-      let env = define_def(env, def, ty.Scheme([], ty.Fn(params, return_type)))
+      let env =
+        define_function(env, f, ty.Scheme([], ty.Fn(params, return_type)))
       #(#(env, st), FunctionItem(f, params, return_type, rigid_ids))
     }
   }
@@ -2481,13 +2530,18 @@ fn type_var_names(ast: glance.Type) -> List(String) {
 
 // Instantiate a scheme by replacing each quantified variable with a fresh one.
 fn instantiate(st: State, scheme: ty.Scheme) -> #(ty.Type, State) {
-  let #(mapping, st) =
-    list.fold(scheme.vars, #(dict.new(), st), fn(acc, old) {
-      let #(mapping, st) = acc
-      let #(fresh_type, st) = fresh(st)
-      #(dict.insert(mapping, old, fresh_type), st)
-    })
+  let #(mapping, st) = copy_vars(st, scheme.vars)
   #(substitute(mapping, scheme.type_), st)
+}
+
+// A fresh variable for each of `ids`, in order: the mapping from each id to
+// its copy.
+fn copy_vars(st: State, ids: List(Int)) -> #(Dict(Int, ty.Type), State) {
+  list.fold(ids, #(dict.new(), st), fn(acc, id) {
+    let #(mapping, st) = acc
+    let #(copy, st) = fresh(st)
+    #(dict.insert(mapping, id, copy), st)
+  })
 }
 
 // Read a value: instantiate its scheme, then copy every signature variable of
@@ -2538,26 +2592,34 @@ fn reaches_any(st: State, type_: ty.Type, ids: Set(Int)) -> Bool {
 // A module constant named by a bare variable in a clause guard. The compiler
 // takes the constant's stored literal (`infer_clause_guard_variable`,
 // `type_/guard.rs:322-324`) rather than instantiating its scheme, so the read
-// is not copied: a constant of the current group is read at its own type, and
-// one already generalized at a single copy of its scheme, made on its first
-// guard read and shared by every later one, as the literal's cells are shared.
+// is not copied, and the literal keeps the variants its value was built with.
+// A constant of the current group, or one with no variable to copy, is read at
+// its literal as it stands. One already generalized is read at a single copy
+// of its literal, made on its first guard read and shared by every later one,
+// as the literal's cells are shared: a fresh variable for each variable its
+// scheme quantifies, and for each generic one a fresh generic, made here so it
+// can never collide with an id of the module that inferred the literal.
 fn guard_constant_read(
   st: State,
   scheme: ty.Scheme,
   module: String,
   name: String,
+  literal: ConstantLiteral,
 ) -> #(ty.Type, State) {
-  use <- bool.guard(when: scheme.vars == [], return: #(scheme.type_, st))
+  use <- bool.guard(when: scheme.vars == [], return: #(literal.type_, st))
   case dict.get(st.literals, #(module, name)) {
-    Ok(literal) -> #(literal, st)
+    Ok(view) -> #(view, st)
     Error(_) -> {
-      let #(literal, st) = instantiate(st, scheme)
+      let #(mapping, st) = copy_vars(st, scheme.vars)
+      let generics =
+        list.filter_map(set.to_list(literal.generics), fn(id) {
+          result.try(dict.get(mapping, id), var_id)
+        })
+      let view = substitute(mapping, literal.type_)
+      let st = mark_rigid(st, generics)
       #(
-        literal,
-        State(
-          ..st,
-          literals: dict.insert(st.literals, #(module, name), literal),
-        ),
+        view,
+        State(..st, literals: dict.insert(st.literals, #(module, name), view)),
       )
     }
   }
@@ -2691,13 +2753,14 @@ fn check_body(
   }
 }
 
-// Infer a module constant, returning its type (an annotation, if present, is
-// applied).
+// Infer a module constant, returning its literal: its type (an annotation, if
+// present, is applied) and the ids its annotation made generics. An
+// annotation's names make no generics yet, so there are none.
 fn infer_constant(
   env: Env,
   st: State,
   constant: glance.Constant,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ConstantLiteral, State), Error) {
   use #(value_type, st) <- result.try(infer_expr(
     Env(..env, syntax: ConstantSyntax),
     st,
@@ -2707,9 +2770,9 @@ fn infer_constant(
     Some(ann) -> {
       let #(t, st) = hydrate(env, st, ann)
       use st <- result.try(unify(st, value_type, t))
-      Ok(#(value_type, st))
+      Ok(#(ConstantLiteral(value_type, set.new()), st))
     }
-    None -> Ok(#(value_type, st))
+    None -> Ok(#(ConstantLiteral(value_type, set.new()), st))
   }
 }
 
@@ -3043,8 +3106,9 @@ fn infer_expr_inner(
 
     glance.Variable(_, name) ->
       case env.syntax, dict.get(env.values, name) {
-        GuardSyntax, Ok(ValueConstructor(scheme, ConstantValue(module, name)))
-        -> Ok(guard_constant_read(st, scheme, module, name))
+        GuardSyntax,
+          Ok(ValueConstructor(scheme, ConstantValue(module, name, literal)))
+        -> Ok(guard_constant_read(st, scheme, module, name, literal))
         _, _ -> {
           use #(_, type_, st) <- result.map(read_name(env, st, name))
           #(type_, st)
@@ -5607,7 +5671,8 @@ fn publish_resolution(st: State, resolved: Resolved) -> Resolution {
     // *there*, never the alias it was read under: an
     // `import kinds.{Near as Close}` publishes `Constructor("kinds", "Near")`.
     ResolvedValue(FunctionValue(module:, name:, ..)) -> ModuleFn(module, name)
-    ResolvedValue(ConstantValue(module:, name:)) -> ModuleConstant(module, name)
+    ResolvedValue(ConstantValue(module:, name:, ..)) ->
+      ModuleConstant(module, name)
     ResolvedValue(ConstructorValue(module:, name:, ..)) ->
       Constructor(module, name)
     ResolvedValue(LocalValue(name:)) -> LocalVariable(name)
