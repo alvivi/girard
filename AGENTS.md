@@ -117,7 +117,9 @@ type; field access on a stamped type reads that variant's own accessors instead
 of the shared ones. The stamp is erased when a type variable is bound to the
 type and when a top-level definition is generalized, so it never survives a
 generic function, a `case` result, or a module boundary except on a
-constructor.
+constructor or in a constant's guard literal. A lambda parameter takes its own
+type, unified with the type it is called at, so a stamped seed loses its
+variant there too, as in the compiler.
 
 `infer_pattern` returns the pattern's own type — the compiler's
 `Pattern::type_()` — so an `as` name binds at what the pattern matched rather
@@ -128,11 +130,12 @@ the compiler: only the first alternative may set a *subject* variable's variant
 and a later one may only take it away by naming a different index, while a name
 the patterns *bind* keeps its variant only where every alternative agrees.
 
-Generalization normally happens at module-level definition boundaries, so
-unannotated local `let` bindings remain monomorphic. The compiler-matching
-exception is a local function whose annotations name type variables: those
-variables are generalized explicitly. Pending field and tuple accesses are
-revisited after inference fixes their container types.
+Generalization happens only at the top-level definition boundary, so a local
+`let` binding stays monomorphic. A let-bound annotated lambda is still
+polymorphic, as in the compiler, with no generalization step: its annotation's
+generics leave scope with the `let` value, and each read of the binding copies
+them. Pending field and tuple accesses are revisited after inference fixes
+their container types.
 
 **Groups of mutually recursive definitions** are inferred as the compiler
 infers them. Every function of the module is registered before any group is
@@ -151,22 +154,34 @@ registration. A constant is not registered: it enters scope only once
 inferred, as in the compiler, so a function inferred before it still reads
 whatever else binds the name.
 
-A signature variable is rigid only in the function that wrote it, as the
-compiler's per-function `Hydrator` makes it, and every value read instantiates,
-locals included. girard's rigid ids are global, so `Env.foreign_rigid` holds the
-signature variables of every function of the module except the one being
-inferred (all of them for a constant), generalized or not, and each value
-read — a variable, a callee name, a record-update shorthand, a pattern size —
-copies every one of them its type reaches into a fresh variable, one per id
-per read. A generalized function's own reads replace its variables first, but
-one that reached a later function's registration through an early read is
-still copied there. That is how a member's generic that
-reaches a sibling through a shared, unannotated part stays generic there, and
-why the compiler, and girard, publish the looser signature it implies (for
-`fold_l(tree: Tree(u), acc) -> v` beside an annotated sibling,
-`fn(Tree(a), b) -> c`). Body annotations are not connected to this: a `let`
-annotation's type variable is a fresh flexible one, where the compiler would
-create or reuse a generic the function owns.
+**Annotation scopes.** Every annotation inside a function is hydrated through
+one scope, as the compiler's per-function `Hydrator` hydrates it.
+`State.scope` holds the type-variable names in scope and the generics the scope
+owns. A function's scope starts with its signature's names and ids, a
+constant's starts empty, and `scoped` saves and restores it around the
+compiler's five boundaries: a `let` value, each `case` subject, a `case`
+clause, a function body and a block. `hydrate_scoped` hydrates a body
+annotation where the compiler does — a lambda's parameter and return
+annotations in the enclosing scope before its body opens, a `let` annotation
+after the value's scope has closed and after the pattern, a simple `use`
+pattern's in the enclosing scope and a complex one's in the callback body: a
+name in scope is that variable, and a new one is a generic (`State.rigid`) the
+scope owns until its boundary closes. Generics never bind; only their copies
+do.
+
+Every value read instantiates, locals included, and `read_value` then copies
+each generic its type reaches that the scope does not own into a fresh
+variable, one per id per read: a variable, a callee name, a record-update
+shorthand, a pattern size, and the reads the compiler generates for a pipe's
+left value, a capture's hole and a complex `use` pattern's parameter. So a body
+generic is rigid while in scope and copied at each read once out of it. Another
+function's signature variables are never owned, generalized or not: a
+generalized function's own reads replace its variables first, but one that
+reached a later function's registration through an early read is still copied
+there. That is how a member's generic that reaches a sibling through a shared,
+unannotated part stays generic there, and why the compiler, and girard, publish
+the looser signature it implies (for `fold_l(tree: Tree(u), acc) -> v` beside
+an annotated sibling, `fn(Tree(a), b) -> c`).
 
 **The constant context.** The compiler parses `name.member` in a constant
 initializer, and in a guard subtree it parses as a constant
@@ -177,19 +192,36 @@ sets `ConstantSyntax`, the clause guard check sets `GuardSyntax`, and
 subtree. Under `ConstantSyntax` a bare-name `name.member` is module access only,
 with `UnknownModule` or `NoSuchExport` on a miss. A direct guard field access
 keeps the record-first rule. A bare variable naming a module constant in a
-guard is the constant's stored literal (`type_/guard.rs:322-324`), not a copy:
-a constant of the current group is read at its own type, and a generalized one
-at one copy of its scheme shared by all of its guard reads (`State.literals`).
+guard is the constant's stored literal (`type_/guard.rs:322-324`), not a copy.
+A constant's scope entry carries it beside the scheme — the type as inferred,
+variants included, with the generics its annotation created marked — and the
+interface exports the entry. A constant of the current group is read at its
+literal as it stands, and a generalized one at one copy of its literal shared
+by all of its guard reads (`State.literals`): a fresh variable for each
+quantified id, a fresh generic for each generic one. The literal is a snapshot
+taken when the constant is inferred, where the compiler's is one live type a
+later guard can still pin.
 
 Wherever the type a lambda will be called at is already known, it is pushed
 into the lambda's parameters before its body is walked, as the compiler's
 `infer_fn_with_known_types` does: a lambda passed as a call argument, piped
 into, called directly, given as a `use` callback, or passed beside a capture's
-hole. A `use` and a capture reach it the way a call does — the callee first,
-then the complete argument list reordered through its field map, then each slot
-checked against the parameter it was placed against — so the callback and the
-hole are placed by the same reorder as everything around them rather than
-assumed to come last.
+hole. A capture is the lambda the parser makes of it, so it is seeded the same
+ways, and its body is an ordinary call. A `use` and a capture reach it the way
+a call does — the callee first, then the complete argument list reordered
+through its field map, then each slot checked against the parameter it was
+placed against — so the callback and the hole are placed by the same reorder as
+everything around them rather than assumed to come last.
+
+Which names are in scope when an annotation is hydrated depends on what was
+walked first, so girard follows the compiler's order there. A pipe types its
+left side first; a call step infers its callee once, with no call context for a
+literal, and reads the left value at the slot the reorder gives it. A lambda
+or capture callee, `use` included, speculates the call's arguments first, the
+`use` callback with no expected type, and keeps the names they create; if any
+argument fails, the whole pass is rewound (the compiler recovers inside the
+failing argument instead, which girard does not reproduce). A `let` binds its
+pattern before it checks its annotation.
 
 **Resolution.** `Env.values` holds one `ValueConstructor` per name in scope,
 as the compiler's `Environment.scope` does: the value's scheme and a variant
