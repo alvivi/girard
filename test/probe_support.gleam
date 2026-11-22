@@ -1,7 +1,8 @@
 // Helpers for the probe tests (`group_inference_test`,
-// `constant_context_test`): annotate a probe's source with in-memory imports
-// and read back a signature, a constant's type, an error, a resolution at a
-// snippet, the annotations at a span, or the module's dependency order.
+// `constant_context_test`, `body_annotation_test`): annotate a probe's source
+// with in-memory imports and read back a signature, a constant's type, an
+// error, a resolution at a snippet, the annotations at a span, the spans
+// annotated more than once, or the module's dependency order.
 
 import girard
 import girard/internal/reference
@@ -30,10 +31,7 @@ pub fn signature(
   modules: List(#(String, String)),
   name: String,
 ) -> String {
-  case list.key_find(annotated(source, modules).functions, name) {
-    Ok(scheme) -> girard.type_to_string(scheme.type_)
-    Error(_) -> panic as { "no function named " <> name }
-  }
+  scheme_of(annotated(source, modules).functions, name)
 }
 
 // The rendered type of the top-level constant `name`.
@@ -42,9 +40,18 @@ pub fn constant(
   modules: List(#(String, String)),
   name: String,
 ) -> String {
-  case list.key_find(annotated(source, modules).constants, name) {
+  scheme_of(annotated(source, modules).constants, name)
+}
+
+// The rendered type `schemes` (a result's `functions` or `constants`) holds
+// for `name`.
+pub fn scheme_of(
+  schemes: List(#(String, girard.Scheme)),
+  name: String,
+) -> String {
+  case list.key_find(schemes, name) {
     Ok(scheme) -> girard.type_to_string(scheme.type_)
-    Error(_) -> panic as { "no constant named " <> name }
+    Error(_) -> panic as { "no definition named " <> name }
   }
 }
 
@@ -74,13 +81,15 @@ pub fn callee_resolution(
   snippet: String,
   n: Int,
 ) -> girard.Resolution {
+  resolution_at(source, modules, callee_span(source, snippet, n))
+}
+
+// The span of the callee of the `n`th occurrence of the call `snippet`: a bare
+// name in call position is resolved and annotated at the name alone.
+fn callee_span(source: String, snippet: String, n: Int) -> glance.Span {
   let assert Ok(#(callee, _)) = string.split_once(snippet, "(")
   let call = nth_span(source, snippet, n)
-  resolution_at(
-    source,
-    modules,
-    glance.Span(call.start, call.start + string.byte_size(callee)),
-  )
+  glance.Span(call.start, call.start + string.byte_size(callee))
 }
 
 fn resolution_at(
@@ -122,8 +131,37 @@ pub fn annotations(
   snippet: String,
   n: Int,
 ) -> List(String) {
-  let span = nth_span(source, snippet, n)
+  annotations_at(source, modules, nth_span(source, snippet, n))
+}
+
+// Every type recorded at the callee of the `n`th occurrence of the call
+// `snippet`.
+pub fn callee_annotations(
+  source: String,
+  modules: List(#(String, String)),
+  snippet: String,
+  n: Int,
+) -> List(String) {
+  annotations_at(source, modules, callee_span(source, snippet, n))
+}
+
+fn annotations_at(
+  source: String,
+  modules: List(#(String, String)),
+  span: glance.Span,
+) -> List(String) {
   annotated(source, modules).expressions
   |> list.filter(fn(a) { a.span == span })
   |> list.map(fn(a) { girard.type_to_string(a.type_) })
+}
+
+// The spans annotated more than once: an expression is published once.
+pub fn repeated_spans(
+  source: String,
+  modules: List(#(String, String)),
+) -> List(glance.Span) {
+  annotated(source, modules).expressions
+  |> list.group(by: fn(annotation) { annotation.span })
+  |> dict.filter(fn(_, annotations) { list.length(annotations) > 1 })
+  |> dict.keys
 }
