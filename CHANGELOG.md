@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Such a message that glance parsed with an operator at its root, as in
   `x |> echo as "label" |> f`, is now `Unsupported`: glance reads the
   operator into the message. Wrap the step in braces as a workaround.
+- The `name` of a module select `name.member` no longer gets an expression
+  type.
+- Top-level definitions are ordered as the compiler orders them, so one read
+  only by a bit-array `size`, a record-update shorthand or an alias-named
+  `name.field` is no longer reported unbound.
+- Mutually recursive definitions are inferred as the compiler infers them,
+  including the looser signatures it gives when one member's type variable
+  reaches another.
+- `name.member` in a constant, or in a guard constant, reads the module
+  member, as the compiler does.
 
 ## [4.0.1] - 2026-11-16
 

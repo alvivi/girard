@@ -1,0 +1,952 @@
+{
+  "modules": {
+    "collector_gaps": [
+      {
+        "start": 334,
+        "end": 335,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 372,
+        "end": 375,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 408,
+        "end": 441,
+        "type": {
+          "kind": "named",
+          "name": "Address",
+          "package": "collector_gaps",
+          "module": "collector_gaps",
+          "parameters": []
+        }
+      },
+      {
+        "start": 408,
+        "end": 415,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "BitArray",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Address",
+            "package": "collector_gaps",
+            "module": "collector_gaps",
+            "parameters": []
+          }
+        }
+      },
+      {
+        "start": 416,
+        "end": 440,
+        "type": {
+          "kind": "named",
+          "name": "BitArray",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 418,
+        "end": 419,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 433,
+        "end": 437,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 476,
+        "end": 502,
+        "type": {
+          "kind": "named",
+          "name": "BitArray",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 478,
+        "end": 479,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 485,
+        "end": 499,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 485,
+        "end": 495,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 485,
+        "end": 493,
+        "type": {
+          "kind": "fn",
+          "parameters": [],
+          "return": {
+            "kind": "named",
+            "name": "Int",
+            "package": "",
+            "module": "gleam",
+            "parameters": []
+          }
+        }
+      },
+      {
+        "start": 498,
+        "end": 499,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 552,
+        "end": 578,
+        "type": {
+          "kind": "named",
+          "name": "Config",
+          "package": "collector_gaps",
+          "module": "collector_gaps",
+          "parameters": []
+        }
+      },
+      {
+        "start": 552,
+        "end": 558,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            },
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Config",
+            "package": "collector_gaps",
+            "module": "collector_gaps",
+            "parameters": []
+          }
+        }
+      },
+      {
+        "start": 569,
+        "end": 577,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 561,
+        "end": 567,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 561,
+        "end": 567,
+        "type": {
+          "kind": "named",
+          "name": "Config",
+          "package": "collector_gaps",
+          "module": "collector_gaps",
+          "parameters": []
+        }
+      },
+      {
+        "start": 637,
+        "end": 667,
+        "type": {
+          "kind": "named",
+          "name": "Formatter",
+          "package": "collector_gaps",
+          "module": "collector_gaps",
+          "parameters": []
+        }
+      },
+      {
+        "start": 637,
+        "end": 646,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "fn",
+              "parameters": [
+                {
+                  "kind": "named",
+                  "name": "Int",
+                  "package": "",
+                  "module": "gleam",
+                  "parameters": []
+                }
+              ],
+              "return": {
+                "kind": "named",
+                "name": "String",
+                "package": "",
+                "module": "gleam",
+                "parameters": []
+              }
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Formatter",
+            "package": "collector_gaps",
+            "module": "collector_gaps",
+            "parameters": []
+          }
+        }
+      },
+      {
+        "start": 659,
+        "end": 666,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "String",
+            "package": "",
+            "module": "gleam",
+            "parameters": []
+          }
+        }
+      },
+      {
+        "start": 701,
+        "end": 716,
+        "type": {
+          "kind": "named",
+          "name": "Box",
+          "package": "collector_gaps",
+          "module": "collector_gaps",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 701,
+        "end": 704,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Box",
+            "package": "collector_gaps",
+            "module": "collector_gaps",
+            "parameters": [
+              {
+                "kind": "variable",
+                "id": 0
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 710,
+        "end": 715,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 755,
+        "end": 813,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "named",
+              "name": "Box",
+              "package": "collector_gaps",
+              "module": "collector_gaps",
+              "parameters": [
+                {
+                  "kind": "named",
+                  "name": "Int",
+                  "package": "",
+                  "module": "gleam",
+                  "parameters": []
+                }
+              ]
+            },
+            {
+              "kind": "named",
+              "name": "Box",
+              "package": "collector_gaps",
+              "module": "collector_gaps",
+              "parameters": [
+                {
+                  "kind": "named",
+                  "name": "String",
+                  "package": "",
+                  "module": "gleam",
+                  "parameters": []
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "start": 757,
+        "end": 783,
+        "type": {
+          "kind": "named",
+          "name": "Box",
+          "package": "collector_gaps",
+          "module": "collector_gaps",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ]
+        }
+      },
+      {
+        "start": 757,
+        "end": 766,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Box",
+              "package": "collector_gaps",
+              "module": "collector_gaps",
+              "parameters": [
+                {
+                  "kind": "named",
+                  "name": "Int",
+                  "package": "",
+                  "module": "gleam",
+                  "parameters": []
+                }
+              ]
+            },
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Box",
+            "package": "collector_gaps",
+            "module": "collector_gaps",
+            "parameters": [
+              {
+                "kind": "named",
+                "name": "Int",
+                "package": "",
+                "module": "gleam",
+                "parameters": []
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 767,
+        "end": 779,
+        "type": {
+          "kind": "named",
+          "name": "Box",
+          "package": "collector_gaps",
+          "module": "collector_gaps",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ]
+        }
+      },
+      {
+        "start": 767,
+        "end": 770,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Box",
+            "package": "collector_gaps",
+            "module": "collector_gaps",
+            "parameters": [
+              {
+                "kind": "named",
+                "name": "Int",
+                "package": "",
+                "module": "gleam",
+                "parameters": []
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 777,
+        "end": 778,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 781,
+        "end": 782,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 785,
+        "end": 812,
+        "type": {
+          "kind": "named",
+          "name": "Box",
+          "package": "collector_gaps",
+          "module": "collector_gaps",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "String",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ]
+        }
+      },
+      {
+        "start": 785,
+        "end": 794,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Box",
+              "package": "collector_gaps",
+              "module": "collector_gaps",
+              "parameters": [
+                {
+                  "kind": "named",
+                  "name": "String",
+                  "package": "",
+                  "module": "gleam",
+                  "parameters": []
+                }
+              ]
+            },
+            {
+              "kind": "named",
+              "name": "String",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Box",
+            "package": "collector_gaps",
+            "module": "collector_gaps",
+            "parameters": [
+              {
+                "kind": "named",
+                "name": "String",
+                "package": "",
+                "module": "gleam",
+                "parameters": []
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 795,
+        "end": 808,
+        "type": {
+          "kind": "named",
+          "name": "Box",
+          "package": "collector_gaps",
+          "module": "collector_gaps",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "String",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ]
+        }
+      },
+      {
+        "start": 795,
+        "end": 798,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "String",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "named",
+            "name": "Box",
+            "package": "collector_gaps",
+            "module": "collector_gaps",
+            "parameters": [
+              {
+                "kind": "named",
+                "name": "String",
+                "package": "",
+                "module": "gleam",
+                "parameters": []
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 805,
+        "end": 807,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 810,
+        "end": 811,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 846,
+        "end": 873,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "named",
+              "name": "BitArray",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ]
+        }
+      },
+      {
+        "start": 848,
+        "end": 853,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 855,
+        "end": 872,
+        "type": {
+          "kind": "named",
+          "name": "BitArray",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 857,
+        "end": 858,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 864,
+        "end": 869,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 913,
+        "end": 937,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "tuple",
+              "elements": [
+                {
+                  "kind": "named",
+                  "name": "Int",
+                  "package": "",
+                  "module": "gleam",
+                  "parameters": []
+                },
+                {
+                  "kind": "named",
+                  "name": "BitArray",
+                  "package": "",
+                  "module": "gleam",
+                  "parameters": []
+                }
+              ]
+            },
+            {
+              "kind": "tuple",
+              "elements": [
+                {
+                  "kind": "named",
+                  "name": "String",
+                  "package": "",
+                  "module": "gleam",
+                  "parameters": []
+                },
+                {
+                  "kind": "named",
+                  "name": "BitArray",
+                  "package": "",
+                  "module": "gleam",
+                  "parameters": []
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "start": 915,
+        "end": 924,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            },
+            {
+              "kind": "named",
+              "name": "BitArray",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ]
+        }
+      },
+      {
+        "start": 915,
+        "end": 918,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            },
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "tuple",
+            "elements": [
+              {
+                "kind": "named",
+                "name": "Int",
+                "package": "",
+                "module": "gleam",
+                "parameters": []
+              },
+              {
+                "kind": "named",
+                "name": "BitArray",
+                "package": "",
+                "module": "gleam",
+                "parameters": []
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 919,
+        "end": 920,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 922,
+        "end": 923,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 926,
+        "end": 936,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "named",
+              "name": "String",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            },
+            {
+              "kind": "named",
+              "name": "BitArray",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ]
+        }
+      },
+      {
+        "start": 926,
+        "end": 929,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "String",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            },
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "tuple",
+            "elements": [
+              {
+                "kind": "named",
+                "name": "String",
+                "package": "",
+                "module": "gleam",
+                "parameters": []
+              },
+              {
+                "kind": "named",
+                "name": "BitArray",
+                "package": "",
+                "module": "gleam",
+                "parameters": []
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 930,
+        "end": 931,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 933,
+        "end": 935,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      }
+    ]
+  }
+}

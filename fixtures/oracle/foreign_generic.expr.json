@@ -1,0 +1,157 @@
+{
+  "modules": {
+    "foreign_generic": [
+      {
+        "start": 435,
+        "end": 442,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 435,
+        "end": 436,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 437,
+        "end": 438,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 440,
+        "end": 441,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 359,
+        "end": 403,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 364,
+        "end": 365,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 377,
+        "end": 378,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 388,
+        "end": 399,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 388,
+        "end": 389,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 390,
+        "end": 391,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 393,
+        "end": 398,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 393,
+        "end": 394,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 397,
+        "end": 398,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      }
+    ]
+  }
+}

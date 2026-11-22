@@ -13,6 +13,7 @@ import gleam/order
 import gleam/string
 import gleeunit
 import gleeunit/should
+import probe_support
 import simplifile
 
 pub fn main() {
@@ -1403,6 +1404,28 @@ pub fn module_and_value_share_name_test() {
   |> should.equal("fn() -> String")
 }
 
+pub fn module_select_container_is_unannotated_test() {
+  // `helper.twice(x)` with a top-level `fn helper` in scope: the access falls
+  // through from the local value to the module export, which is a module
+  // select in the compiler's typed AST, with no expression at `helper`. Both
+  // declaration orders, since `main` used to annotate the container whenever
+  // its order inferred `fn helper` first. Probe: `.misc/spike-knot/m3/quirk/`.
+  let helper = "pub fn twice(x: Int) -> Int { x * 2 }"
+  let run = "pub fn run(x: Int) -> Int {\n  helper.twice(x)\n}\n"
+  let local = "pub fn helper() -> Int {\n  1\n}\n"
+  list.each([run <> local, local <> run], fn(body) {
+    let source = "import helper\n\n" <> body
+    let access = span_of(source, "helper.twice")
+    let container = glance.Span(access.start, access.start + 6)
+    annotations_with(source, [#("helper", helper)], container)
+    |> should.equal([])
+    annotations_with(source, [#("helper", helper)], access)
+    |> should.equal(["fn(Int) -> Int"])
+    resolution_at(source, [#("helper", helper)], access)
+    |> should.equal(girard.ModuleFn("helper", "twice"))
+  })
+}
+
 pub fn alias_body_references_imported_type_test() {
   // `mid.Pair`'s body uses a type `mid` imported from `base`. Resolving the
   // alias must keep that type attributed to `base`, not the prelude (the bug
@@ -1598,11 +1621,15 @@ pub fn transitive_import_test() {
 pub fn mutually_recursive_unannotated_accumulator_test() {
   // shine_tree's `fold_l`/`fold_l_root`: mutually recursive, where `fold_l_root`
   // calls `fold_l` at the deeper `Tree(Node(u))` and `fold_l`'s accumulator is
-  // unannotated. The provider (`fold_l`) is typed first; its body absorbs the
-  // accumulator into the return variable, and a live reference from the consumer
-  // then instantiates the resolved scheme. (Not polymorphic recursion — the
-  // compiler accepts this and rejects true polymorphic recursion, as girard
-  // does. This must type without a `type mismatch: a vs a`.)
+  // unannotated. The compiler infers `fold_l_root` first, which links the
+  // accumulator to `fold_l_root`'s own `v`. A type variable is rigid only in
+  // the function that wrote it, and every read instantiates, so each read of
+  // `acc` in `fold_l` copies that foreign `v` and this types without a
+  // `type mismatch: a vs a`. The accumulator keeps `fold_l_root`'s variable,
+  // so 1.19.2's interface gives `fold_l` three distinct variables: an unsound
+  // signature (a caller can pick any return type), which is being reported
+  // upstream. girard annotates what the compiler infers. Probe:
+  // `.misc/pr-j/inputs/m2/x_h_review_shine/`.
   let source =
     "pub type Tree(u) {\n"
     <> "  Tip(u)\n"
@@ -1619,7 +1646,62 @@ pub fn mutually_recursive_unannotated_accumulator_test() {
     <> "}\n"
     <> "fn fold_l_root(acc: v, root: Tree(Node(u))) -> v { fold_l(root, acc) }"
   signature(source, "fold_l")
-  |> should.equal("fn(Tree(a), b) -> b")
+  |> should.equal("fn(Tree(a), b) -> c")
+}
+
+pub fn shadowed_assert_reads_keep_the_compiler_groups_test() {
+  // `run` calls `message` in a `let assert` message whose pattern binds
+  // `message`, and `message` reads the constant `width` in a message whose
+  // pattern binds `width`. The compiler's graph has neither edge (Q4), so it
+  // infers `[width, run]` before `[message]`: `run` calls `message` through
+  // its registration, and `message` reads `width` once it is in scope. An
+  // extra edge from `run` to `message` merged all three, and `message` read
+  // `width` before it was inferred (PR J review round 1).
+  let source =
+    "pub fn run(x: Result(String, Nil)) -> String {\n"
+    <> "  let _ = width\n"
+    <> "  let assert Ok(message) = x as message()\n"
+    <> "  message\n"
+    <> "}\n\n"
+    <> "pub fn message() -> String {\n"
+    <> "  let _ = run(Ok(\"a\"))\n"
+    <> "  let assert Ok(width) = Ok(1) as {\n"
+    <> "    let _ = width\n"
+    <> "    \"failed\"\n"
+    <> "  }\n"
+    <> "  let _ = width\n"
+    <> "  \"failed\"\n"
+    <> "}\n\n"
+    <> "pub const width = run\n"
+  probe_support.order(source) |> should.equal([["width", "run"], ["message"]])
+  signature(source, "run") |> should.equal("fn(Result(String, Nil)) -> String")
+  signature(source, "message") |> should.equal("fn() -> String")
+  constant_type(source, "width")
+  |> should.equal("fn(Result(String, Nil)) -> String")
+}
+
+pub fn early_read_signature_variable_is_still_copied_test() {
+  // `early` calls `later(x, x)` in a `let assert` message whose pattern binds
+  // `later`, an edge the compiler's graph misses (Q4), so `early` is inferred
+  // first, through `later`'s registration, and links `later`'s unannotated `n`
+  // to its own `a`. Once `early` is generalized, `a` is still copied where
+  // `later` reads `n`, as the compiler copies any generic not rigid in the
+  // current function, so `[n, y]` does not pin it to `later`'s `b`. These are
+  // 1.19.2's signatures (PR J review round 2).
+  let source =
+    "pub fn early(x: a) -> a {\n"
+    <> "  let assert [later] = [x] as {\n"
+    <> "    let _ = later(x, x)\n"
+    <> "    \"failed\"\n"
+    <> "  }\n"
+    <> "  later\n"
+    <> "}\n\n"
+    <> "pub fn later(n, y: b) {\n"
+    <> "  [n, y]\n"
+    <> "}\n"
+  probe_support.order(source) |> should.equal([["early"], ["later"]])
+  signature(source, "early") |> should.equal("fn(a) -> a")
+  signature(source, "later") |> should.equal("fn(a, b) -> List(b)")
 }
 
 // Inferred-variant field access and multi-variant records
@@ -2856,7 +2938,24 @@ fn should_read_box_value(source: String) -> Nil {
 // Every type recorded at `span`, in the order girard reports them: one for an
 // expression girard walked, none for one it did not.
 fn annotations_at(source: String, span: glance.Span) -> List(String) {
-  let assert Ok(annotated) = girard.annotate(source, girard.default_options())
+  annotations_under(source, girard.default_options(), span)
+}
+
+// `annotations_at`, resolving imports from the given in-memory modules.
+fn annotations_with(
+  source: String,
+  modules: List(#(String, String)),
+  span: glance.Span,
+) -> List(String) {
+  annotations_under(source, options_with(modules), span)
+}
+
+fn annotations_under(
+  source: String,
+  options: girard.Options,
+  span: glance.Span,
+) -> List(String) {
+  let assert Ok(annotated) = girard.annotate(source, options)
   annotated.expressions
   |> list.filter(fn(a) { a.span == span })
   |> list.map(fn(a) { girard.type_to_string(a.type_) })
@@ -3947,6 +4046,144 @@ pub fn annotate_package_cascades_to_dependents_test() {
   list.key_find(m.skipped, "bad") |> should.be_ok
   let assert Ok(girard.UnboundVariable("bad")) =
     list.key_find(m.skipped, "uses_it")
+}
+
+pub fn annotate_package_cascades_past_a_registration_test() {
+  // Every function is registered at its annotations before any group is
+  // inferred, so `user` could type against `broken`'s registered
+  // `fn() -> Int`. A skipped group's names leave scope, so `user` fails with
+  // an unbound name and is skipped too, as before registration was
+  // module-wide.
+  let sources = [
+    #(
+      "app/m",
+      "pub fn broken() -> Int { missing }\n"
+        <> "pub fn user() -> Int { broken() + 1 }",
+    ),
+  ]
+  let m = package_result(sources, "app/m")
+
+  m.annotated.functions |> should.equal([])
+  list.key_find(m.skipped, "user")
+  |> should.equal(Ok(girard.UnboundVariable("broken")))
+}
+
+pub fn annotate_package_split_keeps_an_independent_definition_test() {
+  // `good` reads `value.number` through `import cfg as value`, which the
+  // compiler's graph also counts as a read of the local `fn value` (Q1), so
+  // the two form one group. `value` reads a module girard cannot load. The
+  // failed group is re-split along the edges the typer follows, where the
+  // alias-named receiver is no edge, so only `value` is skipped and `good` is
+  // published, resolved to the import (PR J review round 1).
+  let cfg = "pub const number = 4"
+  let source =
+    "import cfg as value\nimport nowhere\n\n"
+    <> "pub fn good() -> Int {\n  value.number\n}\n\n"
+    <> "pub fn value() -> Int {\n  let _ = good()\n  nowhere.thing\n}\n"
+  let assert Ok(m) =
+    dict.get(
+      girard.annotate_package(
+        parse_package([#("app/m", source)]),
+        options_with([#("cfg", cfg)]),
+      ),
+      "app/m",
+    )
+
+  list.map(m.skipped, fn(entry) { entry.0 }) |> should.equal(["value"])
+  package_signature(m, "good") |> should.equal("fn() -> Int")
+  let access = span_of(source, "value.number")
+  let assert Ok(reference) =
+    list.find(m.annotated.resolutions, fn(r) { r.span == access })
+  reference.resolution |> should.equal(girard.ModuleConstant("cfg", "number"))
+}
+
+pub fn annotate_package_split_skips_a_real_cycle_test() {
+  // A group that really is a cycle stays one group when re-split: `ping` and
+  // `pong` call each other, so `ping`'s failure takes `pong` with it, while
+  // the independent `other` is published.
+  let sources = [
+    #(
+      "app/m",
+      "pub fn ping(n: Int) -> Int {\n  pong(n) + missing\n}\n\n"
+        <> "pub fn pong(n: Int) -> Int {\n  ping(n)\n}\n\n"
+        <> "pub fn other() -> Int {\n  1\n}\n",
+    ),
+  ]
+  let m = package_result(sources, "app/m")
+
+  list.map(m.skipped, fn(entry) { entry.0 })
+  |> list.sort(string.compare)
+  |> should.equal(["ping", "pong"])
+  package_signature(m, "other") |> should.equal("fn() -> Int")
+}
+
+pub fn annotate_package_publishes_an_early_reader_as_the_compiler_does_test() {
+  // `early` calls `later()` in a `let assert` message whose pattern binds
+  // `later`, an edge the compiler's call graph misses (Q4), so the compiler
+  // checks `early` first, against `later`'s registration `fn() -> String`,
+  // and reports one error, the mismatch in `later`, and nothing for `early`.
+  // girard gives the same verdict: it publishes `early` and skips only
+  // `later`, departing for this one edge from its rule that a failed
+  // definition's dependants are skipped. `main`, whose collector ordered
+  // `later` first, skipped both (PR J review rounds 2 and 3).
+  let source =
+    "pub fn early(x: Result(Int, Nil)) -> Int {\n"
+    <> "  let assert Ok(later) = x as later()\n"
+    <> "  later\n"
+    <> "}\n\n"
+    <> "pub fn later() -> String {\n"
+    <> "  1\n"
+    <> "}\n"
+  let m = package_result([#("app/m", source)], "app/m")
+
+  let int = girard.Named("gleam", "Int", [])
+  let string = girard.Named("gleam", "String", [])
+  m.skipped |> should.equal([#("later", girard.TypeMismatch(int, string))])
+  package_signature(m, "early") |> should.equal("fn(Result(Int, Nil)) -> Int")
+  list.map(m.annotated.resolutions, fn(r) { r.resolution })
+  |> should.equal([girard.ModuleFn("app/m", "later")])
+
+  // The same when `later` fails on a module girard cannot load.
+  let source =
+    "import nowhere\n\n"
+    <> "pub fn early() -> String {\n"
+    <> "  let assert [later] = [1] as later()\n"
+    <> "  \"ok\"\n"
+    <> "}\n\n"
+    <> "pub fn later() -> String {\n"
+    <> "  nowhere.thing\n"
+    <> "}\n"
+  let m = package_result([#("app/m", source)], "app/m")
+
+  m.skipped |> should.equal([#("later", girard.UnboundVariable("nowhere"))])
+  package_signature(m, "early") |> should.equal("fn() -> String")
+  list.map(m.annotated.resolutions, fn(r) { r.resolution })
+  |> should.equal([girard.ModuleFn("app/m", "later")])
+}
+
+pub fn annotate_package_split_keeps_a_message_read_test() {
+  // `good` calls the top-level `bad` in a `let assert` message, which the
+  // typer checks before the pattern binds the string prefix's `as` name `bad`,
+  // and `bad` calls `good` back and fails. The split keeps that edge, so the
+  // cycle stays one group and both are skipped with its error (PR J review
+  // round 2).
+  let source =
+    "pub fn good(s: String) -> String {\n"
+    <> "  let assert \"x\" as bad <> rest = s as bad(s)\n"
+    <> "  rest\n"
+    <> "}\n\n"
+    <> "pub fn bad(s: String) -> String {\n"
+    <> "  let _ = good(s)\n"
+    <> "  missing\n"
+    <> "}\n"
+  let m = package_result([#("app/m", source)], "app/m")
+
+  list.length(m.skipped) |> should.equal(2)
+  list.key_find(m.skipped, "good")
+  |> should.equal(Ok(girard.UnboundVariable("missing")))
+  list.key_find(m.skipped, "bad")
+  |> should.equal(Ok(girard.UnboundVariable("missing")))
+  m.annotated.functions |> should.equal([])
 }
 
 pub fn is_complete_counts_skipped_and_unavailable_test() {

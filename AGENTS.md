@@ -56,8 +56,8 @@ API.
 |---|---|
 | `src/girard.gleam` | The whole public API and inference engine, in labelled comment sections, public API first: source/AST/package entry points and CLI; the public `Type`, `Scheme`, and inference `Error` vocabulary, and the `Resolution` / `ResolvedReference` / `Dropped` resolution and absence vocabulary; Hindley-Milner inference (state, substitutions, environments and schemes, unification, generalization/instantiation, expression/pattern/statement inference, type hydration, module interfaces); the built-in prelude type constructors; and the type printer |
 | `src/girard/internal/ty.gleam` | The inference-side `Type` and `Scheme`: the public vocabulary plus the narrowed variant on `Named`, converted to the public types when a result or an error is published |
-| `src/girard/internal/scc.gleam` | Tarjan strongly-connected components for dependency-ordered inference |
-| `src/girard/internal/reference.gleam` | Lexically scoped reference collection for the top-level definition graph |
+| `src/girard/internal/scc.gleam` | Strongly connected components as the compiler computes them: a port of petgraph 0.8.3's `TarjanScc` (Pearce's variant), which gives each group's members in the compiler's inference order |
+| `src/girard/internal/reference.gleam` | The top-level definition graph, a port of Gleam 1.19.2's `call_graph.rs` over glance's AST: `dependency_edges` and `dependency_order`, and the `guard_constant` predicate inference shares |
 
 Development-only modules under `dev/girard/` provide package sweeps,
 per-expression compiler diffs, benchmarks, and the resolution differential
@@ -72,16 +72,32 @@ For a module, girard:
 1. Parses source with `glance` unless it receives an existing AST.
 2. Resolves imports and builds public interfaces for imported modules.
 3. Registers custom types, constructors, aliases, and external definitions.
-4. Collects top-level value references and orders definitions by strongly
-   connected component.
-5. Infers each component, unifies constraints, then generalizes at the
-   top-level definition boundary.
+4. Registers every function of the module at its annotation shape, then
+   orders functions and constants exactly as the compiler's
+   `into_dependency_order` does: the same graph walk, the same nodes in source
+   order, and petgraph's SCC, so the groups, their members and their order
+   are the compiler's, with no exception.
+5. Infers each group as the compiler does: the members in the group's order,
+   then the group generalized at the top-level definition boundary.
 6. Zonks substitutions through signatures, expression annotations and
    resolutions before returning structured public types.
 
 Package annotation caches imported interfaces and infers shared imports once.
 It is deliberately best-effort: a failed definition and its dependants are
-skipped without discarding unrelated inferred definitions.
+skipped without discarding unrelated inferred definitions. A skipped group's
+functions leave scope, so a dependant fails in turn rather than typing against
+the registration. A failed group of several members is first re-split along
+the edges the typer really follows (`reference.strict_edges`: the compiler's
+edges minus a bare receiver named like an import alias, with a string
+prefix's `as` name binding, and with a `let assert` message walked before its
+pattern binds), so an edge that only orders two definitions does not take an
+independent one down with a failing one. Code the compiler accepts never
+fails, so the split never changes a result it gives. One edge departs from
+the rule that dependants are skipped: a definition that reads a later function
+only in a `let assert` message whose pattern shadows it, an edge the
+compiler's call graph misses, is checked against that function's registration
+and published even if the function then fails. That matches the compiler,
+which checks the reader first and blames only the function.
 
 ## Type and State Model
 
@@ -115,9 +131,55 @@ the patterns *bind* keeps its variant only where every alternative agrees.
 Generalization normally happens at module-level definition boundaries, so
 unannotated local `let` bindings remain monomorphic. The compiler-matching
 exception is a local function whose annotations name type variables: those
-variables are generalized explicitly. Type variables in a top-level signature
-are rigid while the definition is checked. Pending field and tuple accesses are
+variables are generalized explicitly. Pending field and tuple accesses are
 revisited after inference fixes their container types.
+
+**Groups of mutually recursive definitions** are inferred as the compiler
+infers them. Every function of the module is registered before any group is
+inferred (`analyse.rs:261-263`), at the shape its annotations give: its
+signature's type variables rigid (`State.rigid`), each missing part a fresh
+variable shared by every reader until its group is generalized, monomorphic.
+So a function the compiler's graph does not order first, read in a
+`let assert` message its own pattern shadows, is still found, at its
+registration, exactly as in the compiler. Each body binds the registered
+parameter types and is checked against the registered return, so a constraint
+a sibling has already put on a parameter is visible while the body is walked.
+The members are inferred in the order `dependency_order` lists them, with no
+reordering, and each group is generalized over every variable still free, as
+the compiler's `generalise` does, against the environment before any
+registration. A constant is not registered: it enters scope only once
+inferred, as in the compiler, so a function inferred before it still reads
+whatever else binds the name.
+
+A signature variable is rigid only in the function that wrote it, as the
+compiler's per-function `Hydrator` makes it, and every value read instantiates,
+locals included. girard's rigid ids are global, so `Env.foreign_rigid` holds the
+signature variables of every function of the module except the one being
+inferred (all of them for a constant), generalized or not, and each value
+read — a variable, a callee name, a record-update shorthand, a pattern size —
+copies every one of them its type reaches into a fresh variable, one per id
+per read. A generalized function's own reads replace its variables first, but
+one that reached a later function's registration through an early read is
+still copied there. That is how a member's generic that
+reaches a sibling through a shared, unannotated part stays generic there, and
+why the compiler, and girard, publish the looser signature it implies (for
+`fold_l(tree: Tree(u), acc) -> v` beside an annotated sibling,
+`fn(Tree(a), b) -> c`). Body annotations are not connected to this: a `let`
+annotation's type variable is a fresh flexible one, where the compiler would
+create or reuse a generic the function owns.
+
+**The constant context.** The compiler parses `name.member` in a constant
+initializer, and in a guard subtree it parses as a constant
+(`reference.guard_constant`), as module access, never as record access.
+`Env.syntax` says which kind of syntax is being inferred: `infer_constant`
+sets `ConstantSyntax`, the clause guard check sets `GuardSyntax`, and
+`infer_expr` switches a guard to `ConstantSyntax` when it meets a constant
+subtree. Under `ConstantSyntax` a bare-name `name.member` is module access only,
+with `UnknownModule` or `NoSuchExport` on a miss. A direct guard field access
+keeps the record-first rule. A bare variable naming a module constant in a
+guard is the constant's stored literal (`type_/guard.rs:322-324`), not a copy:
+a constant of the current group is read at its own type, and a generalized one
+at one copy of its scheme shared by all of its guard reads (`State.literals`).
 
 Wherever the type a lambda will be called at is already known, it is pushed
 into the lambda's parameters before its body is walked, as the compiler's

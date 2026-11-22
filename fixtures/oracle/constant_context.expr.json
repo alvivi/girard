@@ -1,0 +1,110 @@
+{
+  "modules": {
+    "constant_context": [
+      {
+        "start": 531,
+        "end": 534,
+        "type": {
+          "kind": "named",
+          "name": "Config",
+          "package": "constant_context",
+          "module": "constant_context",
+          "parameters": []
+        }
+      },
+      {
+        "start": 579,
+        "end": 634,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 584,
+        "end": 585,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "named",
+              "name": "Uri",
+              "package": "gleam_stdlib",
+              "module": "gleam/uri",
+              "parameters": []
+            }
+          ]
+        }
+      },
+      {
+        "start": 618,
+        "end": 619,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 629,
+        "end": 630,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 674,
+        "end": 726,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 679,
+        "end": 680,
+        "type": {
+          "kind": "named",
+          "name": "String",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 710,
+        "end": 711,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 721,
+        "end": 722,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      }
+    ]
+  }
+}

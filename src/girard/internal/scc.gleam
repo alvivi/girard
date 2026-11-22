@@ -1,125 +1,121 @@
-//// Tarjan's strongly-connected-components algorithm over a string-keyed graph.
-//// Used to group mutually-recursive top-level definitions and order them so
-//// that dependencies are inferred (and generalized) before their dependents,
-//// mirroring the compiler's `call_graph` + `dep_tree`.
+//// Strongly-connected components over a string-keyed graph, as the compiler
+//// computes them: a port of petgraph 0.8.3's `TarjanScc` (Pearce's variant of
+//// Tarjan's algorithm, `src/algo/scc/tarjan_scc.rs`), which Gleam 1.19.2's
+//// `call_graph::into_dependency_order` calls through `tarjan_scc`.
+////
+//// The port keeps everything that decides the result's order: roots are tried
+//// in node order, neighbours in the order given, a node is pushed when it
+//// finishes rather than when it is discovered, and a root's component is the
+//// stack suffix it dominates followed by the root itself. Components come out
+//// in completion order, dependencies first.
 
 import gleam/dict.{type Dict}
-import gleam/int
 import gleam/list
-import gleam/set.{type Set}
+import gleam/result
 
-type Tarjan {
-  Tarjan(
-    counter: Int,
-    indices: Dict(String, Int),
-    lowlinks: Dict(String, Int),
-    on_stack: Set(String),
+type Pearce {
+  Pearce(
+    // The next discovery index; reused once a component completes.
+    index: Int,
+    // Counts down from above any live index; a completed node's root index.
+    component_count: Int,
+    // Absent: not yet visited.
+    root_index: Dict(String, Int),
+    // Finished, non-root nodes; the head is the top of the stack.
     stack: List(String),
-    /// Completed components, most-recently-completed first.
+    // Completed components, most recently completed first.
     components: List(List(String)),
   )
 }
 
-/// Compute strongly-connected components of `nodes` under `edges` (an adjacency
-/// list mapping each node to the nodes it depends on), returned in topological
-/// order: a component appears before any component that depends on it.
+/// Compute strongly-connected components of `nodes` under `edges` (each node's
+/// neighbours in visit order), returned dependencies first: a component appears
+/// before any component that depends on it. Each component lists its members in
+/// the order the compiler infers them.
 pub fn components(
   nodes: List(String),
   edges: Dict(String, List(String)),
 ) -> List(List(String)) {
   let initial =
-    Tarjan(
-      counter: 0,
-      indices: dict.new(),
-      lowlinks: dict.new(),
-      on_stack: set.new(),
+    Pearce(
+      index: 1,
+      component_count: 1_000_000_000_000,
+      root_index: dict.new(),
       stack: [],
       components: [],
     )
   let final =
     list.fold(nodes, initial, fn(state, node) {
-      case dict.has_key(state.indices, node) {
+      case dict.has_key(state.root_index, node) {
         True -> state
-        False -> strong_connect(state, node, edges)
+        False -> visit(state, node, edges)
       }
     })
-  // Each completed component is prepended, so `components` is dependents-first;
-  // reversing yields dependency-first (topological) order.
   list.reverse(final.components)
 }
 
-fn strong_connect(
-  state: Tarjan,
-  node: String,
+fn visit(
+  state: Pearce,
+  v: String,
   edges: Dict(String, List(String)),
-) -> Tarjan {
-  let index = state.counter
+) -> Pearce {
+  let v_index = state.index
   let state =
-    Tarjan(
+    Pearce(
       ..state,
-      counter: index + 1,
-      indices: dict.insert(state.indices, node, index),
-      lowlinks: dict.insert(state.lowlinks, node, index),
-      on_stack: set.insert(state.on_stack, node),
-      stack: [node, ..state.stack],
+      index: v_index + 1,
+      root_index: dict.insert(state.root_index, v, v_index),
     )
-
-  let neighbours = case dict.get(edges, node) {
-    Ok(ns) -> ns
-    Error(_) -> []
-  }
-
-  let state =
-    list.fold(neighbours, state, fn(state, w) {
-      case dict.get(state.indices, w) {
-        Error(_) -> {
-          // w has not been visited; recurse and take its lowlink.
-          let state = strong_connect(state, w, edges)
-          set_min_lowlink(state, node, get(state.lowlinks, w))
-        }
-        Ok(w_index) ->
-          case set.contains(state.on_stack, w) {
-            True -> set_min_lowlink(state, node, w_index)
-            False -> state
-          }
+  let neighbours = result.unwrap(dict.get(edges, v), [])
+  let #(state, is_local_root) =
+    list.fold(neighbours, #(state, True), fn(acc, w) {
+      let #(state, is_local_root) = acc
+      let state = case dict.has_key(state.root_index, w) {
+        True -> state
+        False -> visit(state, w, edges)
+      }
+      let w_root = root(state, w)
+      case w_root < root(state, v) {
+        True -> #(
+          Pearce(..state, root_index: dict.insert(state.root_index, v, w_root)),
+          False,
+        )
+        False -> #(state, is_local_root)
       }
     })
-
-  // If node is a root of an SCC, pop the stack down to it.
-  case get(state.lowlinks, node) == get(state.indices, node) {
-    True -> pop_component(state, node, [])
-    False -> state
+  case is_local_root {
+    False -> Pearce(..state, stack: [v, ..state.stack])
+    True -> complete(state, v)
   }
 }
 
-fn set_min_lowlink(state: Tarjan, node: String, candidate: Int) -> Tarjan {
-  let current = get(state.lowlinks, node)
-  Tarjan(
-    ..state,
-    lowlinks: dict.insert(state.lowlinks, node, int.min(current, candidate)),
+// `v` is a root: its component is every stack entry, from the top down, whose
+// root index is not below `v`'s, then `v` itself. Each member's root index
+// becomes the component count, and the discovery index backtracks by the
+// component's size.
+fn complete(state: Pearce, v: String) -> Pearce {
+  let v_root = root(state, v)
+  let count = state.component_count
+  let #(popped, rest) =
+    list.split_while(state.stack, fn(w) { root(state, w) >= v_root })
+  // `popped` is top first; the component lists the stack bottom first, then
+  // the root.
+  let component = list.reverse([v, ..popped])
+  let root_index =
+    list.fold(component, state.root_index, fn(root_index, w) {
+      dict.insert(root_index, w, count)
+    })
+  Pearce(
+    index: state.index - list.length(component),
+    component_count: count - 1,
+    root_index:,
+    stack: rest,
+    components: [component, ..state.components],
   )
 }
 
-fn pop_component(state: Tarjan, root: String, acc: List(String)) -> Tarjan {
-  case state.stack {
-    [] -> state
-    [top, ..rest] -> {
-      let state =
-        Tarjan(..state, stack: rest, on_stack: set.delete(state.on_stack, top))
-      let acc = [top, ..acc]
-      case top == root {
-        True -> Tarjan(..state, components: [acc, ..state.components])
-        False -> pop_component(state, root, acc)
-      }
-    }
-  }
-}
-
-// Look up an index/lowlink. Tarjan always assigns these before reading them,
-// so the default is unreachable; return one rather than crash.
-fn get(d: Dict(String, Int), key: String) -> Int {
-  case dict.get(d, key) {
-    Ok(value) -> value
-    Error(_) -> 0
-  }
+// A visited node's root index. Every caller has visited the node first, so the
+// default is unreachable.
+fn root(state: Pearce, node: String) -> Int {
+  result.unwrap(dict.get(state.root_index, node), 0)
 }
