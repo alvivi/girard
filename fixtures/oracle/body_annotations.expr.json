@@ -1,0 +1,1476 @@
+{
+  "modules": {
+    "body_annotations": [
+      {
+        "start": 409,
+        "end": 413,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 409,
+        "end": 410,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 411,
+        "end": 412,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 466,
+        "end": 473,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 466,
+        "end": 467,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 1
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 468,
+        "end": 469,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 471,
+        "end": 472,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 582,
+        "end": 583,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 586,
+        "end": 593,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 588,
+        "end": 589,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 591,
+        "end": 592,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 760,
+        "end": 784,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 760,
+        "end": 765,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "fn",
+              "parameters": [
+                {
+                  "kind": "variable",
+                  "id": 0
+                }
+              ],
+              "return": {
+                "kind": "variable",
+                "id": 0
+              }
+            },
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 766,
+        "end": 780,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 777,
+        "end": 778,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 782,
+        "end": 783,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 798,
+        "end": 799,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 802,
+        "end": 809,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 804,
+        "end": 805,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 807,
+        "end": 808,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 928,
+        "end": 952,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 928,
+        "end": 933,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "fn",
+              "parameters": [
+                {
+                  "kind": "variable",
+                  "id": 0
+                }
+              ],
+              "return": {
+                "kind": "variable",
+                "id": 0
+              }
+            },
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 934,
+        "end": 948,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 945,
+        "end": 946,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 950,
+        "end": 951,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 966,
+        "end": 967,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 970,
+        "end": 977,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 1
+            }
+          ]
+        }
+      },
+      {
+        "start": 972,
+        "end": 973,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 975,
+        "end": 976,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1094,
+        "end": 1122,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1111,
+        "end": 1112,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1117,
+        "end": 1118,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1136,
+        "end": 1137,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1140,
+        "end": 1147,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 1
+            }
+          ]
+        }
+      },
+      {
+        "start": 1142,
+        "end": 1143,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1145,
+        "end": 1146,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1222,
+        "end": 1268,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1227,
+        "end": 1228,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1240,
+        "end": 1264,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1240,
+        "end": 1245,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "fn",
+              "parameters": [
+                {
+                  "kind": "variable",
+                  "id": 0
+                }
+              ],
+              "return": {
+                "kind": "variable",
+                "id": 0
+              }
+            },
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 1246,
+        "end": 1260,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 1257,
+        "end": 1258,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1262,
+        "end": 1263,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1282,
+        "end": 1283,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1286,
+        "end": 1293,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 1
+            }
+          ]
+        }
+      },
+      {
+        "start": 1288,
+        "end": 1289,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1291,
+        "end": 1292,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1375,
+        "end": 1423,
+        "type": {
+          "kind": "named",
+          "name": "Nil",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 1380,
+        "end": 1404,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1380,
+        "end": 1385,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "fn",
+              "parameters": [
+                {
+                  "kind": "variable",
+                  "id": 0
+                }
+              ],
+              "return": {
+                "kind": "variable",
+                "id": 0
+              }
+            },
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 1386,
+        "end": 1400,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 1397,
+        "end": 1398,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1402,
+        "end": 1403,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1416,
+        "end": 1419,
+        "type": {
+          "kind": "named",
+          "name": "Nil",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 1437,
+        "end": 1438,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1441,
+        "end": 1448,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 1
+            }
+          ]
+        }
+      },
+      {
+        "start": 1443,
+        "end": 1444,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1446,
+        "end": 1447,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1618,
+        "end": 1696,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1618,
+        "end": 1624,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "fn",
+              "parameters": [
+                {
+                  "kind": "variable",
+                  "id": 0
+                },
+                {
+                  "kind": "variable",
+                  "id": 1
+                }
+              ],
+              "return": {
+                "kind": "variable",
+                "id": 0
+              }
+            },
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 1
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 1630,
+        "end": 1677,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 1
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 1662,
+        "end": 1663,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1670,
+        "end": 1671,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1683,
+        "end": 1684,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1690,
+        "end": 1691,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1710,
+        "end": 1711,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1725,
+        "end": 1726,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1729,
+        "end": 1742,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 1
+            },
+            {
+              "kind": "variable",
+              "id": 2
+            },
+            {
+              "kind": "variable",
+              "id": 2
+            }
+          ]
+        }
+      },
+      {
+        "start": 1731,
+        "end": 1732,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1734,
+        "end": 1735,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1737,
+        "end": 1738,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1740,
+        "end": 1741,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1871,
+        "end": 1899,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1888,
+        "end": 1889,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1894,
+        "end": 1895,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1902,
+        "end": 1958,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 1
+            }
+          ]
+        }
+      },
+      {
+        "start": 1907,
+        "end": 1908,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 1930,
+        "end": 1937,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 1
+            }
+          ]
+        }
+      },
+      {
+        "start": 1932,
+        "end": 1933,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1935,
+        "end": 1936,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1947,
+        "end": 1954,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 1
+            }
+          ]
+        }
+      },
+      {
+        "start": 1949,
+        "end": 1950,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 1952,
+        "end": 1953,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2130,
+        "end": 2200,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "tuple",
+            "elements": [
+              {
+                "kind": "variable",
+                "id": 0
+              },
+              {
+                "kind": "variable",
+                "id": 0
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 2153,
+        "end": 2167,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 2164,
+        "end": 2165,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2180,
+        "end": 2184,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2180,
+        "end": 2181,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 2182,
+        "end": 2183,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2189,
+        "end": 2196,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 2191,
+        "end": 2192,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2194,
+        "end": 2195,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2203,
+        "end": 2207,
+        "type": {
+          "kind": "tuple",
+          "elements": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ]
+        }
+      },
+      {
+        "start": 2203,
+        "end": 2204,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            }
+          ],
+          "return": {
+            "kind": "tuple",
+            "elements": [
+              {
+                "kind": "variable",
+                "id": 0
+              },
+              {
+                "kind": "variable",
+                "id": 0
+              }
+            ]
+          }
+        }
+      },
+      {
+        "start": 2205,
+        "end": 2206,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2478,
+        "end": 2479,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2482,
+        "end": 2502,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2482,
+        "end": 2496,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 1
+          }
+        }
+      },
+      {
+        "start": 2497,
+        "end": 2498,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2500,
+        "end": 2501,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 2373,
+        "end": 2430,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2378,
+        "end": 2379,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 2391,
+        "end": 2392,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2402,
+        "end": 2426,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2402,
+        "end": 2416,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 1
+          }
+        }
+      },
+      {
+        "start": 2417,
+        "end": 2418,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2420,
+        "end": 2425,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 2420,
+        "end": 2421,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 2424,
+        "end": 2425,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 2782,
+        "end": 2783,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2786,
+        "end": 2807,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2786,
+        "end": 2801,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "variable",
+              "id": 0
+            },
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 1
+          }
+        }
+      },
+      {
+        "start": 2802,
+        "end": 2803,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2805,
+        "end": 2806,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 2661,
+        "end": 2724,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2666,
+        "end": 2667,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 2679,
+        "end": 2680,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2690,
+        "end": 2720,
+        "type": {
+          "kind": "variable",
+          "id": 0
+        }
+      },
+      {
+        "start": 2690,
+        "end": 2705,
+        "type": {
+          "kind": "fn",
+          "parameters": [
+            {
+              "kind": "named",
+              "name": "Nil",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            },
+            {
+              "kind": "named",
+              "name": "Int",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            },
+            {
+              "kind": "named",
+              "name": "Nil",
+              "package": "",
+              "module": "gleam",
+              "parameters": []
+            }
+          ],
+          "return": {
+            "kind": "variable",
+            "id": 0
+          }
+        }
+      },
+      {
+        "start": 2706,
+        "end": 2707,
+        "type": {
+          "kind": "named",
+          "name": "Nil",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 2709,
+        "end": 2714,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 2709,
+        "end": 2710,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 2713,
+        "end": 2714,
+        "type": {
+          "kind": "named",
+          "name": "Int",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      },
+      {
+        "start": 2716,
+        "end": 2719,
+        "type": {
+          "kind": "named",
+          "name": "Nil",
+          "package": "",
+          "module": "gleam",
+          "parameters": []
+        }
+      }
+    ]
+  }
+}
