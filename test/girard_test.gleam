@@ -4097,6 +4097,33 @@ pub fn annotate_package_split_keeps_an_independent_definition_test() {
   reference.resolution |> should.equal(girard.ModuleConstant("cfg", "number"))
 }
 
+pub fn annotate_package_split_discards_a_failed_member_scope_test() {
+  // The split above, with body annotations on both sides: `good` writes a
+  // body generic and is published, while `value` creates one of its own
+  // before it fails. A failed member's state is discarded whole, its scope
+  // and generics with it, so neither `good`'s signature nor a later read of
+  // it, under a body annotation of the same name, sees them.
+  let cfg = "pub const number = 4"
+  let source =
+    "import cfg as value\nimport nowhere\n\n"
+    <> "pub fn good(x) {\n  let _ = value.number\n  let y: t = x\n  y\n}\n\n"
+    <> "pub fn value() -> Int {\n  let keep = fn(z: t) { z }\n"
+    <> "  let _ = keep(good(1))\n  nowhere.thing\n}\n\n"
+    <> "pub fn later(x) {\n  let w: t = good(x)\n  w\n}\n"
+  let assert Ok(m) =
+    dict.get(
+      girard.annotate_package(
+        parse_package([#("app/m", source)]),
+        options_with([#("cfg", cfg)]),
+      ),
+      "app/m",
+    )
+
+  list.map(m.skipped, fn(entry) { entry.0 }) |> should.equal(["value"])
+  package_signature(m, "good") |> should.equal("fn(a) -> a")
+  package_signature(m, "later") |> should.equal("fn(a) -> a")
+}
+
 pub fn annotate_package_split_skips_a_real_cycle_test() {
   // A group that really is a cycle stays one group when re-split: `ping` and
   // `pong` call each other, so `ping`'s failure takes `pong` with it, while

@@ -1040,7 +1040,7 @@ fix is required, add a regression test and link the commit.
 | okay | ✅ clean |  |
 | olive | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | ollama_gleam | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
-| omnimessage_lustre | 📝 note | Same confirmed oracle-numbering artifact as prng: girard reports the resolved type (`#($0, Effect($1))`) where the oracle numbers a reference-node variable distinctly (`#($2, ...)`). `lustre.application` ties `compose`'s returned update fn's input/output model, so the tie is real and girard is correct. |
+| omnimessage_lustre | ✅ clean | the 5 mismatches were girard's, not an oracle artifact: `compose` annotates a let-bound lambda `fn(model: model, msg: msg)`, whose generics the compiler copies at each read once out of scope, untying the two `Effect` message types. Fixed by scoping body annotations as the compiler does (`06a8492`). |
 | omnimessage_server | ⏭️ skip · build | a dependency or the package does not compile with current tooling. |
 | on | ✅ clean |  |
 | onigleam | ✅ clean |  |

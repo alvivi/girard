@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reaches another.
 - `name.member` in a constant, or in a guard constant, reads the module
   member, as the compiler does.
+- A body annotation's type variable is scoped as the compiler's: it reuses an
+  in-scope name, and a read copies it once its scope has closed.
+- A guard on a variant-only field of a constant built with that variant, as
+  `_ if value.field == 0` with `const value: Row = A(0)`, now types.
+- A lambda parameter seeded from a known type no longer keeps that type's
+  variant, as in the compiler.
 
 ## [4.0.1] - 2026-11-16
 

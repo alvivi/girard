@@ -752,17 +752,35 @@ type State {
     // when encountered; resolved by `resolve_pending` once inference has fixed
     // the container type (deferred resolution, like the real compiler).
     pending: List(Pending),
-    // Variable ids that are *rigid*: a type variable written in a function's
-    // signature annotation, skolemized for that function's body. A rigid var
+    // Variable ids that are *rigid*: every generic an annotation ever
+    // created, a function signature's or a body annotation's. A rigid var
     // unifies only with itself or a flexible var (which binds to it), never
-    // with a concrete type or a different rigid — matching the compiler, which
-    // keeps annotated type variables generic and rejects pinning them.
+    // with a concrete type or a different rigid — matching the compiler, whose
+    // generics never bind (`environment.rs:1082-1089`); only their copies do.
     rigid: Set(Int),
+    // The annotation names in scope where inference is, and the generics this
+    // scope owns: see `Scope`.
+    scope: Scope,
     // The type each module constant has in a clause guard once generalized,
     // by module and name: one copy per constant, shared by every guard read
     // of it, as the compiler's stored literal is (see `guard_constant_read`).
     literals: Dict(#(String, String), ty.Type),
   )
+}
+
+// The compiler's per-function `Hydrator` name table (`hydrator.rs:30-39`):
+// each type-variable name written in an annotation in scope, and the generic
+// ids this scope owns. A function's scope starts with its signature's names
+// and ids, and the scope is saved and restored around the compiler's five
+// boundaries (`scoped`). A read copies every generic it reaches that is not
+// owned here (`environment.rs:717-735`), so a generic is rigid only while in
+// scope and copied at each read once out of it.
+type Scope {
+  Scope(names: Dict(String, ty.Type), owned: Set(Int))
+}
+
+fn empty_scope() -> Scope {
+  Scope(dict.new(), set.new())
 }
 
 // A deferred access awaiting its container's type.
@@ -819,8 +837,20 @@ type ValueConstructor {
 type ValueVariant {
   LocalValue(name: String)
   FunctionValue(module: String, name: String, field_map: Option(FieldMap))
-  ConstantValue(module: String, name: String)
+  ConstantValue(module: String, name: String, literal: ConstantLiteral)
   ConstructorValue(module: String, name: String, field_map: Option(FieldMap))
+}
+
+// A module constant's stored literal, which the compiler keeps beside its
+// generalized type (`ValueConstructorVariant::ModuleConstant`,
+// `analyse.rs:473-485`) and a clause guard reads instead of instantiating the
+// type (`guard.rs:322-324`): the type as inferred, before generalization
+// erased its variants, and which of its ids are generics an annotation
+// created. A snapshot taken when the constant is inferred: a guard that later
+// pins one of its variables in the defining module does not reach an
+// importer, where the compiler's literal is one live type.
+type ConstantLiteral {
+  ConstantLiteral(type_: ty.Type, generics: Set(Int))
 }
 
 // The label of each of a callable's positional parameters, `None` where the
@@ -917,14 +947,6 @@ type Env {
     // `process_imports` is its only writer (see `record_unavailable` for the
     // precedence between a direct failure and an inherited one).
     unavailable: Dict(String, Unavailability),
-    // The signature variables of every function of the module but the one
-    // being inferred. Every value read copies each of them it reaches into a
-    // fresh variable, as the compiler's `instantiate` copies a generic that is
-    // not rigid in the current function's hydrator (`environment.rs:717-731`),
-    // whether or not its owner is generalized yet. A function's own signature
-    // variables are not in the set, so they stay rigid in its body. Empty
-    // outside a group.
-    foreign_rigid: Set(Int),
     // What kind of syntax is being inferred: see `Syntax`.
     syntax: Syntax,
   )
@@ -981,6 +1003,7 @@ fn new_state() -> State {
     references: [],
     pending: [],
     rigid: set.new(),
+    scope: empty_scope(),
     literals: dict.new(),
   )
 }
@@ -1005,7 +1028,6 @@ fn new_env() -> Env {
     modules: dict.new(),
     module_index: dict.new(),
     unavailable: dict.new(),
-    foreign_rigid: set.new(),
     syntax: ExpressionSyntax,
   )
 }
@@ -1237,8 +1259,8 @@ fn install(
 // Bind a local value: a `let`, a parameter, a pattern's binding. Replacing the
 // entry is what shadows a module-level name's labels and identity along with
 // its type.
-fn bind_local(env: Env, name: String, scheme: ty.Scheme) -> Env {
-  install(env, name, scheme, LocalValue(name))
+fn bind_local(env: Env, name: String, type_: ty.Type) -> Env {
+  install(env, name, ty.Scheme([], type_), LocalValue(name))
 }
 
 // Whether a scheme can never contribute a free variable to the environment:
@@ -1285,20 +1307,36 @@ type Def {
 // a name it shadowed reverts whole — an unqualified import of the same name
 // keeps its scheme, its labels and its origin together, rather than any two of
 // the three.
-fn define_def(env: Env, def: Def, scheme: ty.Scheme) -> Env {
-  install(env, def_name(def), scheme, def_variant(env, def))
+fn define_function(
+  env: Env,
+  function: glance.Function,
+  scheme: ty.Scheme,
+) -> Env {
+  install(
+    env,
+    function.name,
+    scheme,
+    FunctionValue(
+      env.current_module,
+      function.name,
+      field_map_of(list.map(function.parameters, fn(p) { p.label })),
+    ),
+  )
 }
 
-fn def_variant(env: Env, def: Def) -> ValueVariant {
-  case def {
-    FunctionDef(f) ->
-      FunctionValue(
-        env.current_module,
-        f.name,
-        field_map_of(list.map(f.parameters, fn(p) { p.label })),
-      )
-    ConstantDef(c) -> ConstantValue(env.current_module, c.name)
-  }
+// A constant's entry carries its literal beside its scheme.
+fn define_constant(
+  env: Env,
+  constant: glance.Constant,
+  scheme: ty.Scheme,
+  literal: ConstantLiteral,
+) -> Env {
+  install(
+    env,
+    constant.name,
+    scheme,
+    ConstantValue(env.current_module, constant.name, literal),
+  )
 }
 
 fn def_name(def: Def) -> String {
@@ -1463,7 +1501,7 @@ fn infer_defs(
   // compiler's dependency order. Resolve the names back to definitions.
   let groups =
     list.map(order, fn(group) { list.filter_map(group, dict.get(by_name, _)) })
-  let initial = Groups(env:, st:, rigid: rigid_ids_of(items), skipped: [])
+  let initial = Groups(env:, st:, skipped: [])
 
   // Strict mode stops at the first component that fails to type, returning its
   // error. Best-effort mode keeps the pre-component environment on a failure —
@@ -1493,28 +1531,12 @@ fn infer_defs(
 
 // What inferring a module's groups carries from one group to the next.
 type Groups {
-  Groups(
-    env: Env,
-    st: State,
-    // The signature variables of every registered function: a read in any
-    // group copies those that are not its own function's.
-    rigid: Set(Int),
-    skipped: List(#(String, Error)),
-  )
+  Groups(env: Env, st: State, skipped: List(#(String, Error)))
 }
 
 // Adopt a group's result.
 fn inferred(groups: Groups, env: Env, st: State) -> Groups {
   Groups(..groups, env:, st:)
-}
-
-fn rigid_ids_of(items: List(GroupItem)) -> Set(Int) {
-  list.fold(items, set.new(), fn(ids, item) {
-    case item {
-      FunctionItem(rigid_ids:, ..) -> set.union(ids, set.from_list(rigid_ids))
-      ConstantItem(..) -> ids
-    }
-  })
 }
 
 // One best-effort step over a strongly-connected component: on success adopt
@@ -1616,39 +1638,42 @@ fn skip_group(
 // the compiler brings it into scope only once it has inferred it. The members
 // are inferred in the group's own order. A function's body binds the
 // registered parameter types and is checked against the registered return
-// (`analyse.rs:553-640`), and every value read copies the signature variables
-// of every other function (`Env.foreign_rigid`), which is what lets a
-// function's generic reach another one through a shared, unannotated part
-// without pinning it there.
+// (`analyse.rs:553-640`), under a scope seeded with its signature's names and
+// generics, as the compiler's per-function hydrator is. Every value read
+// copies each generic its scope does not own (`read_value`): the signature
+// variables of every other function, which is what lets a function's generic
+// reach another one through a shared, unannotated part without pinning it
+// there. A constant is inferred under an empty scope, so it owns none.
 fn infer_group(
   groups: Groups,
   group: List(GroupItem),
   base: Env,
 ) -> Result(#(Env, State), Error) {
-  let Groups(env:, st:, rigid:, ..) = groups
+  let Groups(env:, st:, ..) = groups
   // Each member's type, in the group's order, to generalize once all are
   // inferred.
   use #(group_env, st, rev_inferred) <- result.try(
     list.try_fold(group, #(env, st, []), fn(acc, item) {
       let #(group_env, st, inferred) = acc
       case item {
-        FunctionItem(f, params, return_type, rigid_ids) -> {
-          let foreign_rigid = set.difference(rigid, set.from_list(rigid_ids))
-          let body_env =
-            bind_params(Env(..group_env, foreign_rigid:), f, params)
+        FunctionItem(f, params, return_type, scope) -> {
+          // The member's ids stay generics after it, so a later read of its
+          // registration copies them; only its scope ends here.
+          let st = State(..st, scope:)
+          let param_names = list.map(f.parameters, fn(param) { param.name })
+          let body_env = bind_params(group_env, param_names, params)
           use st <- result.try(check_body(body_env, st, f, return_type))
-          let entry = #(FunctionDef(f), ty.Fn(params, return_type))
-          Ok(#(group_env, st, [entry, ..inferred]))
+          let st = State(..st, scope: empty_scope())
+          let member = FunctionMember(f, ty.Fn(params, return_type))
+          Ok(#(group_env, st, [member, ..inferred]))
         }
         ConstantItem(c) -> {
-          use #(type_, st) <- result.try(infer_constant(
-            Env(..group_env, foreign_rigid: rigid),
-            st,
-            c,
-          ))
-          let def = ConstantDef(c)
-          let group_env = define_def(group_env, def, ty.Scheme([], type_))
-          Ok(#(group_env, st, [#(def, type_), ..inferred]))
+          use #(literal, st) <- result.try(infer_constant(group_env, st, c))
+          // Until the group is generalized, the constant's literal is its own
+          // type, live.
+          let scheme = ty.Scheme([], literal.type_)
+          let group_env = define_constant(group_env, c, scheme, literal)
+          Ok(#(group_env, st, [ConstantMember(c, literal), ..inferred]))
         }
       }
     }),
@@ -1660,24 +1685,43 @@ fn infer_group(
   // Generalized as the compiler's `generalise` does, over every variable still
   // free: against the environment before any registration, so the registered
   // functions of later groups do not hold a variable back.
+  // A constant's literal is its type as inferred, before the erasure.
   let env =
-    list.fold(list.reverse(rev_inferred), env, fn(env, entry) {
-      let #(def, type_) = entry
-      define_def(env, def, generalize(st, base, type_))
+    list.fold(list.reverse(rev_inferred), env, fn(env, member) {
+      case member {
+        FunctionMember(function, type_) ->
+          define_function(env, function, generalize(st, base, type_))
+        ConstantMember(constant, literal) ->
+          define_constant(
+            env,
+            constant,
+            generalize(st, base, literal.type_),
+            ConstantLiteral(..literal, type_: zonk(st, literal.type_)),
+          )
+      }
     })
   Ok(#(env, st))
+}
+
+// A member's type as its group inferred it, to generalize once every member
+// is inferred: a constant's is its literal's, which also marks the ids its
+// annotation made generics.
+type Member {
+  FunctionMember(function: glance.Function, type_: ty.Type)
+  ConstantMember(constant: glance.Constant, literal: ConstantLiteral)
 }
 
 // A top-level definition, registered for inference.
 type GroupItem {
   // A function, registered at its annotation shape before any group is
-  // inferred, with the signature variables it owns: rigid in its own body,
-  // copied at every read anywhere else.
+  // inferred, with the scope its body starts in: the names its signature
+  // wrote and the generics they created, which it owns — rigid in its own
+  // body, copied at every read anywhere else.
   FunctionItem(
     function: glance.Function,
     params: List(ty.Type),
     return_type: ty.Type,
-    rigid_ids: List(Int),
+    scope: Scope,
   )
   // A constant, in scope only once inferred.
   ConstantItem(constant: glance.Constant)
@@ -1703,9 +1747,10 @@ fn register(env: Env, st: State, def: Def) -> #(#(Env, State), GroupItem) {
   case def {
     ConstantDef(c) -> #(#(env, st), ConstantItem(c))
     FunctionDef(f) -> {
-      let #(params, return_type, rigid_ids, st) = signature_skeleton(env, st, f)
-      let env = define_def(env, def, ty.Scheme([], ty.Fn(params, return_type)))
-      #(#(env, st), FunctionItem(f, params, return_type, rigid_ids))
+      let #(params, return_type, scope, st) = signature_skeleton(env, st, f)
+      let env =
+        define_function(env, f, ty.Scheme([], ty.Fn(params, return_type)))
+      #(#(env, st), FunctionItem(f, params, return_type, scope))
     }
   }
 }
@@ -2415,54 +2460,6 @@ fn generalize(st: State, env: Env, type_: ty.Type) -> ty.Scheme {
   ty.Scheme(quantified, zonked)
 }
 
-// Generalize a type over a specific set of candidate variable ids only (the
-// rest stay monomorphic). Used for a `let`-bound function, which Gleam makes
-// polymorphic over exactly the type variables written in its annotations.
-fn generalize_over(
-  st: State,
-  env: Env,
-  type_: ty.Type,
-  candidate_ids: List(Int),
-) -> ty.Scheme {
-  let zonked = zonk(st, type_)
-  let env_vars = env_free_vars(st, env)
-  let free = free_vars(st, zonked)
-  // Each annotation var may have been unified with another; follow it to its
-  // representative and keep it only if it is still a free variable of the type.
-  let reps =
-    list.filter_map(candidate_ids, fn(id) {
-      case zonk(st, ty.Var(id)) {
-        ty.Var(rep) -> Ok(rep)
-        _ -> Error(Nil)
-      }
-    })
-  let quantified =
-    list.unique(
-      list.filter(reps, fn(id) {
-        list.contains(free, id) && !list.contains(env_vars, id)
-      }),
-    )
-  ty.Scheme(quantified, zonked)
-}
-
-// The type-variable names written in a `fn`'s parameter and return annotations.
-fn fn_annotation_var_names(
-  params: List(glance.FnParameter),
-  return_annotation: Option(glance.Type),
-) -> List(String) {
-  let from_params =
-    list.flat_map(params, fn(p) {
-      case p.type_ {
-        Some(t) -> type_var_names(t)
-        None -> []
-      }
-    })
-  case return_annotation {
-    Some(t) -> list.append(from_params, type_var_names(t))
-    None -> from_params
-  }
-}
-
 fn type_var_names(ast: glance.Type) -> List(String) {
   case ast {
     glance.VariableType(_, name) -> [name]
@@ -2480,71 +2477,110 @@ fn type_var_names(ast: glance.Type) -> List(String) {
 
 // Instantiate a scheme by replacing each quantified variable with a fresh one.
 fn instantiate(st: State, scheme: ty.Scheme) -> #(ty.Type, State) {
-  let #(mapping, st) =
-    list.fold(scheme.vars, #(dict.new(), st), fn(acc, old) {
-      let #(mapping, st) = acc
-      let #(fresh_type, st) = fresh(st)
-      #(dict.insert(mapping, old, fresh_type), st)
-    })
+  use <- bool.guard(when: scheme.vars == [], return: #(scheme.type_, st))
+  let #(mapping, st) = copy_vars(st, scheme.vars)
   #(substitute(mapping, scheme.type_), st)
 }
 
-// Read a value: instantiate its scheme, then copy every signature variable of
-// another group member the type reaches, one fresh variable per id, as the
-// compiler's `instantiate` does at every variable read, locals included
-// (`expression.rs:3320`, `environment.rs:717-731`).
-fn read_value(env: Env, st: State, scheme: ty.Scheme) -> #(ty.Type, State) {
+// A fresh variable for each of `ids`, in order: the mapping from each id to
+// its copy.
+fn copy_vars(st: State, ids: List(Int)) -> #(Dict(Int, ty.Type), State) {
+  list.fold(ids, #(dict.new(), st), fn(acc, id) {
+    let #(mapping, st) = acc
+    let #(copy, st) = fresh(st)
+    #(dict.insert(mapping, id, copy), st)
+  })
+}
+
+// Read a value: instantiate its scheme, then copy every generic the type
+// reaches that the current scope does not own, one fresh variable per id, as
+// the compiler's `instantiate` does at every variable read, locals included
+// (`expression.rs:3321`, `environment.rs:717-735`). That covers another
+// function's signature variables, generalized or not, a body annotation's
+// generics once out of scope, and another function's body generics that
+// reached this one through a shared, unannotated part. A generic in scope is
+// left alone.
+fn read_value(st: State, scheme: ty.Scheme) -> #(ty.Type, State) {
   let #(type_, st) = instantiate(st, scheme)
-  use <- bool.guard(when: !reaches_any(st, type_, env.foreign_rigid), return: #(
-    type_,
-    st,
-  ))
+  use <- bool.guard(when: !reaches_unowned(st, type_), return: #(type_, st))
   let zonked = zonk(st, type_)
-  let foreign =
-    list.filter(free_vars_loop(zonked, []), set.contains(env.foreign_rigid, _))
-  case foreign {
+  let unowned = list.filter(free_vars_loop(zonked, []), is_unowned(st, _))
+  case unowned {
     [] -> #(type_, st)
-    _ -> instantiate(st, ty.Scheme(foreign, zonked))
+    _ -> instantiate(st, ty.Scheme(unowned, zonked))
   }
 }
 
-// Whether `type_`, resolved through the substitution, mentions any of `ids`:
-// a walk that allocates nothing, so a read that reaches no foreign signature
-// variable, which is nearly every read, costs no zonk.
-fn reaches_any(st: State, type_: ty.Type, ids: Set(Int)) -> Bool {
-  use <- bool.guard(when: set.is_empty(ids), return: False)
+// A generic the current scope does not own, which a read copies.
+fn is_unowned(st: State, id: Int) -> Bool {
+  is_rigid(st, id) && !set.contains(st.scope.owned, id)
+}
+
+// A read of a value the compiler holds in a local it generated: the piped
+// value a pipe step reads (`pipe.rs:97-125, 297-355`), a capture's own
+// parameter at its hole, a complex `use` pattern's parameter. The compiler
+// reads each the way it reads any local, instantiating it at the read
+// (`expression.rs:3321`), so the read copies a generic out of scope; the left
+// value of a bare callable step and of `|> echo` is used directly, with no
+// read.
+fn read_type(st: State, type_: ty.Type) -> #(ty.Type, State) {
+  read_value(st, ty.Scheme([], type_))
+}
+
+// Whether `type_`, resolved through the substitution, mentions a generic the
+// current scope does not own: a walk that allocates nothing, so a read that
+// reaches none, which is nearly every read, costs no zonk. Every generic the
+// scope owns is rigid, so when it owns them all there is nothing to walk for.
+fn reaches_unowned(st: State, type_: ty.Type) -> Bool {
+  use <- bool.guard(
+    when: set.size(st.rigid) == set.size(st.scope.owned),
+    return: False,
+  )
+  reaches_unowned_loop(st, type_)
+}
+
+fn reaches_unowned_loop(st: State, type_: ty.Type) -> Bool {
   case resolve(st, type_) {
-    ty.Var(id) -> set.contains(ids, id)
-    ty.Named(_, _, args, _) -> list.any(args, reaches_any(st, _, ids))
+    ty.Var(id) -> is_unowned(st, id)
+    ty.Named(_, _, args, _) -> list.any(args, reaches_unowned_loop(st, _))
     ty.Fn(args, ret) ->
-      list.any(args, reaches_any(st, _, ids)) || reaches_any(st, ret, ids)
-    ty.Tuple(elements) -> list.any(elements, reaches_any(st, _, ids))
+      list.any(args, reaches_unowned_loop(st, _))
+      || reaches_unowned_loop(st, ret)
+    ty.Tuple(elements) -> list.any(elements, reaches_unowned_loop(st, _))
   }
 }
 
 // A module constant named by a bare variable in a clause guard. The compiler
 // takes the constant's stored literal (`infer_clause_guard_variable`,
 // `type_/guard.rs:322-324`) rather than instantiating its scheme, so the read
-// is not copied: a constant of the current group is read at its own type, and
-// one already generalized at a single copy of its scheme, made on its first
-// guard read and shared by every later one, as the literal's cells are shared.
+// is not copied, and the literal keeps the variants its value was built with.
+// A constant of the current group, or one with no variable to copy, is read at
+// its literal as it stands. One already generalized is read at a single copy
+// of its literal, made on its first guard read and shared by every later one,
+// as the literal's cells are shared: a fresh variable for each variable its
+// scheme quantifies, and for each generic one a fresh generic, made here so it
+// can never collide with an id of the module that inferred the literal.
 fn guard_constant_read(
   st: State,
   scheme: ty.Scheme,
   module: String,
   name: String,
+  literal: ConstantLiteral,
 ) -> #(ty.Type, State) {
-  use <- bool.guard(when: scheme.vars == [], return: #(scheme.type_, st))
+  use <- bool.guard(when: scheme.vars == [], return: #(literal.type_, st))
   case dict.get(st.literals, #(module, name)) {
-    Ok(literal) -> #(literal, st)
+    Ok(view) -> #(view, st)
     Error(_) -> {
-      let #(literal, st) = instantiate(st, scheme)
+      let #(mapping, st) = copy_vars(st, scheme.vars)
+      let generics =
+        list.filter_map(set.to_list(literal.generics), fn(id) {
+          result.try(dict.get(mapping, id), var_id)
+        })
+      let view = substitute(mapping, literal.type_)
+      let st = mark_rigid(st, generics)
       #(
-        literal,
-        State(
-          ..st,
-          literals: dict.insert(st.literals, #(module, name), literal),
-        ),
+        view,
+        State(..st, literals: dict.insert(st.literals, #(module, name), view)),
       )
     }
   }
@@ -2553,7 +2589,7 @@ fn guard_constant_read(
 // Read a name in scope as a value: its scope entry, and the type this read
 // gets from `read_value`. Every value read goes through here (a variable, a
 // callee name, a record-update shorthand, a pattern size), so none can skip
-// the copy of another function's signature variables.
+// the copy of a generic out of scope.
 fn read_name(
   env: Env,
   st: State,
@@ -2562,7 +2598,7 @@ fn read_name(
   case dict.get(env.values, name) {
     Error(_) -> Error(UnboundVariable(name))
     Ok(entry) -> {
-      let #(type_, st) = read_value(env, st, entry.scheme)
+      let #(type_, st) = read_value(st, entry.scheme)
       Ok(#(entry, type_, st))
     }
   }
@@ -2607,13 +2643,14 @@ fn function_annotation_var_names(function: glance.Function) -> List(String) {
 // Hydrate a function's signature into a *skeleton*: each annotated part uses
 // its written type with the signature's type variables made rigid (skolemized)
 // for the body; each unannotated part is a fresh flexible variable, shared by
-// the whole group until it is generalized. Returns the parameter types, return
-// type, and the ids made rigid; those ids are also recorded in `State`.
+// the whole group until it is generalized. Returns the parameter types, the
+// return type and the scope the body starts in: the name table and the ids
+// made rigid, which are also recorded in `State`.
 fn signature_skeleton(
   env: Env,
   st: State,
   function: glance.Function,
-) -> #(List(ty.Type), ty.Type, List(Int), State) {
+) -> #(List(ty.Type), ty.Type, Scope, State) {
   // One rigid id per distinct annotation variable name, shared across the whole
   // signature (so a parameter `a` and the return `a` are the same variable).
   let #(names, rigid_ids, st) =
@@ -2640,19 +2677,19 @@ fn signature_skeleton(
     Some(ann) -> hydrate_in(env, names, st, ann)
     None -> fresh(st)
   }
-  #(list.reverse(rev_param_types), return_type, rigid_ids, st)
+  let scope = Scope(names, set.from_list(rigid_ids))
+  #(list.reverse(rev_param_types), return_type, scope, st)
 }
 
-// Bind a function's parameters to the given types in `env`.
+// Bind parameters, by their names, to the given types in `env`.
 fn bind_params(
   env: Env,
-  function: glance.Function,
-  param_types: List(ty.Type),
+  names: List(glance.AssignmentName),
+  types_: List(ty.Type),
 ) -> Env {
-  list.fold(list.zip(function.parameters, param_types), env, fn(env, pair) {
-    let #(param, t) = pair
-    case param.name {
-      glance.Named(name) -> bind_local(env, name, ty.Scheme([], t))
+  list.fold(list.zip(names, types_), env, fn(env, pair) {
+    case pair.0 {
+      glance.Named(name) -> bind_local(env, name, pair.1)
       glance.Discarded(_) -> env
     }
   })
@@ -2679,13 +2716,16 @@ fn check_body(
   }
 }
 
-// Infer a module constant, returning its type (an annotation, if present, is
-// applied).
+// Infer a module constant, returning its literal: its type (an annotation, if
+// present, is applied) and the ids its annotation made generics. A constant is
+// inferred with a hydrator of its own (`analyse.rs:446-453`), so its scope
+// starts empty: every read in it copies every generic, and its annotation's
+// names create generics of its own.
 fn infer_constant(
   env: Env,
   st: State,
   constant: glance.Constant,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ConstantLiteral, State), Error) {
   use #(value_type, st) <- result.try(infer_expr(
     Env(..env, syntax: ConstantSyntax),
     st,
@@ -2693,11 +2733,12 @@ fn infer_constant(
   ))
   case constant.annotation {
     Some(ann) -> {
-      let #(t, st) = hydrate(env, st, ann)
+      let #(t, st) = hydrate_scoped(env, st, ann)
       use st <- result.try(unify(st, value_type, t))
-      Ok(#(value_type, st))
+      let literal = ConstantLiteral(value_type, st.scope.owned)
+      Ok(#(literal, State(..st, scope: empty_scope())))
     }
-    None -> Ok(#(value_type, st))
+    None -> Ok(#(ConstantLiteral(value_type, set.new()), st))
   }
 }
 
@@ -3000,10 +3041,9 @@ fn variant_field_type(field: glance.VariantField) -> glance.Type {
 // call, a capture, a pipe — records nothing at the span it was handed, or the
 // expression would be published twice. The paths that walk an expression
 // without passing through here record it once, explicitly, where they walk
-// it: a callee resolved in `infer_callee`, a lambda seeded through `check` or
-// `infer_applied_lambda`, an annotated local lambda in `infer_statement`, and
-// the call a pipe inserts its value into, which `infer_pipe` infers through
-// `infer_call`.
+// it: a callee resolved in `infer_callee`, a function literal seeded through
+// `infer_seeded` (by `check`, a literal callee or a pipe step), and the call a
+// pipe step makes, which `infer_pipe_call` checks against its callee itself.
 fn infer_expr(
   env: Env,
   st: State,
@@ -3031,8 +3071,9 @@ fn infer_expr_inner(
 
     glance.Variable(_, name) ->
       case env.syntax, dict.get(env.values, name) {
-        GuardSyntax, Ok(ValueConstructor(scheme, ConstantValue(module, name)))
-        -> Ok(guard_constant_read(st, scheme, module, name))
+        GuardSyntax,
+          Ok(ValueConstructor(scheme, ConstantValue(module, name, literal)))
+        -> Ok(guard_constant_read(st, scheme, module, name, literal))
         _, _ -> {
           use #(_, type_, st) <- result.map(read_name(env, st, name))
           #(type_, st)
@@ -3052,7 +3093,11 @@ fn infer_expr_inner(
     }
 
     glance.Tuple(_, elements) -> {
-      use #(elem_types, st) <- result.try(infer_each(env, st, elements))
+      use #(elem_types, st) <- result.try(
+        infer_each(st, elements, fn(st, element) {
+          infer_expr(env, st, element)
+        }),
+      )
       Ok(#(ty.Tuple(elem_types), st))
     }
 
@@ -3075,18 +3120,23 @@ fn infer_expr_inner(
     }
 
     glance.Fn(_, params, return_annotation, body) ->
-      infer_fn(env, st, params, return_annotation, body)
+      // No expected type: each parameter has only its own.
+      infer_lambda(env, st, params, return_annotation, body, None)
 
     glance.Call(_, function, arguments) ->
-      infer_call(env, st, function, arguments)
+      infer_call(env, st, function, list.map(arguments, map_field(_, Written)))
 
     glance.FnCapture(span, label, function, before, after) ->
-      infer_capture(env, st, span, label, function, before, after)
+      infer_capture(env, st, span, label, function, before, after, None)
 
     glance.BinaryOperator(_, op, left, right) ->
       infer_binop(env, st, op, left, right)
 
-    glance.Block(_, statements) -> infer_statements(env, st, statements)
+    // A block is a scope of its own (`expression.rs:4178`).
+    glance.Block(_, statements) -> {
+      use st <- scoped(st)
+      infer_statements(env, st, statements)
+    }
 
     glance.Case(_, subjects, clauses) -> infer_case(env, st, subjects, clauses)
 
@@ -3510,141 +3560,174 @@ fn positional_labels(variant: ValueVariant) -> FieldMap {
   option.unwrap(field_map(variant), [])
 }
 
+// Infer each item in order, threading the state, and return the types in the
+// same order.
 fn infer_each(
-  env: Env,
   st: State,
-  exprs: List(glance.Expression),
+  items: List(a),
+  infer: fn(State, a) -> Result(#(ty.Type, State), Error),
 ) -> Result(#(List(ty.Type), State), Error) {
   use #(rev, st) <- result.try(
-    list.try_fold(exprs, #([], st), fn(acc, e) {
+    list.try_fold(items, #([], st), fn(acc, item) {
       let #(types_, st) = acc
-      use #(t, st) <- result.try(infer_expr(env, st, e))
-      Ok(#([t, ..types_], st))
+      use #(t, st) <- result.map(infer(st, item))
+      #([t, ..types_], st)
     }),
   )
   Ok(#(list.reverse(rev), st))
 }
 
-fn infer_fn(
-  env: Env,
-  st: State,
-  params: List(glance.FnParameter),
-  return_annotation: Option(glance.Type),
-  body: List(glance.Statement),
-) -> Result(#(ty.Type, State), Error) {
-  let #(names, _ids, st) = annotation_var_names(st, params, return_annotation)
-  // No expected type: each parameter starts as a fresh variable.
-  let #(seeds, st) = fresh_n(st, list.length(params))
-  infer_lambda(env, st, params, return_annotation, body, seeds, None, names)
-}
-
-// Map each type-variable name written in a lambda's annotations to ONE fresh
-// variable, shared across every parameter and the return. A name like `a` in
-// `fn(msg: Message(a, b)) -> Next(_, Message(a, b))` denotes a single type
-// within the signature; without this, each annotation hydrates its own `a` and
-// the two stay distinct whenever the body does not tie them (an actor handler
-// whose returned message type is otherwise free). The lambda itself stays
-// monomorphic — only the names are shared, not generalized.
-//
-// Shared by every path that walks a lambda, seeded or not: the names a lambda
-// writes mean the same thing whether or not the type it will be called at is
-// already known, as they do in the compiler, which hydrates a lambda's
-// annotations in one scope either way.
-//
-// The ids are returned alongside because a `let`-bound lambda is generalized
-// over exactly these variables; every other caller ignores them.
-fn annotation_var_names(
-  st: State,
-  params: List(glance.FnParameter),
-  return_annotation: Option(glance.Type),
-) -> #(Dict(String, ty.Type), List(Int), State) {
-  list.fold(
-    list.unique(fn_annotation_var_names(params, return_annotation)),
-    #(dict.new(), [], st),
-    fn(acc, nm) {
-      let #(names, ids, st) = acc
-      let #(id, st) = fresh_id(st)
-      #(dict.insert(names, nm, ty.Var(id)), [id, ..ids], st)
-    },
+// The two function literals a known type can be pushed into before their
+// bodies are walked. A capture is one: the compiler parses `f(a, _, b)` as
+// `fn(_capture) { f(a, _capture, b) }` (`parse.rs:5376-5417`), so wherever a
+// lambda is seeded, called or piped into, a capture is too.
+type FnLiteral {
+  Lambda(
+    span: glance.Span,
+    params: List(glance.FnParameter),
+    return_annotation: Option(glance.Type),
+    body: List(glance.Statement),
+  )
+  Capture(
+    span: glance.Span,
+    label: Option(String),
+    function: glance.Expression,
+    before: List(glance.Field(glance.Expression)),
+    after: List(glance.Field(glance.Expression)),
   )
 }
 
-// Infer a lambda whose parameters are seeded from the type it will be called
-// at, and record its span — which `infer_expr`'s wrapper does for a lambda
-// reached the ordinary way, and which every seeding caller bypasses.
-fn infer_seeded_lambda(
-  env: Env,
-  st: State,
-  span: glance.Span,
-  params: List(glance.FnParameter),
-  return_annotation: Option(glance.Type),
-  body: List(glance.Statement),
-  seeds: List(ty.Type),
-  expected_return: Option(ty.Type),
-) -> Result(#(ty.Type, State), Error) {
-  let #(names, _ids, st) = annotation_var_names(st, params, return_annotation)
-  use #(fn_type, st) <- result.try(infer_lambda(
-    env,
-    st,
-    params,
-    return_annotation,
-    body,
-    seeds,
-    expected_return,
-    names,
-  ))
-  Ok(#(fn_type, record(st, span, fn_type)))
+fn as_fn_literal(expr: glance.Expression) -> Result(FnLiteral, Nil) {
+  case expr {
+    glance.Fn(span, params, return_annotation, body) ->
+      Ok(Lambda(span, params, return_annotation, body))
+    glance.FnCapture(span, label, function, before, after) ->
+      Ok(Capture(span, label, function, before, after))
+    _ -> Error(Nil)
+  }
 }
 
-// Infer a lambda whose parameters are seeded with `seed_params` (the expected
-// argument types when known, otherwise fresh variables) and whose body is
-// optionally checked against `expected_return`.
+fn fn_literal_arity(literal: FnLiteral) -> Int {
+  case literal {
+    Lambda(params:, ..) -> list.length(params)
+    Capture(..) -> 1
+  }
+}
+
+// `expr` as a function literal taking `arity` parameters: the one callee or
+// pipe step that can be called at the types its arguments have.
+fn fn_literal_of_arity(
+  expr: glance.Expression,
+  arity: Int,
+) -> Result(FnLiteral, Nil) {
+  use literal <- result.try(as_fn_literal(expr))
+  case fn_literal_arity(literal) == arity {
+    True -> Ok(literal)
+    False -> Error(Nil)
+  }
+}
+
+// Infer a function literal whose parameters are seeded from the types it will
+// be called at, and record its span — which `infer_expr`'s wrapper does for a
+// literal reached the ordinary way, and which every seeding caller bypasses.
+// Its return is checked by the caller, which knows the whole function type.
+fn infer_seeded(
+  env: Env,
+  st: State,
+  literal: FnLiteral,
+  seeds: List(ty.Type),
+) -> Result(#(ty.Type, State), Error) {
+  use #(fn_type, st) <- result.try(case literal {
+    Lambda(_, params, return_annotation, body) ->
+      infer_lambda(env, st, params, return_annotation, body, Some(seeds))
+    Capture(span, label, function, before, after) ->
+      infer_capture(env, st, span, label, function, before, after, Some(seeds))
+  })
+  Ok(#(fn_type, record(st, literal.span, fn_type)))
+}
+
+// Infer a lambda whose parameters are seeded with `seeds`, the types it will
+// be called at, when known (`parameter_types`).
+//
+// The parameter annotations, then the return annotation, are hydrated in the
+// enclosing scope, before the body's opens, as `do_infer_fn` hydrates them
+// (`expression.rs:4041-4060`): a name they create is visible after the lambda
+// as long as the enclosing scope lasts. The body, with the return check, is a
+// scope of its own (`infer_fn_with_known_types`, `expression.rs:4082`).
 fn infer_lambda(
   env: Env,
   st: State,
   params: List(glance.FnParameter),
   return_annotation: Option(glance.Type),
   body: List(glance.Statement),
-  seed_params: List(ty.Type),
-  expected_return: Option(ty.Type),
-  // Pre-seeded type-variable names (name -> Var). When a `let`-bound function is
-  // generalized over its explicit annotation variables, those share these ids
-  // across every annotation in the lambda; otherwise this is empty.
-  names: Dict(String, ty.Type),
+  seeds: Option(List(ty.Type)),
 ) -> Result(#(ty.Type, State), Error) {
-  use #(rev_param_types, body_env, st) <- result.try(
-    list.try_fold(list.zip(params, seed_params), #([], env, st), fn(acc, pair) {
-      let #(types_, env, st) = acc
-      let #(param, seed) = pair
-      use #(t, st) <- result.try(case param.type_ {
-        Some(ann) -> {
-          let #(annotated, st) = hydrate_in(env, names, st, ann)
-          use st <- result.try(unify(st, annotated, seed))
-          Ok(#(seed, st))
-        }
-        None -> Ok(#(seed, st))
-      })
-      let env = case param.name {
-        glance.Named(name) -> bind_local(env, name, ty.Scheme([], t))
-        glance.Discarded(_) -> env
-      }
-      Ok(#([t, ..types_], env, st))
-    }),
-  )
-  let param_types = list.reverse(rev_param_types)
-  use #(body_type, st) <- result.try(infer_statements(body_env, st, body))
-  use st <- result.try(case return_annotation {
+  let annotations = list.map(params, fn(param) { param.type_ })
+  use #(param_types, st) <- result.try(parameter_types(
+    env,
+    st,
+    annotations,
+    seeds,
+  ))
+  let #(return_type, st) = case return_annotation {
     Some(ann) -> {
-      let #(t, st) = hydrate_in(env, names, st, ann)
-      unify(st, body_type, t)
+      let #(t, st) = hydrate_scoped(env, st, ann)
+      #(Some(t), st)
     }
-    None -> Ok(st)
-  })
-  use st <- result.try(case expected_return {
-    Some(expected) -> unify(st, body_type, expected)
-    None -> Ok(st)
+    None -> #(None, st)
+  }
+  let param_names = list.map(params, fn(param) { param.name })
+  let body_env = bind_params(env, param_names, param_types)
+  use #(body_type, st) <- result.try({
+    use st <- scoped(st)
+    use #(body_type, st) <- result.try(infer_statements(body_env, st, body))
+    use st <- result.map(case return_type {
+      Some(t) -> unify(st, body_type, t)
+      None -> Ok(st)
+    })
+    #(body_type, st)
   })
   Ok(#(ty.Fn(param_types, body_type), st))
+}
+
+// A function literal's parameter types, in order. Each parameter takes its own
+// type — its annotation, or a fresh variable — and that type is unified with
+// its seed, the type it is called at where that is known, as the compiler's
+// `infer_arg` does (`expression.rs:1133-1173`). Using the seed itself would
+// keep a variant the seed was stamped with; binding the parameter's own
+// variable to it erases that, as the compiler's link does.
+fn parameter_types(
+  env: Env,
+  st: State,
+  annotations: List(Option(glance.Type)),
+  seeds: Option(List(ty.Type)),
+) -> Result(#(List(ty.Type), State), Error) {
+  let seeds = case seeds {
+    Some(seeds) -> list.map(seeds, Some)
+    None -> list.repeat(None, list.length(annotations))
+  }
+  infer_each(st, list.zip(annotations, seeds), fn(st, pair) {
+    let #(annotation, seed) = pair
+    let #(own, st) = case annotation {
+      Some(ann) -> hydrate_scoped(env, st, ann)
+      None -> fresh(st)
+    }
+    use st <- result.map(unify_seed(st, seed, own))
+    #(own, st)
+  })
+}
+
+// Unify a parameter's own type with the type it is called at, where that is
+// known: the expected type first, as `infer_arg` unifies them.
+fn unify_seed(
+  st: State,
+  seed: Option(ty.Type),
+  own: ty.Type,
+) -> Result(State, Error) {
+  case seed {
+    Some(seed) -> unify(st, seed, own)
+    None -> Ok(st)
+  }
 }
 
 // Infer the callee of a call, returning its type and its field map when one
@@ -3701,72 +3784,46 @@ fn infer_callee(
   }
 }
 
+// A call of `function` on `arguments`: the callee as `infer_called`
+// dispatches it, then every argument checked against the parameter the
+// callee's field map places it at.
 fn infer_call(
   env: Env,
   st: State,
   function: glance.Expression,
-  arguments: List(glance.Field(glance.Expression)),
+  arguments: List(glance.Field(CallArg)),
 ) -> Result(#(ty.Type, State), Error) {
-  // A lambda in callee position has no signature its parameter types can be
-  // read from, so they are learned from the call's own arguments — the
-  // compiler's `infer_fn_with_call_context`. Only at matching arity, which is
-  // its guard too: at any other arity the call is an error, and pairing the
-  // arguments off against the parameters would be pairing the wrong ones.
-  use #(fn_type, labels, st) <- result.try(case function {
-    glance.Fn(fn_span, params, return_annotation, body) ->
-      case list.length(params) == list.length(arguments) {
-        True ->
-          infer_applied_lambda(
-            env,
-            st,
-            fn_span,
-            params,
-            return_annotation,
-            body,
-            arguments,
-          )
-        False -> infer_callee(env, st, function)
-      }
-    _ -> infer_callee(env, st, function)
-  })
-  place_arguments(
+  use #(fn_type, labels, st) <- result.try(infer_called(
+    env,
     st,
-    fn_type,
-    labels,
+    function,
     arguments,
-    fn(expression) { expression },
-    fn(st, argument, hole) { check(env, st, argument, hole) },
-  )
+  ))
+  place_arguments(env, st, fn_type, labels, arguments)
 }
 
 // Place a call's arguments against the callee's parameters and check each one:
-// reorder the slots through the callee's field map, fix the callee's function
-// shape *before* any slot is walked, then check each slot against the parameter
-// the reorder placed it at. Returns the call's result hole.
+// reorder the arguments through the callee's field map, fix the callee's
+// function shape *before* any argument is walked, then check each argument
+// against the parameter the reorder placed it at. Returns the call's result.
 //
 // Fixing the shape first is what lets an argument's body see the types it will
 // be called with — a lambda argument's parameters in `list.map(rows, fn(row) {
-// row.field })`, and every seeded position this module has. Walking the slots
-// in declared order is the other half: types flowing from an earlier argument
-// constrain a later one, and an argument declared after another is inferred
-// after it however the two were written.
-//
-// The three call shapes — a call, a capture and a `use` — differ only in what a
-// slot holds and in what checking one does, so each says how to `wrap` a bare
-// expression as one of its own slots and how to `check_slot` one. Wrapping is
-// all a shorthand field needs: `label:` is the in-scope `label` in every shape,
-// so that rule is written here rather than three times.
+// row.field })`, and every seeded position this module has. Walking the
+// arguments in declared order is the other half: types flowing from an earlier
+// argument constrain a later one, and an argument declared after another is
+// inferred after it however the two were written. A shorthand `label:` is the
+// in-scope `label`, whatever the call's shape.
 fn place_arguments(
+  env: Env,
   st: State,
   fn_type: ty.Type,
   labels: Option(FieldMap),
-  slots: List(glance.Field(slot)),
-  wrap: fn(glance.Expression) -> slot,
-  check_slot: fn(State, slot, ty.Type) -> Result(State, Error),
+  arguments: List(glance.Field(CallArg)),
 ) -> Result(#(ty.Type, State), Error) {
   use ordered <- result.try(
-    order_fields(labels, slots, fn(label, location) {
-      wrap(glance.Variable(location, label))
+    order_fields(labels, arguments, fn(label, location) {
+      Written(glance.Variable(location, label))
     }),
   )
   let #(holes, st) = fresh_n(st, list.length(ordered))
@@ -3774,7 +3831,7 @@ fn place_arguments(
   use st <- result.try(unify(st, fn_type, ty.Fn(holes, result)))
   use st <- result.try(
     list.try_fold(list.zip(ordered, holes), st, fn(st, pair) {
-      check_slot(st, pair.0, pair.1)
+      check_argument(env, st, pair.0, pair.1)
     }),
   )
   // The call's value is the callee's own return type, not the hole unified
@@ -3783,35 +3840,94 @@ fn place_arguments(
   Ok(#(call_return(st, fn_type, result), st))
 }
 
-// Seed a called lambda's parameters from the call's own arguments, then walk
-// its body — the callee half of `infer_call` for that one shape, answering
-// what `infer_callee` answers for every other. A lambda has no field map, so
-// the call accepts no labelled argument, exactly as it does today.
+// Infer the callee of a call on `arguments`, as the compiler's `do_infer_call`
+// dispatches it (`expression.rs:3543-3582`). A function literal in callee
+// position has no signature its parameter types can be read from, so where it
+// takes as many parameters as the call passes, they are learned from the
+// call's own arguments, speculated in source order — the compiler's
+// `infer_fn_with_call_context`. A capture is a lambda of one parameter, so it
+// is speculated the same way. At any other arity the call is an error, and
+// pairing the arguments off against the parameters would be pairing the wrong
+// ones. Any other callee is resolved by `infer_callee`.
 //
-// `infer_call` goes on to infer the arguments again, for real, against the
-// parameters this seeded. That is the compiler's order as well as girard's:
-// the speculative pass exists only to learn the types.
-fn infer_applied_lambda(
+// A literal has no field map, so the call accepts no labelled argument. The
+// caller goes on to infer the arguments again, for real, against the
+// parameters this seeded: the speculative pass exists only to learn the types.
+fn infer_called(
   env: Env,
   st: State,
-  span: glance.Span,
-  params: List(glance.FnParameter),
-  return_annotation: Option(glance.Type),
-  body: List(glance.Statement),
-  arguments: List(glance.Field(glance.Expression)),
+  function: glance.Expression,
+  arguments: List(glance.Field(CallArg)),
 ) -> Result(#(ty.Type, Option(FieldMap), State), Error) {
-  let #(seeds, st) = speculate(env, st, list.map(arguments, field_item))
-  use #(fn_type, st) <- result.try(infer_seeded_lambda(
-    env,
-    st,
-    span,
-    params,
-    return_annotation,
-    body,
-    seeds,
-    None,
-  ))
-  Ok(#(fn_type, None, st))
+  case fn_literal_of_arity(function, list.length(arguments)) {
+    Ok(literal) -> {
+      let #(seeds, st) = speculate(env, st, list.map(arguments, field_argument))
+      use #(fn_type, st) <- result.try(infer_seeded(env, st, literal, seeds))
+      Ok(#(fn_type, None, st))
+    }
+    Error(Nil) -> infer_callee(env, st, function)
+  }
+}
+
+// One argument of a call girard checks. Besides a written expression, the
+// compiler passes two arguments it generated: a read of a local it holds a
+// type in — the piped value, a capture's own parameter at its hole — and a
+// `use` callback, the rest of the block under the `use`'s patterns. Each
+// reaches the callee's parameters through the same reorder as the written
+// ones, so a field map may place it anywhere among them.
+type CallArg {
+  Written(expression: glance.Expression)
+  Read(type_: ty.Type)
+  Callback(patterns: List(glance.UsePattern), body: List(glance.Statement))
+}
+
+// A field's argument, a shorthand `label:` being the in-scope `label`.
+fn field_argument(field: glance.Field(CallArg)) -> CallArg {
+  case field {
+    glance.UnlabelledField(argument) -> argument
+    glance.LabelledField(_, _, argument) -> argument
+    glance.ShorthandField(label, location) ->
+      Written(glance.Variable(location, label))
+  }
+}
+
+// Check one argument against the parameter it was placed at. A generated read
+// is checked as the compiler checks a variable argument: read, then unified
+// with the parameter (`infer_call_argument`, `expression.rs:3942-3985`).
+fn check_argument(
+  env: Env,
+  st: State,
+  argument: CallArg,
+  expected: ty.Type,
+) -> Result(State, Error) {
+  case argument {
+    Written(expression) -> check(env, st, expression, expected)
+    Read(type_) -> {
+      let #(read, st) = read_type(st, type_)
+      unify(st, expected, read)
+    }
+    Callback(patterns, body) ->
+      check_callback(env, st, patterns, body, expected)
+  }
+}
+
+// Infer one argument to learn its type, as the speculative pass does. A `use`
+// callback is inferred as a lambda with no expected type (`infer`'s `Fn` arm,
+// `expression.rs:483-489`): its parameter types are what the pass learns.
+fn speculate_argument(
+  env: Env,
+  st: State,
+  argument: CallArg,
+) -> Result(#(ty.Type, State), Error) {
+  case argument {
+    Written(expression) -> infer_expr(env, st, expression)
+    Read(type_) -> Ok(read_type(st, type_))
+    Callback(patterns, body) -> {
+      let #(callback, st) = fresh(st)
+      use st <- result.try(check_callback(env, st, patterns, body, callback))
+      Ok(#(callback, st))
+    }
+  }
 }
 
 // Infer each argument only to learn its type, keeping what unification learned
@@ -3826,18 +3942,25 @@ fn infer_applied_lambda(
 // annotated twice, no reference recorded twice, and no deferral is left behind
 // holding a result variable nothing will ever read.
 //
-// An argument this pass cannot type is left as a fresh variable rather than
-// failing the call. The real pass infers it again and reports it there, so
-// speculating never decides whether a program is accepted. That path rewinds
-// the id counter along with everything else, which is safe for the reason
-// keeping it is necessary above: nothing from a failed pass survives, so its
-// ids name no variable anything can still reach.
+// The whole pass is one checkpoint, generated arguments included: if any
+// argument cannot be typed, every argument is left as a fresh variable rather
+// than failing the call. The real pass infers them again and reports the
+// failure there, so speculating never decides whether a program is accepted.
+// That path rewinds the id counter along with everything else, which is safe
+// for the reason keeping it is necessary above: nothing from a failed pass
+// survives, so its ids name no variable anything can still reach. (The
+// compiler instead recovers inside the failing argument and keeps going; that
+// recovery differs by site and is not reproduced here.)
 fn speculate(
   env: Env,
   st: State,
-  arguments: List(glance.Expression),
+  arguments: List(CallArg),
 ) -> #(List(ty.Type), State) {
-  case infer_each(env, st, arguments) {
+  let pass =
+    infer_each(st, arguments, fn(st, argument) {
+      speculate_argument(env, st, argument)
+    })
+  case pass {
     Error(_) -> fresh_n(st, list.length(arguments))
     Ok(#(types_, spent)) -> #(
       types_,
@@ -3865,14 +3988,6 @@ fn fresh_n(st: State, n: Int) -> #(List(ty.Type), State) {
   let #(t, st) = fresh(st)
   let #(rest, st) = fresh_n(st, n - 1)
   #([t, ..rest], st)
-}
-
-fn field_item(field: glance.Field(glance.Expression)) -> glance.Expression {
-  case field {
-    glance.UnlabelledField(item) -> item
-    glance.LabelledField(_, _, item) -> item
-    glance.ShorthandField(label, location) -> glance.Variable(location, label)
-  }
 }
 
 // Re-wrap a field's item, keeping the label the reorder places it by. A
@@ -3993,42 +4108,38 @@ fn infer_capture(
   function: glance.Expression,
   before: List(glance.Field(glance.Expression)),
   after: List(glance.Field(glance.Expression)),
+  seeds: Option(List(ty.Type)),
 ) -> Result(#(ty.Type, State), Error) {
-  // `f(a, _, b)` becomes `fn(x) { f(a, x, b) }`. The slots are built in source
-  // order — the hole under its own label where it has one, `value: _` — and
-  // `order_fields` is the one thing that moves them, so the hole and every
-  // argument are aligned into declared order by the same reorder a direct call
-  // would do. Source order in, declared order out.
-  use #(fn_type, labels, st) <- result.try(infer_callee(env, st, function))
-  // `hole` is the capture's own parameter type. The marker in the slots says
-  // only *where* among the arguments the hole goes; unifying `hole` with the
-  // parameter the reorder placed it against is all that is left.
+  // `f(a, _, b)` is `fn(_capture) { f(a, _capture, b) }` (`parse.rs:5376-5417`),
+  // and it is inferred as that lambda. Its one parameter takes its own type,
+  // unified with the type it is called at where that is known, as a lambda
+  // parameter is (`infer_arg`). Its body, the call, is a function body's
+  // scope, callee and explicit arguments included.
   let #(hole, st) = fresh(st)
-  let hole_field = case label {
-    Some(name) -> glance.LabelledField(name, span, Implicit)
-    None -> glance.UnlabelledField(Implicit)
+  let seed = case seeds {
+    Some([seed, ..]) -> Some(seed)
+    _ -> None
   }
-  let slots =
+  use st <- result.try(unify_seed(st, seed, hole))
+  // The body is an ordinary call. Its arguments are built in source order —
+  // the hole a read of the parameter, under its own label where it has one,
+  // `value: _` — so a literal callee speculates them in that order, and the
+  // field map's reorder aligns the hole and every argument into declared order
+  // as it would a direct call's.
+  let hole_field = case label {
+    Some(name) -> glance.LabelledField(name, span, Read(hole))
+    None -> glance.UnlabelledField(Read(hole))
+  }
+  let arguments =
     list.flatten([
-      list.map(before, map_field(_, Argument)),
+      list.map(before, map_field(_, Written)),
       [hole_field],
-      list.map(after, map_field(_, Argument)),
+      list.map(after, map_field(_, Written)),
     ])
-  use #(return, st) <- result.try(
-    place_arguments(
-      st,
-      fn_type,
-      labels,
-      slots,
-      Argument,
-      fn(st, slot, slot_type) {
-        case slot {
-          Argument(expression) -> check(env, st, expression, slot_type)
-          Implicit -> unify(st, hole, slot_type)
-        }
-      },
-    ),
-  )
+  use #(return, st) <- result.try({
+    use st <- scoped(st)
+    infer_call(env, st, function, arguments)
+  })
   // A capture is a lambda whose body is the call, so its return is the
   // callee's own — `Loud(_)` returns a value known to be `Loud`.
   Ok(#(ty.Fn([hole], return), st))
@@ -4100,110 +4211,122 @@ fn infer_pipe(
   right: glance.Expression,
 ) -> Result(#(ty.Type, State), Error) {
   case right {
-    glance.Call(call_span, function, arguments) -> {
-      // `left |> f(args)` is `f(left, args)` when `f` takes one more argument
-      // than is supplied. But if `f(args)` is already a saturated call that
-      // returns a function, the pipe applies `left` to that result:
-      // `f(args)(left)`. Distinguish on the callee's arity.
-      //
-      // The probe's state is thrown away and `st` carries on: `infer_call`
-      // infers the callee again, properly, and keeping the probe's work would
-      // annotate and resolve the callee's span twice over — the second time
-      // with the instantiation the call actually constrained. An ill-typed
-      // callee still fails here, as it did before.
-      use #(ft, probe) <- result.try(infer_expr(env, st, function))
-      let saturated = case resolve(probe, ft) {
-        ty.Fn(params, _) -> list.length(params) == list.length(arguments)
-        _ -> False
-      }
-      case saturated {
-        True -> {
-          use #(call_type, st) <- result.try(infer_expr(env, st, right))
-          use #(lt, st) <- result.try(infer_expr(env, st, left))
-          let #(result, st) = fresh(st)
-          use st <- result.try(unify(st, call_type, ty.Fn([lt], result)))
-          Ok(#(call_return(st, call_type, result), st))
-        }
-        // `f(left, args)` has no node of its own, so the call is inferred
-        // through `infer_call` and its span recorded here, once; the whole
-        // pipe's span is `infer_expr`'s.
-        False -> {
-          use #(call_type, st) <- result.try(
-            infer_call(env, st, function, [
-              glance.UnlabelledField(left),
-              ..arguments
-            ]),
-          )
-          Ok(#(call_type, record(st, call_span, call_type)))
-        }
-      }
-    }
     // `left |> echo` is `echo left`: it prints the piped value and returns it,
     // so the `echo` and the pipe both have its type, as the compiler's pipeline
     // typer gives them. Inferred as that `echo`, through `infer_expr`, it
     // records its span like any expression and names nothing to resolve.
     glance.Echo(echo_span, None, message) ->
       infer_expr(env, st, glance.Echo(echo_span, Some(left), message))
-    // `left |> f` becomes `f(left)`, so the target is applied to the piped
-    // value's type whatever it is. How it is walked is what differs: a lambda
-    // is checked against that application, and anything else resolves as a
-    // callee.
+    // Every other step is typed after the left side (`pipe.rs:43-63`), against
+    // a local the compiler generates to hold the left value's type. A lambda
+    // or capture step is a call of the literal on a read of that local
+    // (`pipe.rs:97-125`), so it goes the way of a literal callee: the
+    // speculative pass reads the left value to seed the parameter, and the
+    // real pass reads it again as the argument.
     _ -> {
-      use #(lt, st) <- result.try(infer_expr(env, st, left))
-      let #(result, st) = fresh(st)
-      let piped = ty.Fn([lt], result)
-      use st <- result.try(case right {
-        // A lambda target is the one shape whose body can use what it is piped:
-        // `check` seeds its parameter from the piped value's type before the
-        // body is inferred, so a field access on that parameter resolves at the
-        // access. The compiler reaches the same place by rewriting the pipe
-        // into a call of the lambda on the piped value.
-        //
-        // A lambda of the wrong arity is not a `Fn` of this shape, so `check`
-        // falls back to infer-then-unify and fails exactly where it does today.
-        glance.Fn(..) -> check(env, st, right, piped)
-        // Any other target is a callee, so it resolves through `infer_callee`
-        // — which is `infer_expr` plus a field-map lookup this shape has no
-        // arguments to use, so the type is unchanged, but which is also what
-        // records a bare name's reference.
-        _ -> {
-          use #(ft, _labels, st) <- result.try(infer_callee(env, st, right))
-          unify(st, ft, piped)
-        }
-      })
-      Ok(#(result, st))
+      use #(left_type, st) <- result.try(infer_expr(env, st, left))
+      case right, fn_literal_of_arity(right, 1) {
+        glance.Call(call_span, function, arguments), _ ->
+          infer_pipe_call(env, st, left_type, call_span, function, arguments)
+        _, Ok(_) ->
+          infer_call(env, st, right, [glance.UnlabelledField(Read(left_type))])
+        _, Error(Nil) -> infer_pipe_apply(env, st, left_type, right)
+      }
     }
   }
 }
 
-// Infer an expression and unify it against an expected type. A lambda is
-// checked against the expected type so its parameters are seeded from the
-// expected argument types before its body is inferred.
+// `left |> f(args)`. The callee is typed once, as the compiler's
+// `infer_called` types it (`pipe.rs:130-167, 404-430`): a function literal
+// there has no call context, so its explicit arguments are not speculated.
+// Then its arity decides the shape, and both shapes check their arguments
+// against the known callee (`do_infer_call_with_known_fun`).
+fn infer_pipe_call(
+  env: Env,
+  st: State,
+  left_type: ty.Type,
+  call_span: glance.Span,
+  function: glance.Expression,
+  arguments: List(glance.Field(glance.Expression)),
+) -> Result(#(ty.Type, State), Error) {
+  use #(fn_type, labels, st) <- result.try(infer_callee(env, st, function))
+  let left = Read(left_type)
+  let written = list.map(arguments, map_field(_, Written))
+  case expected_fn(st, fn_type, list.length(arguments)) {
+    // `f(args)` is already a saturated call, which returns a function: the
+    // pipe applies it to the left value, `f(args)(left)`
+    // (`infer_apply_to_call_pipe`, `pipe.rs:297-330`). The call `f(args)` is
+    // recorded at the step's span, as `infer_expr` would record it.
+    Ok(_) -> {
+      use #(call_type, st) <- result.try(place_arguments(
+        env,
+        st,
+        fn_type,
+        labels,
+        written,
+      ))
+      let st = record(st, call_span, call_type)
+      place_arguments(env, st, call_type, None, [glance.UnlabelledField(left)])
+    }
+    // `f(left, args)` (`infer_insert_pipe`, `pipe.rs:335-355`): the left value
+    // is the first argument in source order, read where the reorder places it,
+    // so a labelled argument placed before it is inferred first
+    // (`fields.rs:128-137`). The call has no node of its own, so its span is
+    // recorded here, once; the whole pipe's span is `infer_expr`'s.
+    Error(Nil) -> {
+      use #(call_type, st) <- result.try(
+        place_arguments(env, st, fn_type, labels, [
+          glance.UnlabelledField(left),
+          ..written
+        ]),
+      )
+      Ok(#(call_type, record(st, call_span, call_type)))
+    }
+  }
+}
+
+// `left |> f` for any other `f`: the step is unified with a function of the
+// left value's own type, with no read of it (`infer_apply_pipe`,
+// `pipe.rs:367-399`). It resolves through `infer_callee` — `infer_expr` plus a
+// field-map lookup this shape has no arguments to use — which is also what
+// records a bare name's reference.
+fn infer_pipe_apply(
+  env: Env,
+  st: State,
+  left_type: ty.Type,
+  right: glance.Expression,
+) -> Result(#(ty.Type, State), Error) {
+  use #(function_type, _labels, st) <- result.try(infer_callee(env, st, right))
+  let #(result, st) = fresh(st)
+  use st <- result.try(unify(st, function_type, ty.Fn([left_type], result)))
+  Ok(#(result, st))
+}
+
+// Infer an expression and unify it against an expected type. A function
+// literal — a lambda or a capture — is checked against the expected type so
+// its parameters are seeded from the expected argument types before its body
+// is inferred (`infer_call_argument`, `expression.rs:3942-3985`).
 fn check(
   env: Env,
   st: State,
   expr: glance.Expression,
   expected: ty.Type,
 ) -> Result(State, Error) {
-  let seeded = case expr {
-    glance.Fn(_, params, _, _) -> expected_fn(st, expected, list.length(params))
-    _ -> Error(Nil)
+  let seeded = {
+    use literal <- result.try(as_fn_literal(expr))
+    use #(seeds, _return) <- result.map(expected_fn(
+      st,
+      expected,
+      fn_literal_arity(literal),
+    ))
+    #(literal, seeds)
   }
-  case expr, seeded {
-    glance.Fn(span, params, return_annotation, body), Ok(#(seeds, ret)) -> {
-      use #(fn_type, st) <- result.try(infer_seeded_lambda(
-        env,
-        st,
-        span,
-        params,
-        return_annotation,
-        body,
-        seeds,
-        Some(ret),
-      ))
+  case seeded {
+    Ok(#(literal, seeds)) -> {
+      use #(fn_type, st) <- result.try(infer_seeded(env, st, literal, seeds))
       unify(st, fn_type, expected)
     }
-    _, _ -> {
+    Error(Nil) -> {
       use #(t, st) <- result.try(infer_expr(env, st, expr))
       unify(st, t, expected)
     }
@@ -4265,19 +4388,6 @@ fn infer_statements(
   }
 }
 
-// A slot in a call girard assembles rather than reads: the arguments a capture
-// or a `use` writes out, plus the one argument that is implied rather than
-// written — a capture's hole, a `use`'s callback. Neither is a
-// `glance.Expression` (the hole is the capture's own parameter; the callback's
-// parameters are patterns and its body is the rest of the block), so the
-// implied one travels through the reorder as a marker and each shape says what
-// checking it means. The field map may place it anywhere among the others,
-// which is the whole reason it goes through the reorder at all.
-type CallSlot {
-  Argument(expression: glance.Expression)
-  Implicit
-}
-
 // Desugar `use a, b <- rhs(args)` followed by `rest` into
 // `rhs(args, fn(a, b) { rest })` and infer the resulting call.
 //
@@ -4289,6 +4399,10 @@ type CallSlot {
 // labelled explicit argument can leave the callback an earlier slot than the
 // last — and the slots are then walked in declared order, so an explicit
 // argument declared after the callback is inferred after it.
+//
+// The desugared call is an ordinary call (`expression.rs:802-888`), so a
+// literal callee speculates its arguments first: the explicit ones in source
+// order, then the callback, which has no expected type yet.
 fn infer_use(
   env: Env,
   st: State,
@@ -4302,17 +4416,11 @@ fn infer_use(
     // its only argument.
     other -> #(other, [])
   }
-  use #(callee_type, labels, st) <- result.try(infer_callee(env, st, callee))
-  let slots =
-    list.append(list.map(arguments, map_field(_, Argument)), [
-      glance.UnlabelledField(Implicit),
+  let arguments =
+    list.append(list.map(arguments, map_field(_, Written)), [
+      glance.UnlabelledField(Callback(use_patterns, rest)),
     ])
-  place_arguments(st, callee_type, labels, slots, Argument, fn(st, slot, hole) {
-    case slot {
-      Argument(expression) -> check(env, st, expression, hole)
-      Implicit -> check_callback(env, st, use_patterns, rest, hole)
-    }
-  })
+  infer_call(env, st, callee, arguments)
 }
 
 // Check a `use` callback against the parameter type its slot was given, the way
@@ -4322,6 +4430,13 @@ fn infer_use(
 // same: where the expected type is a function of the patterns' arity, each
 // pattern is inferred against its expected parameter type, so a field access on
 // a `use` binding sees the type it was bound at.
+//
+// The callback is the lambda the compiler desugars it to
+// (`UseAssignments::from_use_expression`, `expression.rs:4849-4909`). A
+// variable or discard pattern is a parameter, its annotation the parameter's.
+// Any other pattern is a generated parameter with no annotation, and the
+// pattern with its annotation is the assignment `let pattern: ann = _use<n>`
+// at the head of the body.
 fn check_callback(
   env: Env,
   st: State,
@@ -4329,35 +4444,95 @@ fn check_callback(
   rest: List(glance.Statement),
   expected: ty.Type,
 ) -> Result(State, Error) {
-  let #(seeds, st) = case expected_fn(st, expected, list.length(use_patterns)) {
-    Ok(#(params, _return)) -> #(params, st)
-    Error(_) -> fresh_n(st, list.length(use_patterns))
+  let seeds = case expected_fn(st, expected, list.length(use_patterns)) {
+    Ok(#(params, _return)) -> Some(params)
+    Error(_) -> None
   }
-  use #(callback_env, st) <- result.try(
-    list.try_fold(list.zip(use_patterns, seeds), #(env, st), fn(acc, pair) {
+  // A simple pattern's annotation is its parameter's, hydrated here, in the
+  // enclosing scope, as a lambda parameter's is; a complex pattern's
+  // parameter has none.
+  let annotations =
+    list.map(use_patterns, fn(use_pattern) {
+      case simple_use_pattern(use_pattern) {
+        True -> use_pattern.annotation
+        False -> None
+      }
+    })
+  use #(param_types, st) <- result.try(parameter_types(
+    env,
+    st,
+    annotations,
+    seeds,
+  ))
+  // The body, a scope of its own: the simple patterns bound as parameters,
+  // then each generated assignment in order — a read of its parameter, the
+  // pattern against what was read, then the annotation, hydrated in the body's
+  // scope, as a `let` is typed.
+  let #(simple, complex) =
+    list.zip(use_patterns, param_types)
+    |> list.partition(fn(param) { simple_use_pattern(param.0) })
+  use #(body_env, st) <- result.try(
+    list.try_fold(simple, #(env, st), fn(acc, param) {
       let #(env, st) = acc
-      let #(use_pattern, seed) = pair
-      use st <- result.try(case use_pattern.annotation {
-        Some(ann) -> {
-          let #(annotated, st) = hydrate(env, st, ann)
-          unify(st, annotated, seed)
-        }
-        None -> Ok(st)
-      })
-      use #(env, _, st) <- result.try(infer_pattern(
+      let #(use_pattern, type_) = param
+      use #(env, _, st) <- result.map(infer_pattern(
         env,
         st,
         use_pattern.pattern,
-        seed,
+        type_,
         None,
       ))
-      Ok(#(env, st))
+      #(env, st)
     }),
   )
-  // The patterns bind at the seeds themselves, so the callback's parameter
-  // types are the seeds — nothing the fold above can change.
-  use #(body_type, st) <- result.try(infer_statements(callback_env, st, rest))
-  unify(st, ty.Fn(seeds, body_type), expected)
+  use #(body_type, st) <- result.try({
+    use st <- scoped(st)
+    use #(body_env, st) <- result.try(
+      list.try_fold(complex, #(body_env, st), fn(acc, param) {
+        let #(env, st) = acc
+        use_assignment(env, st, param.0, param.1)
+      }),
+    )
+    infer_statements(body_env, st, rest)
+  })
+  unify(st, ty.Fn(param_types, body_type), expected)
+}
+
+// The assignment the compiler generates at the head of a `use` callback's
+// body for a pattern that is not a parameter, `let pattern: ann = _use<n>`,
+// typed as any `let` is: a read of the parameter, the pattern against what
+// was read, then the annotation.
+fn use_assignment(
+  env: Env,
+  st: State,
+  use_pattern: glance.UsePattern,
+  param_type: ty.Type,
+) -> Result(#(Env, State), Error) {
+  let #(read, st) = read_type(st, param_type)
+  use #(env, _, st) <- result.try(infer_pattern(
+    env,
+    st,
+    use_pattern.pattern,
+    read,
+    None,
+  ))
+  use st <- result.map(case use_pattern.annotation {
+    Some(ann) -> {
+      let #(annotated, st) = hydrate_scoped(env, st, ann)
+      unify(st, annotated, read)
+    }
+    None -> Ok(st)
+  })
+  #(env, st)
+}
+
+// Whether a `use` pattern is a parameter of the callback the compiler
+// desugars, rather than an assignment in its body: a variable or a discard.
+fn simple_use_pattern(use_pattern: glance.UsePattern) -> Bool {
+  case use_pattern.pattern {
+    glance.PatternVariable(..) | glance.PatternDiscard(..) -> True
+    _ -> False
+  }
 }
 
 // When a lambda of `arity` parameters may be seeded from `expected`: its
@@ -4392,41 +4567,6 @@ fn infer_statement(
       Ok(#(t, env, st))
     }
 
-    // `let name = fn(...)` whose annotations name type variables is generalized
-    // over exactly those variables — Gleam makes such a local binding
-    // polymorphic (`let id = fn(x: a) -> a { x }` may then be used at several
-    // types), unlike an unannotated `let id = fn(x) { x }`, which stays
-    // monomorphic.
-    glance.Assignment(
-      _,
-      kind,
-      glance.PatternVariable(_, name) as pattern,
-      None,
-      glance.Fn(fspan, fparams, freturn, fbody) as value,
-    ) ->
-      case fn_annotation_var_names(fparams, freturn) {
-        [] -> infer_expr_assignment(env, st, kind, pattern, None, value)
-        _ -> {
-          let #(names, ann_ids, st) = annotation_var_names(st, fparams, freturn)
-          let #(seeds, st) = fresh_n(st, list.length(fparams))
-          use #(value_type, st) <- result.try(infer_lambda(
-            env,
-            st,
-            fparams,
-            freturn,
-            fbody,
-            seeds,
-            None,
-            names,
-          ))
-          let st = record(st, fspan, value_type)
-          let message = reference.assignment_message(kind)
-          use st <- result.try(check_message(env, st, message))
-          let scheme = generalize_over(st, env, value_type, ann_ids)
-          Ok(#(value_type, bind_local(env, name, scheme), st))
-        }
-      }
-
     glance.Assignment(_, kind, pattern, annotation, value) ->
       infer_expr_assignment(env, st, kind, pattern, annotation, value)
 
@@ -4441,12 +4581,17 @@ fn infer_statement(
   }
 }
 
-// The general `let pattern = value` case: infer the value, check a `let
-// assert`'s message, optionally check the value against the binding's
-// annotation, then bind the pattern monomorphically. The message is checked
-// under the incoming `env`, before the pattern binds, as the compiler's
-// `infer_assignment` checks it: it sees neither the pattern's names nor what
-// the pattern constrains.
+// `let pattern = value`, in the compiler's order (`infer_assignment`,
+// `expression.rs:2085-2114`): infer the value in a scope of its own, check a
+// `let assert`'s message, bind the pattern monomorphically, then check the
+// value against the binding's annotation, hydrated in the statement's scope,
+// so a name it creates is visible to the rest of the block. The message is
+// checked under the incoming `env`, before the pattern binds: it sees neither
+// the pattern's names nor what the pattern constrains.
+//
+// A let-bound annotated lambda is polymorphic with no generalization step:
+// its annotations' generics leave scope with the value, so each read of the
+// binding copies them.
 fn infer_expr_assignment(
   env: Env,
   st: State,
@@ -4455,25 +4600,28 @@ fn infer_expr_assignment(
   annotation: Option(glance.Type),
   value: glance.Expression,
 ) -> Result(#(ty.Type, Env, State), Error) {
-  use #(value_type, st) <- result.try(infer_expr(env, st, value))
+  use #(value_type, st) <- result.try({
+    use st <- scoped(st)
+    infer_expr(env, st, value)
+  })
   let message = reference.assignment_message(kind)
   use st <- result.try(check_message(env, st, message))
-  use st <- result.try(case annotation {
-    Some(ann) -> {
-      let #(t, st) = hydrate(env, st, ann)
-      unify(st, value_type, t)
-    }
-    None -> Ok(st)
-  })
   // `let assert Ctor(..) = x` narrows `x` itself, for the rest of the block.
-  use #(env, _, st) <- result.try(infer_pattern(
+  use #(pattern_env, _, st) <- result.try(infer_pattern(
     env,
     st,
     pattern,
     value_type,
     subject_variable(value, reference.pattern_names(pattern)),
   ))
-  Ok(#(value_type, env, st))
+  use st <- result.try(case annotation {
+    Some(ann) -> {
+      let #(t, st) = hydrate_scoped(env, st, ann)
+      unify(st, value_type, t)
+    }
+    None -> Ok(st)
+  })
+  Ok(#(value_type, pattern_env, st))
 }
 
 // Case expressions
@@ -4488,7 +4636,14 @@ fn infer_case(
   subjects: List(glance.Expression),
   clauses: List(glance.Clause),
 ) -> Result(#(ty.Type, State), Error) {
-  use #(subject_types, st) <- result.try(infer_each(env, st, subjects))
+  // Each subject is a scope of its own, as the compiler's `infer_case` scopes
+  // it (`expression.rs:2285`).
+  use #(subject_types, st) <- result.try(
+    infer_each(st, subjects, fn(st, subject) {
+      use st <- scoped(st)
+      infer_expr(env, st, subject)
+    }),
+  )
   let #(result, st) = fresh(st)
   use st <- result.try(
     list.try_fold(clauses, st, fn(st, clause) {
@@ -4506,6 +4661,8 @@ fn infer_clause(
   subject_types: List(ty.Type),
   result: ty.Type,
 ) -> Result(State, Error) {
+  // A clause is a scope of its own (`expression.rs:2387`).
+  use st <- scoped_state(st)
   // Each clause may have several alternative pattern lists (`a | b ->`); each
   // binds the same variables and is checked against the subject types. Every
   // alternative is bound first, so the narrowings they disagree on can be
@@ -4822,7 +4979,7 @@ fn infer_pattern(
     glance.PatternDiscard(..) -> Ok(#(env, expected, st))
 
     glance.PatternVariable(_, name) ->
-      Ok(#(bind_local(env, name, ty.Scheme([], expected)), expected, st))
+      Ok(#(bind_local(env, name, expected), expected, st))
 
     glance.PatternTuple(_, elements) -> {
       // Destructure a tuple the expected type already is, element by element,
@@ -4894,7 +5051,7 @@ fn infer_pattern(
         expected,
         subject,
       ))
-      Ok(#(bind_local(env, name, ty.Scheme([], type_)), type_, st))
+      Ok(#(bind_local(env, name, type_), type_, st))
     }
 
     glance.PatternConcatenate(_, _prefix, prefix_name, rest_name) -> {
@@ -4903,7 +5060,7 @@ fn infer_pattern(
       // String. The prefix binding is optional (`<> rest` with no `as`).
       let bind_name = fn(env, name) {
         case name {
-          glance.Named(n) -> bind_local(env, n, ty.Scheme([], prelude_string()))
+          glance.Named(n) -> bind_local(env, n, prelude_string())
           glance.Discarded(_) -> env
         }
       }
@@ -5189,11 +5346,58 @@ fn indices_loop(i: Int, acc: List(Int)) -> List(Int) {
 //
 // Convert a written type annotation into an internal `Type`, expanding aliases
 // and attributing named types to their origin module. Hydration never fails:
-// unknown type variables become fresh variables. An unresolved unqualified
-// name is attributed to the prelude; an unresolved qualified name keeps its
-// written module alias.
-fn hydrate(env: Env, st: State, ast: glance.Type) -> #(ty.Type, State) {
-  hydrate_with(env, dict.new(), st, ast).0
+// a type variable is the one its name table holds, or a new one. An
+// unresolved unqualified name is attributed to the prelude; an unresolved
+// qualified name keeps its written module alias.
+
+// Hydrate an annotation inside a function or a constant, as the compiler's
+// `type_from_ast` does with new type variables permitted
+// (`hydrator.rs:288-330`): a name already in scope is that type, and a new
+// name is a generic the scope owns from here on, in scope until the boundary
+// it was created inside closes. A hole is a flexible variable.
+fn hydrate_scoped(env: Env, st: State, ast: glance.Type) -> #(ty.Type, State) {
+  let before = st.scope.names
+  let #(#(type_, st), names) = hydrate_with(env, before, st, ast)
+  // `hydrate_with` only adds the names it does not find, so a table of the
+  // same size means no name was created.
+  use <- bool.guard(when: dict.size(names) == dict.size(before), return: #(
+    type_,
+    st,
+  ))
+  // `hydrate_with` minted each new name as a fresh variable nothing has
+  // unified yet, so marking it a generic now is the same as minting one.
+  let created =
+    dict.drop(names, dict.keys(before))
+    |> dict.values
+    |> list.filter_map(var_id)
+  let st = mark_rigid(st, created)
+  let owned = list.fold(created, st.scope.owned, set.insert)
+  #(type_, State(..st, scope: Scope(names:, owned:)))
+}
+
+// Run `infer` inside a new annotation scope, as the compiler's `scoped`
+// (`expression.rs:381-393`) saves the hydrator's names around a `let` value,
+// each `case` subject, a `case` clause, a function body and a block: a name
+// created inside leaves scope when the boundary closes, though its generic
+// stays rigid, so every later read copies it. On an error the state is
+// discarded whole, its scope with it.
+fn scoped(
+  st: State,
+  infer: fn(State) -> Result(#(a, State), Error),
+) -> Result(#(a, State), Error) {
+  let scope = st.scope
+  use #(value, st) <- result.map(infer(st))
+  #(value, State(..st, scope:))
+}
+
+// `scoped` for a walk that returns only the state.
+fn scoped_state(
+  st: State,
+  infer: fn(State) -> Result(State, Error),
+) -> Result(State, Error) {
+  let scope = st.scope
+  use st <- result.map(infer(st))
+  State(..st, scope:)
 }
 
 // Resolve a (possibly qualified) type name applied to `arg_types` to a concrete
@@ -5430,7 +5634,8 @@ fn publish_resolution(st: State, resolved: Resolved) -> Resolution {
     // *there*, never the alias it was read under: an
     // `import kinds.{Near as Close}` publishes `Constructor("kinds", "Near")`.
     ResolvedValue(FunctionValue(module:, name:, ..)) -> ModuleFn(module, name)
-    ResolvedValue(ConstantValue(module:, name:)) -> ModuleConstant(module, name)
+    ResolvedValue(ConstantValue(module:, name:, ..)) ->
+      ModuleConstant(module, name)
     ResolvedValue(ConstructorValue(module:, name:, ..)) ->
       Constructor(module, name)
     ResolvedValue(LocalValue(name:)) -> LocalVariable(name)
