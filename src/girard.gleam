@@ -447,6 +447,13 @@ fn parse(source: String) -> Result(glance.Module, Error) {
 /// and passes them to every importer built over it. After a missing module
 /// appears, invalidate the interfaces built without it and their cached
 /// importers, as for any interface change.
+///
+/// A module's interface can change without any signature changing: a guard
+/// or a constant record update in it may bind a constant of another module,
+/// and its importers see that binding, as the compiler's do. A cached
+/// interface keeps the bindings it was built with, so after any edit to a
+/// module, invalidate it and every cached module that imports it, directly or
+/// transitively.
 pub opaque type Cache {
   Cache(interfaces: InterfaceCache)
 }
@@ -495,9 +502,10 @@ pub fn annotate_with_cache(
 /// that needs it re-infers it from source. Use this when a module changes.
 ///
 /// Only the named module is dropped. A cached module that *imports* the changed
-/// one keeps its own (now possibly stale) interface, so after a change that
-/// alters a module's public surface, also invalidate its importers — or start
-/// from a [`new_cache`](#new_cache).
+/// one keeps its own (now possibly stale) interface, so after any edit also
+/// invalidate every cached module that imports it, directly or transitively —
+/// or start from a [`new_cache`](#new_cache). An edit can change an importer's
+/// interface even when every signature stays the same (see [`Cache`](#Cache)).
 pub fn invalidate(cache: Cache, path: String) -> Cache {
   Cache(dict.delete(cache.interfaces, path))
 }

@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_ if value.field == 0` with `const value: Row = A(0)`, now types.
 - A lambda parameter seeded from a known type no longer keeps that type's
   variant, as in the compiler.
+- A bit-array pattern size reads the names bound before its pattern, in its
+  own earlier segments or by the clause's first alternative, as in the
+  compiler.
+- A record update keeps the type of an unlabelled field it copies.
+- A function literal called on an argument that types only once its parameters
+  are known, as a callback whose parameter is named like a module, now types.
+- A guard reading a bare constant name sees how guards earlier in its module,
+  or in a module it imports, pinned the constant's type, as the compiler does.
+- An empty block, an empty function body and a `use` with nothing after it
+  type as the implicit `todo` they are, not as `Nil`.
 
 ## [4.0.1] - 2026-11-16
 
