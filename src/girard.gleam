@@ -783,6 +783,29 @@ fn empty_scope() -> Scope {
   Scope(dict.new(), set.new())
 }
 
+// A failed inference step: the error, and the state at the point it failed.
+// The state holds every unification, id, scope change and literal view made
+// before the failure, as the compiler's mutable type cells keep them. A strict
+// caller drops it and reports the error. A caller that rolls back to a state
+// it saved itself — a best-effort group, the speculative pass — ignores it.
+type Failure {
+  Failure(error: Error, state: State)
+}
+
+// Fail at `st` with `error`.
+fn fail(st: State, error: Error) -> Result(a, Failure) {
+  Error(Failure(error, st))
+}
+
+// A stateless helper's result, its error failing at `st`: the helper changed
+// nothing, so the state its caller holds is the state at the failure.
+fn stateless(st: State, result: Result(a, Error)) -> Result(a, Failure) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(error) -> fail(st, error)
+  }
+}
+
 // A deferred access awaiting its container's type.
 type Pending {
   // `record.label` — the field type goes in `result`.
@@ -1515,7 +1538,9 @@ fn infer_defs(
         list.try_fold(groups, initial, fn(groups, group) {
           use #(env, st) <- result.map(infer_group(groups, group, base))
           inferred(groups, env, st)
-        }),
+        })
+        // The first failure is the module's error; its state is dropped.
+        |> result.map_error(fn(failure) { failure.error }),
       )
       #(#(done.env, done.st), [])
     }
@@ -1555,7 +1580,7 @@ fn best_effort_group(
   case infer_group(groups, group, base), group {
     Ok(#(env, st)), _ -> inferred(groups, env, st)
     Error(_), [_, _, ..] -> split_group(groups, group, base, aliases)
-    Error(error), _ -> skip_group(groups, group, base, error)
+    Error(Failure(error, _)), _ -> skip_group(groups, group, base, error)
   }
 }
 
@@ -1589,7 +1614,7 @@ fn split_group(
     let sub = list.filter_map(names, dict.get(by_name, _))
     case infer_group(groups, sub, base) {
       Ok(#(env, st)) -> inferred(groups, env, st)
-      Error(error) -> skip_group(groups, sub, base, error)
+      Error(Failure(error, _)) -> skip_group(groups, sub, base, error)
     }
   })
 }
@@ -1648,7 +1673,7 @@ fn infer_group(
   groups: Groups,
   group: List(GroupItem),
   base: Env,
-) -> Result(#(Env, State), Error) {
+) -> Result(#(Env, State), Failure) {
   let Groups(env:, st:, ..) = groups
   // Each member's type, in the group's order, to generalize once all are
   // inferred.
@@ -2378,7 +2403,7 @@ fn erase_all(type_: ty.Type) -> ty.Type {
 // Unify two types, binding flexible variables and rejecting rigid ones, with
 // the occurs check that guards against infinite types.
 
-fn unify(st: State, left: ty.Type, right: ty.Type) -> Result(State, Error) {
+fn unify(st: State, left: ty.Type, right: ty.Type) -> Result(State, Failure) {
   let left = resolve(st, left)
   let right = resolve(st, right)
   case left, right {
@@ -2387,53 +2412,79 @@ fn unify(st: State, left: ty.Type, right: ty.Type) -> Result(State, Error) {
     // rigid variables, or a rigid variable against a concrete type, mismatch.
     ty.Var(i), ty.Var(j) ->
       case is_rigid(st, i), is_rigid(st, j) {
-        True, True -> Error(type_mismatch(left, right))
+        True, True -> fail(st, type_mismatch(left, right))
         True, False -> bind_var(st, j, left)
         False, _ -> bind_var(st, i, right)
       }
     ty.Var(i), other ->
       case is_rigid(st, i) {
-        True -> Error(type_mismatch(left, right))
+        True -> fail(st, type_mismatch(left, right))
         False -> bind_var(st, i, other)
       }
     other, ty.Var(j) ->
       case is_rigid(st, j) {
-        True -> Error(type_mismatch(left, right))
+        True -> fail(st, type_mismatch(left, right))
         False -> bind_var(st, j, other)
       }
 
+    // A pair of different lengths fails before any element is unified, as the
+    // compiler checks lengths first (`environment.rs:1147, 1163, 1182-1188`):
+    // a named type or a tuple with a plain mismatch, a function with the arity
+    // reason. Within a pair the elements unify left to right, a function's
+    // parameters before its return, and stop at the first failure, whose state
+    // keeps the links made before it.
     ty.Named(m1, n1, a1, _), ty.Named(m2, n2, a2, _) if m1 == m2 && n1 == n2 ->
-      unify_many(st, a1, a2)
+      case same_length(a1, a2) {
+        True -> unify_many(st, a1, a2)
+        False -> fail(st, type_mismatch(left, right))
+      }
 
-    ty.Fn(args1, r1), ty.Fn(args2, r2) -> {
-      use st <- result.try(unify_many(st, args1, args2))
-      unify(st, r1, r2)
-    }
+    ty.Fn(args1, r1), ty.Fn(args2, r2) ->
+      case same_length(args1, args2) {
+        True -> {
+          use st <- result.try(unify_many(st, args1, args2))
+          unify(st, r1, r2)
+        }
+        False -> fail(st, ArityMismatch)
+      }
 
-    ty.Tuple(e1), ty.Tuple(e2) -> unify_many(st, e1, e2)
+    ty.Tuple(e1), ty.Tuple(e2) ->
+      case same_length(e1, e2) {
+        True -> unify_many(st, e1, e2)
+        False -> fail(st, type_mismatch(left, right))
+      }
 
-    _, _ -> Error(type_mismatch(left, right))
+    _, _ -> fail(st, type_mismatch(left, right))
   }
 }
 
+// Unify two lists of the same length, element by element, left to right.
 fn unify_many(
   st: State,
   left: List(ty.Type),
   right: List(ty.Type),
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   case left, right {
-    [], [] -> Ok(st)
     [x, ..xs], [y, ..ys] -> {
       use st <- result.try(unify(st, x, y))
       unify_many(st, xs, ys)
     }
-    _, _ -> Error(ArityMismatch)
+    // Both lists are empty: every caller checks the lengths first.
+    _, _ -> Ok(st)
   }
 }
 
-fn bind_var(st: State, id: Int, type_: ty.Type) -> Result(State, Error) {
+fn same_length(left: List(a), right: List(b)) -> Bool {
+  case left, right {
+    [], [] -> True
+    [_, ..left], [_, ..right] -> same_length(left, right)
+    [], [_, ..] | [_, ..], [] -> False
+  }
+}
+
+fn bind_var(st: State, id: Int, type_: ty.Type) -> Result(State, Failure) {
   use <- bool.lazy_guard(when: occurs(st, id, type_), return: fn() {
-    Error(recursive_type(id, type_))
+    fail(st, recursive_type(id, type_))
   })
   // A value bound to a type variable is no longer known to be any one variant:
   // this is the compiler's erase, in the one place a variable is ever bound.
@@ -2594,9 +2645,9 @@ fn read_name(
   env: Env,
   st: State,
   name: String,
-) -> Result(#(ValueConstructor, ty.Type, State), Error) {
+) -> Result(#(ValueConstructor, ty.Type, State), Failure) {
   case dict.get(env.values, name) {
-    Error(_) -> Error(UnboundVariable(name))
+    Error(_) -> fail(st, UnboundVariable(name))
     Ok(entry) -> {
       let #(type_, st) = read_value(st, entry.scheme)
       Ok(#(entry, type_, st))
@@ -2702,7 +2753,7 @@ fn check_body(
   st: State,
   function: glance.Function,
   return_type: ty.Type,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   case function.body {
     [] -> Ok(st)
     _ -> {
@@ -2725,7 +2776,7 @@ fn infer_constant(
   env: Env,
   st: State,
   constant: glance.Constant,
-) -> Result(#(ConstantLiteral, State), Error) {
+) -> Result(#(ConstantLiteral, State), Failure) {
   use #(value_type, st) <- result.try(infer_expr(
     Env(..env, syntax: ConstantSyntax),
     st,
@@ -2941,7 +2992,7 @@ fn accessors_of_module(env: Env, module: String) -> Dict(String, Accessors) {
 // unknown when first seen. By now inference has fixed the record types; any
 // that are still unknown are genuinely ambiguous (the compiler rejects these
 // too).
-fn resolve_pending(env: Env, st: State) -> Result(State, Error) {
+fn resolve_pending(env: Env, st: State) -> Result(State, Failure) {
   // Process in discovery order so inner accesses of a chain (`a.b.c`) resolve
   // before the outer ones, and loop to a fixpoint for any remaining cross
   // dependencies. Anything still unresolved is genuinely ambiguous.
@@ -2959,10 +3010,10 @@ fn resolve_pending_loop(
   st: State,
   pending: List(Pending),
   fuel: Int,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   case pending, fuel <= 0 {
     [], _ -> Ok(st)
-    [_, ..], True -> Error(NotARecord)
+    [_, ..], True -> fail(st, NotARecord)
     _, False -> {
       use #(st, remaining, progressed) <- result.try(
         list.try_fold(pending, #(st, [], False), fn(acc, item) {
@@ -2976,7 +3027,7 @@ fn resolve_pending_loop(
       )
       case progressed {
         True -> resolve_pending_loop(env, st, list.reverse(remaining), fuel - 1)
-        False -> Error(NotARecord)
+        False -> fail(st, NotARecord)
       }
     }
   }
@@ -2989,12 +3040,12 @@ fn resolve_one(
   env: Env,
   st: State,
   item: Pending,
-) -> Result(#(State, Bool), Error) {
+) -> Result(#(State, Bool), Failure) {
   case item {
     PendingField(container, label, field) ->
       case resolve(st, container) {
         ty.Named(_, _, _, _) as record -> {
-          use scheme <- result.try(accessor(env, record, label))
+          use scheme <- result.try(stateless(st, accessor(env, record, label)))
           let #(accessor_type, st) = instantiate(st, scheme)
           use st <- result.try(unify(
             st,
@@ -3004,7 +3055,7 @@ fn resolve_one(
           Ok(#(st, True))
         }
         ty.Var(_) -> Ok(#(st, False))
-        _ -> Error(NotARecord)
+        _ -> fail(st, NotARecord)
       }
     PendingIndex(container, index, result) ->
       case resolve(st, container) {
@@ -3014,10 +3065,10 @@ fn resolve_one(
               use st <- result.try(unify(st, element, result))
               Ok(#(st, True))
             }
-            Error(_) -> Error(TupleIndexOutOfRange(index))
+            Error(_) -> fail(st, TupleIndexOutOfRange(index))
           }
         ty.Var(_) -> Ok(#(st, False))
-        _ -> Error(NotATuple)
+        _ -> fail(st, NotATuple)
       }
   }
 }
@@ -3048,7 +3099,7 @@ fn infer_expr(
   env: Env,
   st: State,
   expr: glance.Expression,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   // A guard subtree the compiler parses as a constant is typed as one
   // (`type_/guard.rs:164-166`), all the way down.
   let env = case env.syntax == GuardSyntax && reference.guard_constant(expr) {
@@ -3063,7 +3114,7 @@ fn infer_expr_inner(
   env: Env,
   st: State,
   expr: glance.Expression,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   case expr {
     glance.Int(..) -> Ok(#(prelude_int(), st))
     glance.Float(..) -> Ok(#(prelude_float(), st))
@@ -3146,7 +3197,7 @@ fn infer_expr_inner(
         ty.Tuple(elements) ->
           case list_at(elements, index) {
             Ok(element) -> Ok(#(element, st))
-            Error(_) -> Error(TupleIndexOutOfRange(index))
+            Error(_) -> fail(st, TupleIndexOutOfRange(index))
           }
         // The tuple type is not known yet; defer until inference fixes it.
         ty.Var(_) -> {
@@ -3155,7 +3206,7 @@ fn infer_expr_inner(
             State(..st, pending: [PendingIndex(t, index, element), ..st.pending])
           Ok(#(element, st))
         }
-        _ -> Error(NotATuple)
+        _ -> fail(st, NotATuple)
       }
     }
 
@@ -3218,7 +3269,7 @@ fn update_field(
   field: glance.RecordUpdateField(glance.Expression),
   label_types: Dict(String, ty.Type),
   type_name: String,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   use #(value_type, st) <- result.try(case field.item {
     Some(value) -> infer_expr(env, st, value)
     // Shorthand `label:` refers to the variable named `label`.
@@ -3229,7 +3280,7 @@ fn update_field(
   })
   case dict.get(label_types, field.label) {
     Ok(expected) -> unify(st, value_type, expected)
-    Error(_) -> Error(NoSuchField(type_name, field.label))
+    Error(_) -> fail(st, NoSuchField(type_name, field.label))
   }
 }
 
@@ -3242,7 +3293,7 @@ fn infer_bit_segment(
     glance.Expression,
     List(glance.BitStringSegmentOption(glance.Expression)),
   ),
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   let #(value, options) = segment
   let default = case value {
     glance.String(..) -> prelude_string()
@@ -3309,13 +3360,13 @@ fn infer_field_access(
   access: glance.Span,
   container: glance.Expression,
   label: String,
-) -> Result(#(ty.Type, Access, State), Error) {
+) -> Result(#(ty.Type, Access, State), Failure) {
   let spans = access_spans(access, container, label)
   use #(type_, branch, st) <- result.try(case container {
     // In a constant, `name.member` is module access only, whatever else
     // `name` is bound to (`parse.rs:3636`).
     glance.Variable(_, name) if env.syntax == ConstantSyntax -> {
-      use entry <- result.try(qualified_entry(env, name, label))
+      use entry <- result.try(stateless(st, qualified_entry(env, name, label)))
       module_export(st, entry)
     }
     // Only a bare name can also denote a module, so only there is there a
@@ -3369,7 +3420,7 @@ fn access_spans(
 fn module_export(
   st: State,
   entry: ValueConstructor,
-) -> Result(#(ty.Type, Access, State), Error) {
+) -> Result(#(ty.Type, Access, State), Failure) {
   let #(type_, st) = instantiate(st, entry.scheme)
   Ok(#(type_, Export(entry.variant), st))
 }
@@ -3379,7 +3430,7 @@ fn pending_field(
   st: State,
   container_type: ty.Type,
   label: String,
-) -> Result(#(ty.Type, Access, State), Error) {
+) -> Result(#(ty.Type, Access, State), Failure) {
   let #(field, st) = fresh(st)
   let st =
     State(..st, pending: [
@@ -3397,7 +3448,7 @@ fn value_field(
   container: glance.Expression,
   label: String,
   export: Option(ValueConstructor),
-) -> Result(#(ty.Type, Access, State), Error) {
+) -> Result(#(ty.Type, Access, State), Failure) {
   use #(container_type, st) <- result.try(infer_expr_inner(env, st, container))
   use #(type_, access, st) <- result.try(case resolve(st, container_type) {
     ty.Named(_, _, _, _) as record ->
@@ -3410,7 +3461,7 @@ fn value_field(
         Error(field_error) ->
           case export {
             Some(export) -> module_export(st, export)
-            None -> Error(field_error)
+            None -> fail(st, field_error)
           }
       }
     // The record type is not known yet. Prefer a same-named module export;
@@ -3423,7 +3474,7 @@ fn value_field(
     _ ->
       case export {
         Some(export) -> module_export(st, export)
-        None -> Error(NotARecord)
+        None -> fail(st, NotARecord)
       }
   })
   // The container's span is recorded only while the access stays a record
@@ -3444,7 +3495,7 @@ fn module_or_record(
   container: glance.Expression,
   label: String,
   export: Option(ValueConstructor),
-) -> Result(#(ty.Type, Access, State), Error) {
+) -> Result(#(ty.Type, Access, State), Failure) {
   case export {
     Some(export) -> module_export(st, export)
     None -> {
@@ -3455,7 +3506,7 @@ fn module_or_record(
           Ok(#(field, Field(record), st))
         }
         ty.Var(_) -> pending_field(st, container_type, label)
-        _ -> Error(NotARecord)
+        _ -> fail(st, NotARecord)
       }
     }
   }
@@ -3467,10 +3518,13 @@ fn field_type(
   st: State,
   record: ty.Type,
   label: String,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   // Resolve through the substitution: a caller may pass a variable that has
   // since been bound to the record type (e.g. record-update's kept fields).
-  use accessor_scheme <- result.try(accessor(env, resolve(st, record), label))
+  use accessor_scheme <- result.try(stateless(
+    st,
+    accessor(env, resolve(st, record), label),
+  ))
   let #(accessor_type, st) = instantiate(st, accessor_scheme)
   let #(field, st) = fresh(st)
   use st <- result.try(unify(st, accessor_type, ty.Fn([record], field)))
@@ -3484,13 +3538,16 @@ fn infer_record_update(
   constructor: String,
   record: glance.Expression,
   fields: List(glance.RecordUpdateField(glance.Expression)),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   // A record update produces a *fresh* value of the type: updated fields take
   // their new value's type and kept fields are copied from the record. This is
   // what lets an update change a type parameter, as in
   // `Request(..req, body:)` : `fn(Request(a), b) -> Request(b)` — the kept
   // fields tie only the parameters they share, not all of them.
-  use entry <- result.try(constructor_entry(env, module, constructor))
+  use entry <- result.try(stateless(
+    st,
+    constructor_entry(env, module, constructor),
+  ))
   let #(ctor_type, st) = instantiate(st, entry.scheme)
   let #(field_types, return_type) = case ctor_type {
     ty.Fn(arguments, return) -> #(arguments, return)
@@ -3549,7 +3606,7 @@ fn infer_record_update(
 
       Ok(#(return_type, st))
     }
-    _ -> Error(NotARecord)
+    _ -> fail(st, NotARecord)
   }
 }
 
@@ -3565,8 +3622,8 @@ fn positional_labels(variant: ValueVariant) -> FieldMap {
 fn infer_each(
   st: State,
   items: List(a),
-  infer: fn(State, a) -> Result(#(ty.Type, State), Error),
-) -> Result(#(List(ty.Type), State), Error) {
+  infer: fn(State, a) -> Result(#(ty.Type, State), Failure),
+) -> Result(#(List(ty.Type), State), Failure) {
   use #(rev, st) <- result.try(
     list.try_fold(items, #([], st), fn(acc, item) {
       let #(types_, st) = acc
@@ -3636,7 +3693,7 @@ fn infer_seeded(
   st: State,
   literal: FnLiteral,
   seeds: List(ty.Type),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   use #(fn_type, st) <- result.try(case literal {
     Lambda(_, params, return_annotation, body) ->
       infer_lambda(env, st, params, return_annotation, body, Some(seeds))
@@ -3661,7 +3718,7 @@ fn infer_lambda(
   return_annotation: Option(glance.Type),
   body: List(glance.Statement),
   seeds: Option(List(ty.Type)),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   let annotations = list.map(params, fn(param) { param.type_ })
   use #(param_types, st) <- result.try(parameter_types(
     env,
@@ -3701,7 +3758,7 @@ fn parameter_types(
   st: State,
   annotations: List(Option(glance.Type)),
   seeds: Option(List(ty.Type)),
-) -> Result(#(List(ty.Type), State), Error) {
+) -> Result(#(List(ty.Type), State), Failure) {
   let seeds = case seeds {
     Some(seeds) -> list.map(seeds, Some)
     None -> list.repeat(None, list.length(annotations))
@@ -3723,7 +3780,7 @@ fn unify_seed(
   st: State,
   seed: Option(ty.Type),
   own: ty.Type,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   case seed {
     Some(seed) -> unify(st, seed, own)
     None -> Ok(st)
@@ -3741,7 +3798,7 @@ fn infer_callee(
   env: Env,
   st: State,
   function: glance.Expression,
-) -> Result(#(ty.Type, Option(FieldMap), State), Error) {
+) -> Result(#(ty.Type, Option(FieldMap), State), Failure) {
   case function {
     // Resolved here rather than through `infer_expr`, which would drop the
     // branch; the callee's span is recorded once, as `infer_expr` would.
@@ -3792,7 +3849,7 @@ fn infer_call(
   st: State,
   function: glance.Expression,
   arguments: List(glance.Field(CallArg)),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   use #(fn_type, labels, st) <- result.try(infer_called(
     env,
     st,
@@ -3820,12 +3877,13 @@ fn place_arguments(
   fn_type: ty.Type,
   labels: Option(FieldMap),
   arguments: List(glance.Field(CallArg)),
-) -> Result(#(ty.Type, State), Error) {
-  use ordered <- result.try(
+) -> Result(#(ty.Type, State), Failure) {
+  use ordered <- result.try(stateless(
+    st,
     order_fields(labels, arguments, fn(label, location) {
       Written(glance.Variable(location, label))
     }),
-  )
+  ))
   let #(holes, st) = fresh_n(st, list.length(ordered))
   let #(result, st) = fresh(st)
   use st <- result.try(unify(st, fn_type, ty.Fn(holes, result)))
@@ -3858,7 +3916,7 @@ fn infer_called(
   st: State,
   function: glance.Expression,
   arguments: List(glance.Field(CallArg)),
-) -> Result(#(ty.Type, Option(FieldMap), State), Error) {
+) -> Result(#(ty.Type, Option(FieldMap), State), Failure) {
   case fn_literal_of_arity(function, list.length(arguments)) {
     Ok(literal) -> {
       let #(seeds, st) = speculate(env, st, list.map(arguments, field_argument))
@@ -3899,7 +3957,7 @@ fn check_argument(
   st: State,
   argument: CallArg,
   expected: ty.Type,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   case argument {
     Written(expression) -> check(env, st, expression, expected)
     Read(type_) -> {
@@ -3918,7 +3976,7 @@ fn speculate_argument(
   env: Env,
   st: State,
   argument: CallArg,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   case argument {
     Written(expression) -> infer_expr(env, st, expression)
     Read(type_) -> Ok(read_type(st, type_))
@@ -4109,7 +4167,7 @@ fn infer_capture(
   before: List(glance.Field(glance.Expression)),
   after: List(glance.Field(glance.Expression)),
   seeds: Option(List(ty.Type)),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   // `f(a, _, b)` is `fn(_capture) { f(a, _capture, b) }` (`parse.rs:5376-5417`),
   // and it is inferred as that lambda. Its one parameter takes its own type,
   // unified with the type it is called at where that is known, as a lambda
@@ -4151,7 +4209,7 @@ fn infer_binop(
   op: glance.BinaryOperator,
   left: glance.Expression,
   right: glance.Expression,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   case op {
     glance.Pipe -> infer_pipe(env, st, left, right)
 
@@ -4209,7 +4267,7 @@ fn infer_pipe(
   st: State,
   left: glance.Expression,
   right: glance.Expression,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   case right {
     // `left |> echo` is `echo left`: it prints the piped value and returns it,
     // so the `echo` and the pipe both have its type, as the compiler's pipeline
@@ -4248,7 +4306,7 @@ fn infer_pipe_call(
   call_span: glance.Span,
   function: glance.Expression,
   arguments: List(glance.Field(glance.Expression)),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   use #(fn_type, labels, st) <- result.try(infer_callee(env, st, function))
   let left = Read(left_type)
   let written = list.map(arguments, map_field(_, Written))
@@ -4295,7 +4353,7 @@ fn infer_pipe_apply(
   st: State,
   left_type: ty.Type,
   right: glance.Expression,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   use #(function_type, _labels, st) <- result.try(infer_callee(env, st, right))
   let #(result, st) = fresh(st)
   use st <- result.try(unify(st, function_type, ty.Fn([left_type], result)))
@@ -4311,7 +4369,7 @@ fn check(
   st: State,
   expr: glance.Expression,
   expected: ty.Type,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   let seeded = {
     use literal <- result.try(as_fn_literal(expr))
     use #(seeds, _return) <- result.map(expected_fn(
@@ -4353,10 +4411,10 @@ fn check_message(
   env: Env,
   st: State,
   message: Option(glance.Expression),
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   case message {
     Some(glance.BinaryOperator(..)) ->
-      Error(Unsupported("an operator after an `as` message"))
+      fail(st, Unsupported("an operator after an `as` message"))
     Some(message) -> check(env, st, message, prelude_string())
     None -> Ok(st)
   }
@@ -4371,7 +4429,7 @@ fn infer_statements(
   env: Env,
   st: State,
   statements: List(glance.Statement),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   case statements {
     [] -> Ok(#(prelude_nil(), st))
     // `use pats <- rhs` turns the remaining statements into a trailing callback.
@@ -4409,7 +4467,7 @@ fn infer_use(
   use_patterns: List(glance.UsePattern),
   function: glance.Expression,
   rest: List(glance.Statement),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   let #(callee, arguments) = case function {
     glance.Call(_, callee, arguments) -> #(callee, arguments)
     // A `use` callee with no argument list is still a callee: the callback is
@@ -4443,7 +4501,7 @@ fn check_callback(
   use_patterns: List(glance.UsePattern),
   rest: List(glance.Statement),
   expected: ty.Type,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   let seeds = case expected_fn(st, expected, list.length(use_patterns)) {
     Ok(#(params, _return)) -> Some(params)
     Error(_) -> None
@@ -4507,7 +4565,7 @@ fn use_assignment(
   st: State,
   use_pattern: glance.UsePattern,
   param_type: ty.Type,
-) -> Result(#(Env, State), Error) {
+) -> Result(#(Env, State), Failure) {
   let #(read, st) = read_type(st, param_type)
   use #(env, _, st) <- result.try(infer_pattern(
     env,
@@ -4560,7 +4618,7 @@ fn infer_statement(
   env: Env,
   st: State,
   statement: glance.Statement,
-) -> Result(#(ty.Type, Env, State), Error) {
+) -> Result(#(ty.Type, Env, State), Failure) {
   case statement {
     glance.Expression(expr) -> {
       use #(t, st) <- result.try(infer_expr(env, st, expr))
@@ -4577,7 +4635,7 @@ fn infer_statement(
     }
 
     // `use` is handled by infer_statements before reaching here.
-    glance.Use(..) -> Error(Unsupported("use in non-tail position"))
+    glance.Use(..) -> fail(st, Unsupported("use in non-tail position"))
   }
 }
 
@@ -4599,7 +4657,7 @@ fn infer_expr_assignment(
   pattern: glance.Pattern,
   annotation: Option(glance.Type),
   value: glance.Expression,
-) -> Result(#(ty.Type, Env, State), Error) {
+) -> Result(#(ty.Type, Env, State), Failure) {
   use #(value_type, st) <- result.try({
     use st <- scoped(st)
     infer_expr(env, st, value)
@@ -4635,7 +4693,7 @@ fn infer_case(
   st: State,
   subjects: List(glance.Expression),
   clauses: List(glance.Clause),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   // Each subject is a scope of its own, as the compiler's `infer_case` scopes
   // it (`expression.rs:2285`).
   use #(subject_types, st) <- result.try(
@@ -4660,7 +4718,7 @@ fn infer_clause(
   subjects: List(glance.Expression),
   subject_types: List(ty.Type),
   result: ty.Type,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   // A clause is a scope of its own (`expression.rs:2387`).
   use st <- scoped_state(st)
   // Each clause may have several alternative pattern lists (`a | b ->`); each
@@ -4720,7 +4778,7 @@ fn infer_clause_body(
   st: State,
   clause: glance.Clause,
   result: ty.Type,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   use st <- result.try(case clause.guard {
     Some(guard) ->
       check(Env(..env, syntax: GuardSyntax), st, guard, prelude_bool())
@@ -4738,7 +4796,7 @@ fn bind_alternative(
   patterns: List(glance.Pattern),
   subjects: List(glance.Expression),
   subject_types: List(ty.Type),
-) -> Result(#(Env, State), Error) {
+) -> Result(#(Env, State), Failure) {
   // Which names the alternative binds is a property of the whole multi-pattern,
   // not of the column a subject sits in: `case left, io { io, Loud(..) -> .. }`
   // binds `io` in one column and would narrow it in the other.
@@ -4835,7 +4893,7 @@ fn unify_alternative_bindings(
   first: Env,
   others: List(Env),
   names: List(String),
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   list.try_fold(others, st, fn(st, other) {
     list.try_fold(names, st, fn(st, name) {
       unify_binding(st, first, other, name)
@@ -4851,7 +4909,7 @@ fn unify_binding(
   first: Env,
   other: Env,
   name: String,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   case lookup(first, name), lookup(other, name) {
     Ok(first_scheme), Ok(other_scheme) ->
       unify(st, first_scheme.type_, other_scheme.type_)
@@ -4968,7 +5026,7 @@ fn infer_pattern(
   pattern: glance.Pattern,
   expected: ty.Type,
   subject: Option(String),
-) -> Result(#(Env, ty.Type, State), Error) {
+) -> Result(#(Env, ty.Type, State), Failure) {
   case pattern {
     glance.PatternInt(..) ->
       typed(env, prelude_int(), unify(st, expected, prelude_int()))
@@ -5072,7 +5130,10 @@ fn infer_pattern(
     }
 
     glance.PatternVariant(_, module, constructor, arguments, _spread) -> {
-      use entry <- result.try(constructor_entry(env, module, constructor))
+      use entry <- result.try(stateless(
+        st,
+        constructor_entry(env, module, constructor),
+      ))
       let #(ctor_type, st) = instantiate(st, entry.scheme)
       // A constructor with fields is a function; one without is the value.
       let #(field_types, ret) = case ctor_type {
@@ -5087,10 +5148,13 @@ fn infer_pattern(
         Some(name), Some(index) -> narrow(env, st, name, index)
         _, _ -> env
       }
-      use arg_patterns <- result.try(order_pattern_args(
-        positional_labels(entry.variant),
-        arguments,
-        list.length(field_types),
+      use arg_patterns <- result.try(stateless(
+        st,
+        order_pattern_args(
+          positional_labels(entry.variant),
+          arguments,
+          list.length(field_types),
+        ),
       ))
       use #(env, st) <- result.try(
         list.try_fold(
@@ -5133,8 +5197,8 @@ fn infer_pattern(
 fn typed(
   env: Env,
   type_: ty.Type,
-  st: Result(State, Error),
-) -> Result(#(Env, ty.Type, State), Error) {
+  st: Result(State, Failure),
+) -> Result(#(Env, ty.Type, State), Failure) {
   result.map(st, fn(st) { #(env, type_, st) })
 }
 
@@ -5147,7 +5211,7 @@ fn tuple_elements(
   st: State,
   expected: ty.Type,
   arity: Int,
-) -> Result(#(List(ty.Type), State), Error) {
+) -> Result(#(List(ty.Type), State), Failure) {
   let destructured = case resolve(st, expected) {
     ty.Tuple(elements) ->
       case list.length(elements) == arity {
@@ -5175,7 +5239,7 @@ fn infer_bit_pattern_segment(
     glance.Pattern,
     List(glance.BitStringSegmentOption(glance.BitArraySize)),
   ),
-) -> Result(#(Env, State), Error) {
+) -> Result(#(Env, State), Failure) {
   let #(pattern, options) = segment
   let default = case pattern {
     glance.PatternString(..) -> prelude_string()
@@ -5208,7 +5272,7 @@ fn check_bit_array_size(
   env: Env,
   st: State,
   size: glance.BitArraySize,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   case size {
     glance.BitArraySizeInt(..) -> Ok(st)
     glance.BitArraySizeVariable(_, name) -> {
@@ -5226,8 +5290,8 @@ fn check_bit_array_size(
 // Pair a (possibly failed) new state with an unchanged environment.
 fn with_env(
   env: Env,
-  st: Result(State, Error),
-) -> Result(#(Env, State), Error) {
+  st: Result(State, Failure),
+) -> Result(#(Env, State), Failure) {
   result.map(st, fn(st) { #(env, st) })
 }
 
@@ -5379,25 +5443,30 @@ fn hydrate_scoped(env: Env, st: State, ast: glance.Type) -> #(ty.Type, State) {
 // (`expression.rs:381-393`) saves the hydrator's names around a `let` value,
 // each `case` subject, a `case` clause, a function body and a block: a name
 // created inside leaves scope when the boundary closes, though its generic
-// stays rigid, so every later read copies it. On an error the state is
-// discarded whole, its scope with it.
+// stays rigid, so every later read copies it. The compiler's closure returns a
+// value even where something inside it failed, so the boundary closes on a
+// failure too: the failure's state leaves the scope as a success's does.
 fn scoped(
   st: State,
-  infer: fn(State) -> Result(#(a, State), Error),
-) -> Result(#(a, State), Error) {
+  infer: fn(State) -> Result(#(a, State), Failure),
+) -> Result(#(a, State), Failure) {
   let scope = st.scope
-  use #(value, st) <- result.map(infer(st))
-  #(value, State(..st, scope:))
+  case infer(st) {
+    Ok(#(value, st)) -> Ok(#(value, State(..st, scope:)))
+    Error(Failure(error, failed)) ->
+      Error(Failure(error, State(..failed, scope:)))
+  }
 }
 
 // `scoped` for a walk that returns only the state.
 fn scoped_state(
   st: State,
-  infer: fn(State) -> Result(State, Error),
-) -> Result(State, Error) {
-  let scope = st.scope
-  use st <- result.map(infer(st))
-  State(..st, scope:)
+  infer: fn(State) -> Result(State, Failure),
+) -> Result(State, Failure) {
+  use #(Nil, st) <- result.map(
+    scoped(st, fn(st) { result.map(infer(st), fn(st) { #(Nil, st) }) }),
+  )
+  st
 }
 
 // Resolve a (possibly qualified) type name applied to `arg_types` to a concrete
