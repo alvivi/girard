@@ -1480,6 +1480,9 @@ fn infer_module(
     aliases,
     best_effort:,
   ))
+  // Inference is done: what is left only reads the final state, to export
+  // the interface and to publish the results.
+  let st = compress_substitution(st)
 
   let interface =
     build_interface(
@@ -2255,6 +2258,51 @@ fn resolve(st: State, type_: ty.Type) -> ty.Type {
   }
 }
 
+// The substitution with every bound id mapped straight to the end of its
+// chain, for publication. The compiler's order links each new variable to the
+// next, as the elements of `[[], [], ..]` are, and `unify`'s compression
+// re-links only its left variable, as the compiler's does, so a chain can
+// still be long, and zonking every recorded type through it would be
+// quadratic. Each chain is walked once and every id on it rebound to its end,
+// so the whole pass is linear in the substitution's size: an id bound to a
+// type is the end of its chain already and is skipped, and an id is rebound
+// only where it does not point at the end yet. It is the same substitution
+// with its chains shortened: every type zonks the same, and the same ids are
+// bound (`literal_links` reads which). It runs once inference is done, never
+// on the inference path.
+fn compress_substitution(st: State) -> State {
+  let subst =
+    dict.fold(st.subst, st.subst, fn(subst, id, bound) {
+      case bound {
+        ty.Var(_) -> {
+          let #(chain, end) = chain_end(subst, id, [])
+          list.fold(chain, subst, fn(subst, id) { dict.insert(subst, id, end) })
+        }
+        ty.Named(..) | ty.Fn(..) | ty.Tuple(..) -> subst
+      }
+    })
+  State(..st, subst:)
+}
+
+// The ids from `id` along its chain that do not point at its end yet, and the
+// end: a type that is no variable, or an unbound variable. A loop, so a long
+// chain needs no deep stack.
+fn chain_end(
+  subst: Dict(Int, ty.Type),
+  id: Int,
+  chain: List(Int),
+) -> #(List(Int), ty.Type) {
+  case dict.get(subst, id) {
+    Ok(ty.Var(next) as link) ->
+      case dict.has_key(subst, next) {
+        True -> chain_end(subst, next, [id, ..chain])
+        False -> #(chain, link)
+      }
+    Ok(end) -> #(chain, end)
+    Error(Nil) -> #(chain, ty.Var(id))
+  }
+}
+
 // Fully apply the substitution, leaving only unbound variables as `Var`.
 fn zonk(st: State, type_: ty.Type) -> ty.Type {
   case resolve(st, type_) {
@@ -2402,10 +2450,48 @@ fn erase_all(type_: ty.Type) -> ty.Type {
 //
 // Unify two types, binding flexible variables and rejecting rigid ones, with
 // the occurs check that guards against infinite types.
-
+//
+// When both sides are unbound variables `unify` binds the left one, as
+// 1.19.2's `unify(t1, t2)` links `t1` (`environment.rs:1055-1100`), so every
+// call passes its two types in the compiler's order at that site, the
+// expected type first where the compiler puts it first. The link directions,
+// and the two types a mismatch reports, are then the compiler's; the solution
+// is the same either way.
+//
+// A left argument that is a variable already bound is unified through what it
+// is bound to and then, once that succeeds, rebound to the end of its chain,
+// as the compiler unifies `t1`'s link and re-links `t1`'s cell to
+// `collapse_links` of it (`environment.rs:1103-1117`); bound to a type rather
+// than a variable, it is at the end already. The compiler's order
+// links each new variable to the next, as the elements of `[[], [], ..]` are,
+// and without this every later unification would follow the whole chain from
+// its first variable. It rebinds a bound variable to the same type, so the
+// substitution means the same and no variable becomes bound that was not; the
+// end is what `bind_var` stored, its variant already erased.
 fn unify(st: State, left: ty.Type, right: ty.Type) -> Result(State, Failure) {
-  let left = resolve(st, left)
-  let right = resolve(st, right)
+  case left {
+    ty.Var(id) ->
+      case dict.get(st.subst, id) {
+        // A link to another variable: re-linked to the end once unified.
+        Ok(ty.Var(_) as bound) -> {
+          use st <- result.map(unify(st, bound, right))
+          State(..st, subst: dict.insert(st.subst, id, resolve(st, bound)))
+        }
+        // Bound to a type: that type is already the end of the chain.
+        Ok(bound) -> unify(st, bound, right)
+        Error(Nil) -> unify_heads(st, left, resolve(st, right))
+      }
+    ty.Named(..) | ty.Fn(..) | ty.Tuple(..) ->
+      unify_heads(st, left, resolve(st, right))
+  }
+}
+
+// `unify` on two heads: `left` is no bound variable, and `right` is resolved.
+fn unify_heads(
+  st: State,
+  left: ty.Type,
+  right: ty.Type,
+) -> Result(State, Failure) {
   case left, right {
     ty.Var(i), ty.Var(j) if i == j -> Ok(st)
     // A rigid variable never binds; a flexible one may bind to it. Two distinct
@@ -2551,13 +2637,22 @@ fn copy_vars(st: State, ids: List(Int)) -> #(Dict(Int, ty.Type), State) {
 // generics once out of scope, and another function's body generics that
 // reached this one through a shared, unannotated part. A generic in scope is
 // left alone.
+//
+// The type a read gives is link-free, zonked through the substitution, as the
+// compiler's `instantiate` collapses every link it meets
+// (`environment.rs:705-715, 758-780`). A binding is stored at the type it was
+// matched against, which is often a read's, and the alternatives compare
+// bindings raw (`erased_by_later`), so a read must be as raw as the
+// compiler's.
 fn read_value(st: State, scheme: ty.Scheme) -> #(ty.Type, State) {
   let #(type_, st) = instantiate(st, scheme)
-  use <- bool.guard(when: !reaches_unowned(st, type_), return: #(type_, st))
   let zonked = zonk(st, type_)
+  // Every read is zonked; one that reaches no unowned generic has nothing to
+  // copy.
+  use <- bool.guard(when: !reaches_unowned(st, zonked), return: #(zonked, st))
   let unowned = list.filter(free_vars_loop(zonked, []), is_unowned(st, _))
   case unowned {
-    [] -> #(type_, st)
+    [] -> #(zonked, st)
     _ -> instantiate(st, ty.Scheme(unowned, zonked))
   }
 }
@@ -2580,8 +2675,9 @@ fn read_type(st: State, type_: ty.Type) -> #(ty.Type, State) {
 
 // Whether `type_`, resolved through the substitution, mentions a generic the
 // current scope does not own: a walk that allocates nothing, so a read that
-// reaches none, which is nearly every read, costs no zonk. Every generic the
-// scope owns is rigid, so when it owns them all there is nothing to walk for.
+// reaches none, which is nearly every read, is its zonked type, with no
+// variables collected and nothing copied. Every generic the scope owns is
+// rigid, so when it owns them all there is nothing to walk for.
 fn reaches_unowned(st: State, type_: ty.Type) -> Bool {
   use <- bool.guard(
     when: set.size(st.rigid) == set.size(st.scope.owned),
@@ -2762,7 +2858,7 @@ fn check_body(
         st,
         function.body,
       ))
-      unify(st, body_type, return_type)
+      unify(st, return_type, body_type)
     }
   }
 }
@@ -2785,7 +2881,7 @@ fn infer_constant(
   case constant.annotation {
     Some(ann) -> {
       let #(t, st) = hydrate_scoped(env, st, ann)
-      use st <- result.try(unify(st, value_type, t))
+      use st <- result.try(unify(st, t, value_type))
       let literal = ConstantLiteral(value_type, st.scope.owned)
       Ok(#(literal, State(..st, scope: empty_scope())))
     }
@@ -3062,7 +3158,7 @@ fn resolve_one(
         ty.Tuple(elements) ->
           case list_at(elements, index) {
             Ok(element) -> {
-              use st <- result.try(unify(st, element, result))
+              use st <- result.try(unify(st, result, element))
               Ok(#(st, True))
             }
             Error(_) -> fail(st, TupleIndexOutOfRange(index))
@@ -3284,8 +3380,9 @@ fn update_field(
   }
 }
 
-// Check one bit-array segment's value and its size option against their
-// expected types.
+// Check one bit-array segment in the compiler's order (`infer_bit_segment`,
+// `expression.rs:1700-1757`): its value is inferred, then its size option is
+// checked, then the value is unified with the segment's type.
 fn infer_bit_segment(
   env: Env,
   st: State,
@@ -3300,18 +3397,16 @@ fn infer_bit_segment(
     glance.Float(..) -> prelude_float()
     _ -> prelude_int()
   }
-  use st <- result.try(check(
-    env,
-    st,
-    value,
-    segment_value_type(options, default),
-  ))
-  list.try_fold(options, st, fn(st, option) {
-    case option {
-      glance.SizeValueOption(size) -> check(env, st, size, prelude_int())
-      _ -> Ok(st)
-    }
-  })
+  use #(value_type, st) <- result.try(infer_expr(env, st, value))
+  use st <- result.try(
+    list.try_fold(options, st, fn(st, option) {
+      case option {
+        glance.SizeValueOption(size) -> check(env, st, size, prelude_int())
+        _ -> Ok(st)
+      }
+    }),
+  )
+  unify(st, segment_value_type(options, default), value_type)
 }
 
 // Which branch a `name.label` access took. A call reads it to pick the
@@ -3354,6 +3449,12 @@ fn module_access(
 // error is reported only when neither exists. Which fields the record grants
 // is the type's business: a value known to be one variant reaches that
 // variant's own fields.
+//
+// A guard decides by the name instead (`guard.rs:96-140`): when the
+// guard-variable lookup accepts it — a local or a module constant
+// (`guard.rs:303-324`) — the access is a record access and nothing else, and
+// only a name it rejects, a function, a constructor or no value at all, is
+// tried as a module, where only a constant can be selected.
 fn infer_field_access(
   env: Env,
   st: State,
@@ -3373,9 +3474,21 @@ fn infer_field_access(
     // module export for a failing record access to fall through to.
     glance.Variable(_, name) -> {
       let export = module_access(env, name, label)
-      case dict.has_key(env.values, name) {
-        True -> value_field(env, st, container, label, export)
-        False -> module_or_record(env, st, container, label, export)
+      case env.syntax, dict.get(env.values, name) {
+        GuardSyntax, Ok(ValueConstructor(_, LocalValue(..)))
+        | GuardSyntax, Ok(ValueConstructor(_, ConstantValue(..)))
+        -> value_field(env, st, container, label, None)
+        // A guard selects only a module's constant: a function or a
+        // constructor is the compiler's `RecordAccessUnknownType`
+        // (`guard.rs:386-419`).
+        GuardSyntax, _ ->
+          case export {
+            Some(ValueConstructor(_, ConstantValue(..))) | None ->
+              module_or_record(env, st, container, label, export)
+            Some(_) -> fail(st, NotARecord)
+          }
+        _, Ok(_) -> value_field(env, st, container, label, export)
+        _, Error(_) -> module_or_record(env, st, container, label, export)
       }
     }
     _ -> module_or_record(env, st, container, label, None)
@@ -3526,9 +3639,19 @@ fn field_type(
     accessor(env, resolve(st, record), label),
   ))
   let #(accessor_type, st) = instantiate(st, accessor_scheme)
-  let #(field, st) = fresh(st)
-  use st <- result.try(unify(st, accessor_type, ty.Fn([record], field)))
-  Ok(#(field, st))
+  // The access is the accessor's own field type (`expression.rs:2670-2679`),
+  // as raw as the compiler's where a binding takes it.
+  case accessor_type {
+    ty.Fn([parameter], field) -> {
+      use st <- result.map(unify(st, parameter, record))
+      #(field, st)
+    }
+    _ -> {
+      let #(field, st) = fresh(st)
+      use st <- result.map(unify(st, accessor_type, ty.Fn([record], field)))
+      #(field, st)
+    }
+  }
 }
 
 fn infer_record_update(
@@ -3543,7 +3666,10 @@ fn infer_record_update(
   // their new value's type and kept fields are copied from the record. This is
   // what lets an update change a type parameter, as in
   // `Request(..req, body:)` : `fn(Request(a), b) -> Request(b)` — the kept
-  // fields tie only the parameters they share, not all of them.
+  // fields tie only the parameters they share, not all of them. The steps are
+  // the compiler's, in its order (`infer_record_update`,
+  // `expression.rs:2683-3025`): the spread, its variant, the updated fields,
+  // then the kept ones.
   use entry <- result.try(stateless(
     st,
     constructor_entry(env, module, constructor),
@@ -3555,9 +3681,10 @@ fn infer_record_update(
   }
   case return_type {
     ty.Named(type_module, type_name, type_parameters, variant) -> {
-      let labels = positional_labels(entry.variant)
+      let fields_by_position =
+        list.zip(positional_labels(entry.variant), field_types)
       let label_types =
-        list.fold(list.zip(labels, field_types), dict.new(), fn(acc, pair) {
+        list.fold(fields_by_position, dict.new(), fn(acc, pair) {
           case pair.0 {
             Some(label) -> dict.insert(acc, label, pair.1)
             None -> acc
@@ -3574,6 +3701,12 @@ fn infer_record_update(
         record_type,
         ty.Named(type_module, type_name, record_parameters, variant),
       ))
+      use st <- result.try(check_update_variant(
+        env,
+        st,
+        record_type,
+        return_type,
+      ))
 
       // Updated fields take their new value's type.
       use st <- result.try(
@@ -3588,25 +3721,62 @@ fn infer_record_update(
       // ties only the parameters a kept field actually uses, which is what lets
       // an *updated* field change a parameter. Deriving this from the named
       // constructor (rather than a field accessor) means it works even for
-      // fields not shared by every variant of a multi-variant type.
+      // fields not shared by every variant of a multi-variant type. Every field
+      // the update does not name is kept, an unlabelled one included, by
+      // position in declaration order (`expression.rs:2899-3025`).
       let to_record_params =
         dict.from_list(list.zip(
           list.filter_map(type_parameters, var_id),
           record_parameters,
         ))
-      use st <- result.try(
-        list.try_fold(dict.to_list(label_types), st, fn(st, pair) {
-          let #(label, expected) = pair
-          case list.contains(updated, label) {
-            True -> Ok(st)
-            False -> unify(st, substitute(to_record_params, expected), expected)
+      let kept =
+        list.filter(fields_by_position, fn(pair) {
+          case pair.0 {
+            Some(label) -> !list.contains(updated, label)
+            None -> True
           }
+        })
+      use st <- result.try(
+        list.try_fold(kept, st, fn(st, pair) {
+          unify(st, substitute(to_record_params, pair.1), pair.1)
         }),
       )
 
       Ok(#(return_type, st))
     }
     _ -> fail(st, NotARecord)
+  }
+}
+
+// A record update of a type with several variants needs the spread to be
+// known to be the constructor's own variant (`infer_record_update_variant`,
+// `expression.rs:3096-3170`): a spread known to be another variant, or not
+// known to be any, is the compiler's unsafe update. A constant's update is
+// not checked here: the compiler's constant typer compares the variant of the
+// constant the spread names, through its stored literal
+// (`constant.rs:164-245`), which the spread's generalized type no longer
+// carries.
+fn check_update_variant(
+  env: Env,
+  st: State,
+  record_type: ty.Type,
+  return_type: ty.Type,
+) -> Result(State, Failure) {
+  case env.syntax, return_type {
+    ExpressionSyntax, ty.Named(module, name, _, Some(index))
+    | GuardSyntax, ty.Named(module, name, _, Some(index))
+    -> {
+      let record_type = resolve(st, record_type)
+      case
+        dict.get(accessors_of_module(env, module), name),
+        variant_of(record_type) == Some(index)
+      {
+        Ok(Accessors(by_variant: [_, _, ..], ..)), False ->
+          fail(st, type_mismatch(record_type, return_type))
+        _, _ -> Ok(st)
+      }
+    }
+    _, _ -> Ok(st)
   }
 }
 
@@ -4213,11 +4383,8 @@ fn infer_binop(
   case op {
     glance.Pipe -> infer_pipe(env, st, left, right)
 
-    glance.And | glance.Or -> {
-      use st <- result.try(check(env, st, left, prelude_bool()))
-      use st <- result.try(check(env, st, right, prelude_bool()))
-      Ok(#(prelude_bool(), st))
-    }
+    glance.And | glance.Or ->
+      infer_operator(env, st, left, right, prelude_bool(), prelude_bool())
 
     glance.Eq | glance.NotEq -> {
       use #(lt, st) <- result.try(infer_expr(env, st, left))
@@ -4226,40 +4393,73 @@ fn infer_binop(
       Ok(#(prelude_bool(), st))
     }
 
-    glance.Concatenate -> {
-      use st <- result.try(check(env, st, left, prelude_string()))
-      use st <- result.try(check(env, st, right, prelude_string()))
-      Ok(#(prelude_string(), st))
-    }
+    // The constant typer types `<>` one operand at a time, the left first
+    // (`constant.rs:557-584`).
+    glance.Concatenate ->
+      case env.syntax {
+        ConstantSyntax -> infer_constant_concatenation(env, st, left, right)
+        ExpressionSyntax | GuardSyntax ->
+          infer_operator(
+            env,
+            st,
+            left,
+            right,
+            prelude_string(),
+            prelude_string(),
+          )
+      }
 
     glance.AddInt
     | glance.SubInt
     | glance.MultInt
     | glance.DivInt
-    | glance.RemainderInt -> {
-      use st <- result.try(check(env, st, left, prelude_int()))
-      use st <- result.try(check(env, st, right, prelude_int()))
-      Ok(#(prelude_int(), st))
-    }
+    | glance.RemainderInt ->
+      infer_operator(env, st, left, right, prelude_int(), prelude_int())
 
-    glance.AddFloat | glance.SubFloat | glance.MultFloat | glance.DivFloat -> {
-      use st <- result.try(check(env, st, left, prelude_float()))
-      use st <- result.try(check(env, st, right, prelude_float()))
-      Ok(#(prelude_float(), st))
-    }
+    glance.AddFloat | glance.SubFloat | glance.MultFloat | glance.DivFloat ->
+      infer_operator(env, st, left, right, prelude_float(), prelude_float())
 
-    glance.LtInt | glance.LtEqInt | glance.GtInt | glance.GtEqInt -> {
-      use st <- result.try(check(env, st, left, prelude_int()))
-      use st <- result.try(check(env, st, right, prelude_int()))
-      Ok(#(prelude_bool(), st))
-    }
+    glance.LtInt | glance.LtEqInt | glance.GtInt | glance.GtEqInt ->
+      infer_operator(env, st, left, right, prelude_int(), prelude_bool())
 
-    glance.LtFloat | glance.LtEqFloat | glance.GtFloat | glance.GtEqFloat -> {
-      use st <- result.try(check(env, st, left, prelude_float()))
-      use st <- result.try(check(env, st, right, prelude_float()))
-      Ok(#(prelude_bool(), st))
-    }
+    glance.LtFloat | glance.LtEqFloat | glance.GtFloat | glance.GtEqFloat ->
+      infer_operator(env, st, left, right, prelude_float(), prelude_bool())
   }
+}
+
+// An operator other than `==`, `!=`, `|>` and a constant's `<>`, in the
+// compiler's order (`infer_binop`, `expression.rs:1865-1868`): both operands
+// are inferred, then each is unified with the operator's operand type, left
+// first. Its type is the operator's result type.
+fn infer_operator(
+  env: Env,
+  st: State,
+  left: glance.Expression,
+  right: glance.Expression,
+  operand: ty.Type,
+  result: ty.Type,
+) -> Result(#(ty.Type, State), Failure) {
+  use #(left_type, st) <- result.try(infer_expr(env, st, left))
+  use #(right_type, st) <- result.try(infer_expr(env, st, right))
+  use st <- result.try(unify(st, left_type, operand))
+  use st <- result.try(unify(st, right_type, operand))
+  Ok(#(result, st))
+}
+
+// A constant's `<>`, in the constant typer's order
+// (`infer_string_concatenation`, `constant.rs:557-584`): the left operand is
+// inferred and unified with `String`, then the right one.
+fn infer_constant_concatenation(
+  env: Env,
+  st: State,
+  left: glance.Expression,
+  right: glance.Expression,
+) -> Result(#(ty.Type, State), Failure) {
+  use #(left_type, st) <- result.try(infer_expr(env, st, left))
+  use st <- result.try(unify(st, left_type, prelude_string()))
+  use #(right_type, st) <- result.try(infer_expr(env, st, right))
+  use st <- result.try(unify(st, right_type, prelude_string()))
+  Ok(#(prelude_string(), st))
 }
 
 fn infer_pipe(
@@ -4431,7 +4631,18 @@ fn infer_statements(
   statements: List(glance.Statement),
 ) -> Result(#(ty.Type, State), Failure) {
   case statements {
-    [] -> Ok(#(prelude_nil(), st))
+    // No statement is the compiler's implicit `todo`, a fresh type: the parser
+    // puts one in an empty block, at the block's own span
+    // (`TodoKind::EmptyBlock`, `parse.rs:1310-1320`), and in an empty function
+    // body (`TodoKind::EmptyFunction`, `parse.rs:2294-2310`), and the typer
+    // ends a `use` with nothing after it with one, after the callback's
+    // generated assignments (`TodoKind::IncompleteUse`,
+    // `expression.rs:815-822`). A block records its span once, as the block.
+    // The other two record none: an empty function body's `todo` spans from
+    // after its `{`, which glance does not keep, and girard records no
+    // expression at a `use` statement's span, where the compiler records the
+    // call, the callback and this `todo` together.
+    [] -> Ok(fresh(st))
     // `use pats <- rhs` turns the remaining statements into a trailing callback.
     [glance.Use(_, patterns, function), ..rest] ->
       infer_use(env, st, patterns, function, rest)
@@ -4670,7 +4881,7 @@ fn infer_expr_assignment(
     st,
     pattern,
     value_type,
-    subject_variable(value, reference.pattern_names(pattern)),
+    subject_of(value),
   ))
   use st <- result.try(case annotation {
     Some(ann) -> {
@@ -4722,53 +4933,77 @@ fn infer_clause(
   // A clause is a scope of its own (`expression.rs:2387`).
   use st <- scoped_state(st)
   // Each clause may have several alternative pattern lists (`a | b ->`); each
-  // binds the same variables and is checked against the subject types. Every
-  // alternative is bound first, so the narrowings they disagree on can be
-  // dropped and the names they bind unified before the guard and body are
-  // checked once, under the first alternative's bindings — as the compiler's
-  // `infer_clause` checks them once, in the first alternative's scope.
-  use #(rev_envs, st) <- result.try(
-    list.try_fold(clause.patterns, #([], st), fn(acc, patterns) {
-      let #(envs, st) = acc
-      use #(clause_env, st) <- result.try(bind_alternative(
+  // binds the same variables and is checked against the subject types. The
+  // first alternative binds in the clause's environment, and its bindings are
+  // installed before any later alternative is typed, as the compiler's
+  // `infer_clause` installs them (`expression.rs:2404-2428`): a later
+  // alternative starts from the clause's environment plus those bindings, and
+  // each of its own bindings of a name is unified with the first's as it is
+  // made. The guard and body are checked once, under the first alternative's
+  // bindings, less the narrowings the alternatives disagree on.
+  case clause.patterns {
+    // A clause glance parsed always has a pattern list; one with none binds
+    // nothing to check a body under.
+    [] -> Ok(st)
+    [first_patterns, ..later] -> {
+      use #(first, st) <- result.try(bind_alternative(
         env,
+        None,
+        st,
+        first_patterns,
+        subjects,
+        subject_types,
+      ))
+      use #(others, st) <- result.try(bind_later_alternatives(
+        env,
+        first.bound,
+        st,
+        later,
+        subjects,
+        subject_types,
+      ))
+      let clause_env = case others {
+        // One alternative agrees with itself, which is every clause that does
+        // not spell `|`.
+        [] -> first.env
+        _ ->
+          // The bindings' agreement compares the types the walks stored for
+          // them, which unifying the bindings cannot have changed.
+          agree_subjects(st, first, others)
+          |> agree_bindings(st, _, first.bound, others)
+      }
+      infer_clause_body(clause_env, st, clause, result)
+    }
+  }
+}
+
+// Bind a clause's later alternatives, each from the clause's environment
+// plus the bindings the first alternative made (`bound`).
+fn bind_later_alternatives(
+  env: Env,
+  bound: Dict(String, ValueConstructor),
+  st: State,
+  later: List(List(glance.Pattern)),
+  subjects: List(glance.Expression),
+  subject_types: List(ty.Type),
+) -> Result(#(List(PatternWalk), State), Failure) {
+  use <- bool.guard(when: later == [], return: Ok(#([], st)))
+  let start = dict.fold(bound, env, install_entry)
+  use #(rev_others, st) <- result.map(
+    list.try_fold(later, #([], st), fn(acc, patterns) {
+      let #(others, st) = acc
+      use #(other, st) <- result.map(bind_alternative(
+        start,
+        Some(bound),
         st,
         patterns,
         subjects,
         subject_types,
       ))
-      Ok(#([clause_env, ..envs], st))
+      #([other, ..others], st)
     }),
   )
-  case list.reverse(rev_envs) {
-    // A clause glance parsed always has a pattern list; one with none binds
-    // nothing to check a body under.
-    [] -> Ok(st)
-    // One alternative agrees with itself, so the names it binds need not even
-    // be collected — which is every clause that does not spell `|`.
-    [clause_env] -> infer_clause_body(clause_env, st, clause, result)
-    [first, ..others] -> {
-      let bound = case clause.patterns {
-        [patterns, ..] -> list.flat_map(patterns, reference.pattern_names)
-        [] -> []
-      }
-      let subjects =
-        option.values(list.map(subjects, subject_variable(_, bound)))
-      // Agreement reads each alternative's variants, so it runs before the
-      // bindings are unified: `unify` ignores a stamp, and binding a variable
-      // erases one, so unifying first could change what agreement reads.
-      let clause_env =
-        agree_subjects(st, first, others, subjects)
-        |> agree_bindings(st, _, others, bound)
-      use st <- result.try(unify_alternative_bindings(
-        st,
-        clause_env,
-        others,
-        bound,
-      ))
-      infer_clause_body(clause_env, st, clause, result)
-    }
-  }
+  #(list.reverse(rev_others), st)
 }
 
 // Check a clause's guard, if it has one, and unify its body with the `case`'s
@@ -4789,80 +5024,116 @@ fn infer_clause_body(
 }
 
 // Bind one alternative's patterns against the subjects, narrowing any bare
-// subject variable a variant pattern matches.
+// subject variable a variant pattern matches. `first` is `None` for a
+// clause's first alternative, and the bindings the first alternative made for
+// a later one. Returns the walk, which holds the environment, the bindings
+// the alternative made and the narrowings, and the state.
 fn bind_alternative(
   env: Env,
+  first: Option(Dict(String, ValueConstructor)),
   st: State,
   patterns: List(glance.Pattern),
   subjects: List(glance.Expression),
   subject_types: List(ty.Type),
-) -> Result(#(Env, State), Failure) {
-  // Which names the alternative binds is a property of the whole multi-pattern,
-  // not of the column a subject sits in: `case left, io { io, Loud(..) -> .. }`
-  // binds `io` in one column and would narrow it in the other.
-  let bound = list.flat_map(patterns, reference.pattern_names)
-  list.try_fold(
-    list.zip(patterns, list.zip(subjects, subject_types)),
-    #(env, st),
-    fn(acc, pair) {
-      let #(env, st) = acc
-      let #(pattern, #(subject, subject_type)) = pair
-      use #(env, _, st) <- result.map(infer_pattern(
-        env,
-        st,
-        pattern,
-        subject_type,
-        subject_variable(subject, bound),
-      ))
-      #(env, st)
-    },
+) -> Result(#(PatternWalk, State), Failure) {
+  let walk =
+    PatternWalk(
+      env:,
+      start: env.values,
+      first:,
+      bound: dict.new(),
+      narrowed: dict.new(),
+    )
+  use #(walk, st) <- result.map(
+    list.try_fold(
+      list.zip(patterns, list.zip(subjects, subject_types)),
+      #(walk, st),
+      fn(acc, pair) {
+        let #(walk, st) = acc
+        let #(pattern, #(subject, subject_type)) = pair
+        use #(walk, _, st) <- result.map(walk_pattern(
+          walk,
+          st,
+          pattern,
+          subject_type,
+          subject_of(subject),
+        ))
+        #(walk, st)
+      },
+    ),
   )
+  #(walk, st)
 }
 
 // A subject variable's variant across alternatives, the compiler's
-// `set_subject_variable_variant` in alternative mode: the **first** alternative
-// is the only one that may set it, and a later alternative can only take it
-// away, by naming a different variant. One that names none returns early and
-// leaves it alone.
+// `set_subject_variable_variant` in alternative mode (`pattern.rs:236-257`):
+// the **first** alternative is the only one that may set it, and a later
+// alternative can only take it away, by narrowing it to a different variant.
+// One that narrows it to none leaves it alone, and so does every later
+// alternative for a subject the first did not narrow, so a variant the subject
+// had before the `case` is kept.
 //
 // So the rule is order-sensitive, and measured to be: `Loud(..) | _` keeps the
 // narrowing and reads the field, while `_ | Loud(..)` is rejected — the first
-// alternative narrows nothing, and the second is not allowed to. Every
-// alternative's variant is read, but the answer is applied to `first` alone:
-// the guard and body are checked under it, so it is the env that must bind the
-// subject at the variant the compiler ends up with.
+// alternative narrows nothing, and the second is not allowed to. It is decided
+// from the narrowings each alternative's own patterns made, not from the
+// variants its environment holds, which include the inherited ones. A later
+// alternative that narrows to another variant erases it for good, as the
+// compiler drops the subject from the first alternative's narrowings, so one
+// after it naming the first's variant again does not bring it back. The answer
+// is applied to `first`'s environment alone: the guard and body are checked
+// under it, so it is the env that must bind the subject at the variant the
+// compiler ends up with.
 fn agree_subjects(
   st: State,
-  first: Env,
-  others: List(Env),
-  names: List(String),
+  first: PatternWalk,
+  others: List(PatternWalk),
 ) -> Env {
-  list.fold(names, first, fn(env, name) {
-    let variants = list.map([env, ..others], bound_variant(st, _, name))
-    let agreed = case variants {
-      // A later alternative erases only by naming a *different* variant; `None`
-      // from one is silence, not disagreement.
-      [first, ..rest] ->
-        case list.any(rest, fn(v) { v != None && v != first }) {
-          True -> None
-          False -> first
-        }
-      [] -> None
-    }
-    case agreed {
-      Some(index) -> narrow(env, st, name, index)
-      None -> erase_binding(st, env, name)
-    }
+  // Each later narrowing is compared once, with the variant the first
+  // alternative holds.
+  list.fold(others, set.new(), fn(erased, other) {
+    dict.fold(other.narrowed, erased, fn(erased, name, variants) {
+      case disagrees(first.narrowed, name, variants) {
+        True -> set.insert(erased, name)
+        False -> erased
+      }
+    })
   })
+  |> set.fold(first.env, fn(env, name) { erase_binding(st, env, name) })
+}
+
+// Whether a later alternative narrowed `name` to a variant other than the one
+// the first alternative holds, its latest narrowing of it. A subject the first
+// did not narrow is never in disagreement.
+fn disagrees(
+  first: Dict(String, List(Int)),
+  name: String,
+  variants: List(Int),
+) -> Bool {
+  case dict.get(first, name) {
+    Ok([held, ..]) -> list.any(variants, fn(variant) { variant != held })
+    Ok([]) | Error(Nil) -> False
+  }
 }
 
 // A name the patterns *bind* is a different rule, and not the one above: the
 // compiler unifies the alternatives' bindings through
-// `unify_constructor_variants`, which keeps a variant only where every
-// alternative gives it the same one. Measured: `Loud(..) as io | _ as io` is
-// rejected, where the subject form `Loud(..) | _` is accepted, so the two
-// classes genuinely disagree and cannot share a pass. Equal and unstamped is
+// `unify_constructor_variants` (`pattern.rs:163-185, 1654-1668`), which
+// erases the first alternative's variant where a later alternative binds the
+// name at another one. Measured: `Loud(..) as io | _ as io` is rejected,
+// where the subject form `Loud(..) | _` is accepted, so the two classes
+// genuinely disagree and cannot share a pass. Equal and unstamped is
 // agreement too. As above, the answer is applied to `first`.
+//
+// The bindings are the ones the walks made (`bound`), so a name in a
+// sub-pattern a speculative walk skipped is no binding. Each binding's stored
+// type is compared raw, as the compiler compares them: both must be named
+// types, so a binding at a type variable, which is the compiler's link
+// whether the substitution binds it or not, leaves the first's variant alone.
+// That relies on girard's types being as raw as the compiler's: a read is
+// link-free (`read_value`), a field access is the accessor's own field type
+// (`field_type`), and a list pattern's element is the list type's argument
+// (`list_element`).
 //
 // Only a binding's outer type is compared, as `unify_constructor_variants`
 // compares it: a variant inside a tuple binding is not cleared where the
@@ -4871,59 +5142,42 @@ fn agree_subjects(
 fn agree_bindings(
   st: State,
   first: Env,
-  others: List(Env),
-  names: List(String),
+  bound: Dict(String, ValueConstructor),
+  others: List(PatternWalk),
 ) -> Env {
-  list.fold(names, first, fn(env, name) {
-    case list.unique(list.map([env, ..others], bound_variant(st, _, name))) {
-      [_] | [] -> env
-      _ -> erase_binding(st, env, name)
+  dict.fold(bound, first, fn(env, name, entry) {
+    case erased_by_later(entry, name, others) {
+      True -> erase_binding(st, env, name)
+      False -> env
     }
   })
 }
 
-// Unify each name a later alternative binds with the first alternative's
-// binding of it, as the compiler's alternative mode does when it inserts the
-// variable. Checking the body once relates the alternatives' bindings only
-// here: `case a, b { x, _ | _, x -> 0 }` gives `a` and `b` one type even
-// though the body never mentions `x`. A failure is the clause's error, as it
-// is the compiler's.
-fn unify_alternative_bindings(
-  st: State,
-  first: Env,
-  others: List(Env),
-  names: List(String),
-) -> Result(State, Failure) {
-  list.try_fold(others, st, fn(st, other) {
-    list.try_fold(names, st, fn(st, name) {
-      unify_binding(st, first, other, name)
-    })
-  })
-}
-
-// Unify `name`'s binding in `other` with its binding in `first`. A name bound
-// by only some alternatives is a compile error in Gleam, so a missing binding
-// has nothing to unify.
-fn unify_binding(
-  st: State,
-  first: Env,
-  other: Env,
+// Whether a later alternative binds `name` at a named type whose variant is
+// not the first alternative's, which must be a named type with a variant.
+fn erased_by_later(
+  entry: ValueConstructor,
   name: String,
-) -> Result(State, Failure) {
-  case lookup(first, name), lookup(other, name) {
-    Ok(first_scheme), Ok(other_scheme) ->
-      unify(st, first_scheme.type_, other_scheme.type_)
-    Error(Nil), _ | _, Error(Nil) -> Ok(st)
+  others: List(PatternWalk),
+) -> Bool {
+  case bound_variant(entry) {
+    Ok(Some(_) as variant) ->
+      list.any(others, fn(other) {
+        case result.try(dict.get(other.bound, name), bound_variant) {
+          Ok(later) -> later != variant
+          Error(Nil) -> False
+        }
+      })
+    Ok(None) | Error(Nil) -> False
   }
 }
 
-// The variant a name is bound at in `env`, if it is bound at all. A name bound
-// by only some alternatives is a compile error in Gleam, so an absent binding
-// needs no answer of its own.
-fn bound_variant(st: State, env: Env, name: String) -> Option(Int) {
-  case lookup(env, name) {
-    Ok(scheme) -> variant_of(resolve(st, scheme.type_))
-    Error(_) -> None
+// The variant a binding's stored type carries, read raw: an error unless the
+// type is a named one, without following the substitution.
+fn bound_variant(entry: ValueConstructor) -> Result(Option(Int), Nil) {
+  case entry.scheme.type_ {
+    ty.Named(variant:, ..) -> Ok(variant)
+    ty.Var(_) | ty.Fn(..) | ty.Tuple(..) -> Error(Nil)
   }
 }
 
@@ -4961,24 +5215,6 @@ fn subject_of(expr: glance.Expression) -> Option(String) {
       }
     glance.Echo(_, Some(inner), _) -> subject_of(inner)
     _ -> None
-  }
-}
-
-// The subject a pattern may narrow: the bare variable it is matched against,
-// unless the pattern binds that name itself. A pattern's own binding is a
-// different value, and it wins over the narrowing whichever order the two are
-// registered in, so the compiler skips the narrowing outright.
-fn subject_variable(
-  subject: glance.Expression,
-  bound: List(String),
-) -> Option(String) {
-  case subject_of(subject) {
-    Some(name) ->
-      case list.contains(bound, name) {
-        True -> None
-        False -> Some(name)
-      }
-    None -> None
   }
 }
 
@@ -5027,17 +5263,69 @@ fn infer_pattern(
   expected: ty.Type,
   subject: Option(String),
 ) -> Result(#(Env, ty.Type, State), Failure) {
+  let walk =
+    PatternWalk(
+      env:,
+      start: env.values,
+      first: None,
+      bound: dict.new(),
+      narrowed: dict.new(),
+    )
+  use #(walk, type_, st) <- result.map(walk_pattern(
+    walk,
+    st,
+    pattern,
+    expected,
+    subject,
+  ))
+  #(walk.env, type_, st)
+}
+
+// A pattern walk: the environment its bindings extend, and what the
+// compiler's pattern typer keeps beside it (`pattern.rs:100-193`).
+type PatternWalk {
+  PatternWalk(
+    env: Env,
+    // The names in scope where the pattern started: the clause's, and for a
+    // later alternative the first alternative's bindings too. A bit-array
+    // size reads a name from here unless an earlier segment of its own bit
+    // array bound it: every other part of the pattern is out of its reach
+    // (`pattern.rs:419-428, 1405-1423`).
+    start: Dict(String, ValueConstructor),
+    // For a later alternative, the bindings the first alternative made;
+    // `None` for a first or only alternative.
+    first: Option(Dict(String, ValueConstructor)),
+    // The bindings this walk has made so far.
+    bound: Dict(String, ValueConstructor),
+    // The subject variables this walk has narrowed, each with every variant
+    // it narrowed it to, latest first. The latest is the one a first
+    // alternative holds, as the compiler's `inferred_variant_variables` keeps
+    // it; any one of a later alternative's that differs takes it away
+    // (`pattern.rs:197-257`).
+    narrowed: Dict(String, List(Int)),
+  )
+}
+
+fn walk_pattern(
+  walk: PatternWalk,
+  st: State,
+  pattern: glance.Pattern,
+  expected: ty.Type,
+  subject: Option(String),
+) -> Result(#(PatternWalk, ty.Type, State), Failure) {
   case pattern {
     glance.PatternInt(..) ->
-      typed(env, prelude_int(), unify(st, expected, prelude_int()))
+      typed(walk, prelude_int(), unify(st, expected, prelude_int()))
     glance.PatternFloat(..) ->
-      typed(env, prelude_float(), unify(st, expected, prelude_float()))
+      typed(walk, prelude_float(), unify(st, expected, prelude_float()))
     glance.PatternString(..) ->
-      typed(env, prelude_string(), unify(st, expected, prelude_string()))
-    glance.PatternDiscard(..) -> Ok(#(env, expected, st))
+      typed(walk, prelude_string(), unify(st, expected, prelude_string()))
+    glance.PatternDiscard(..) -> Ok(#(walk, expected, st))
 
-    glance.PatternVariable(_, name) ->
-      Ok(#(bind_local(env, name, expected), expected, st))
+    glance.PatternVariable(_, name) -> {
+      use #(walk, st) <- result.map(bind_pattern_name(walk, st, name, expected))
+      #(walk, expected, st)
+    }
 
     glance.PatternTuple(_, elements) -> {
       // Destructure a tuple the expected type already is, element by element,
@@ -5050,51 +5338,50 @@ fn infer_pattern(
         expected,
         list.length(elements),
       ))
-      use #(env, rev_types, st) <- result.try(
+      use #(walk, rev_types, st) <- result.try(
         list.try_fold(
           list.zip(elements, elem_types),
-          #(env, [], st),
+          #(walk, [], st),
           fn(acc, pair) {
-            let #(env, types_, st) = acc
+            let #(walk, types_, st) = acc
             let #(pattern, t) = pair
-            use #(env, t, st) <- result.map(infer_pattern(
-              env,
+            use #(walk, t, st) <- result.map(walk_pattern(
+              walk,
               st,
               pattern,
               t,
               None,
             ))
-            #(env, [t, ..types_], st)
+            #(walk, [t, ..types_], st)
           },
         ),
       )
-      Ok(#(env, ty.Tuple(list.reverse(rev_types)), st))
+      Ok(#(walk, ty.Tuple(list.reverse(rev_types)), st))
     }
 
     glance.PatternList(_, elements, tail) -> {
-      let #(elem, st) = fresh(st)
-      use st <- result.try(unify(st, expected, prelude_list(elem)))
-      use #(env, st) <- result.try(
-        list.try_fold(elements, #(env, st), fn(acc, p) {
-          let #(env, st) = acc
-          use #(env, _, st) <- result.map(infer_pattern(env, st, p, elem, None))
-          #(env, st)
+      use #(elem, st) <- result.try(list_element(st, expected))
+      use #(walk, st) <- result.try(
+        list.try_fold(elements, #(walk, st), fn(acc, p) {
+          let #(walk, st) = acc
+          use #(walk, _, st) <- result.map(walk_pattern(walk, st, p, elem, None))
+          #(walk, st)
         }),
       )
-      use #(env, st) <- result.try(case tail {
+      use #(walk, st) <- result.try(case tail {
         Some(t) -> {
-          use #(env, _, st) <- result.map(infer_pattern(
-            env,
+          use #(walk, _, st) <- result.map(walk_pattern(
+            walk,
             st,
             t,
             prelude_list(elem),
             None,
           ))
-          #(env, st)
+          #(walk, st)
         }
-        None -> Ok(#(env, st))
+        None -> Ok(#(walk, st))
       })
-      Ok(#(env, prelude_list(elem), st))
+      Ok(#(walk, prelude_list(elem), st))
     }
 
     // `Ctor(..) as name` hands the subject on to the pattern inside it, which
@@ -5102,37 +5389,37 @@ fn infer_pattern(
     // pattern's own type, and so is itself that pattern's type. The pattern is
     // inferred first so its narrowing cannot overwrite this binding.
     glance.PatternAssignment(_, pattern, name) -> {
-      use #(env, type_, st) <- result.try(infer_pattern(
-        env,
+      use #(walk, type_, st) <- result.try(walk_pattern(
+        walk,
         st,
         pattern,
         expected,
         subject,
       ))
-      Ok(#(bind_local(env, name, type_), type_, st))
+      use #(walk, st) <- result.map(bind_pattern_name(walk, st, name, type_))
+      #(walk, type_, st)
     }
 
-    glance.PatternConcatenate(_, _prefix, prefix_name, rest_name) -> {
+    glance.PatternConcatenate(..) -> {
       use st <- result.try(unify(st, expected, prelude_string()))
       // Both the matched prefix (`"a" as c <> rest`) and the remainder bind to
       // String. The prefix binding is optional (`<> rest` with no `as`).
-      let bind_name = fn(env, name) {
-        case name {
-          glance.Named(n) -> bind_local(env, n, prelude_string())
-          glance.Discarded(_) -> env
-        }
-      }
-      let env = case prefix_name {
-        Some(name) -> bind_name(env, name)
-        None -> env
-      }
-      Ok(#(bind_name(env, rest_name), prelude_string(), st))
+      use #(walk, st) <- result.map(
+        list.try_fold(
+          reference.pattern_names(pattern),
+          #(walk, st),
+          fn(acc, name) {
+            bind_pattern_name(acc.0, acc.1, name, prelude_string())
+          },
+        ),
+      )
+      #(walk, prelude_string(), st)
     }
 
     glance.PatternVariant(_, module, constructor, arguments, _spread) -> {
       use entry <- result.try(stateless(
         st,
-        constructor_entry(env, module, constructor),
+        constructor_entry(walk.env, module, constructor),
       ))
       let #(ctor_type, st) = instantiate(st, entry.scheme)
       // A constructor with fields is a function; one without is the value.
@@ -5144,9 +5431,9 @@ fn infer_pattern(
       // Matching a bare subject variable against this constructor narrows that
       // variable to it, in this scope only: `env` is a value, so the scope the
       // pattern opens carries the rebinding and the caller's does not.
-      let env = case subject, variant_of(ret) {
-        Some(name), Some(index) -> narrow(env, st, name, index)
-        _, _ -> env
+      let walk = case subject, variant_of(ret) {
+        Some(name), Some(index) -> narrow_subject(walk, st, name, index)
+        _, _ -> walk
       }
       use arg_patterns <- result.try(stateless(
         st,
@@ -5156,50 +5443,138 @@ fn infer_pattern(
           list.length(field_types),
         ),
       ))
-      use #(env, st) <- result.try(
+      use #(walk, st) <- result.try(
         list.try_fold(
           list.zip(arg_patterns, field_types),
-          #(env, st),
+          #(walk, st),
           fn(acc, pair) {
-            let #(env, st) = acc
+            let #(walk, st) = acc
             let #(pattern, t) = pair
-            use #(env, _, st) <- result.map(infer_pattern(
-              env,
+            use #(walk, _, st) <- result.map(walk_pattern(
+              walk,
               st,
               pattern,
               t,
               None,
             ))
-            #(env, st)
+            #(walk, st)
           },
         ),
       )
       // The constructor's own return, stamped: the arguments matched above do
       // not re-stamp it, which is the compiler's shape.
-      Ok(#(env, ret, st))
+      Ok(#(walk, ret, st))
     }
 
     glance.PatternBitString(_, segments) -> {
       use st <- result.try(unify(st, expected, prelude_bit_array()))
-      use #(env, st) <- result.try(
-        list.try_fold(segments, #(env, st), fn(acc, segment) {
-          let #(env, st) = acc
-          infer_bit_pattern_segment(env, st, segment)
+      // A size reads the names the pattern started with, plus those bound by
+      // earlier segments of this bit array.
+      use #(walk, _sizes, st) <- result.try(
+        list.try_fold(segments, #(walk, walk.start, st), fn(acc, segment) {
+          let #(walk, sizes, st) = acc
+          infer_bit_pattern_segment(walk, sizes, st, segment)
         }),
       )
-      Ok(#(env, prelude_bit_array(), st))
+      Ok(#(walk, prelude_bit_array(), st))
     }
   }
 }
 
-// A pattern arm's result where the pattern's own type is already known: the
-// `with_env` of the three-place return.
+// Bind a name the pattern introduces, as the compiler's `insert_variable`
+// does (`pattern.rs:124-193`). A later alternative's binding of a name the
+// first alternative bound is unified with the first's binding as it is made;
+// one of a name the first did not bind is the compiler's
+// `ExtraVarInAlternativePattern`, reported here as the name being unbound.
+fn bind_pattern_name(
+  walk: PatternWalk,
+  st: State,
+  name: String,
+  type_: ty.Type,
+) -> Result(#(PatternWalk, State), Failure) {
+  case walk.first {
+    None -> Ok(#(bound_name(walk, name, type_), st))
+    Some(first) ->
+      case dict.get(first, name) {
+        Ok(initial) -> {
+          use st <- result.map(unify(st, initial.scheme.type_, type_))
+          #(bound_name(walk, name, type_), st)
+        }
+        Error(_) -> fail(st, UnboundVariable(name))
+      }
+  }
+}
+
+// `walk` with `name` bound at `type_`. A first or only alternative's binding
+// of a subject it narrowed takes the narrowing out of `narrowed`, as the
+// compiler's `insert_variable` takes it out of `inferred_variant_variables`
+// (`pattern.rs:133-150`): the name is now the pattern's own value, which a
+// later alternative cannot erase a variant of. A later alternative's binding
+// leaves its narrowings alone, as the compiler's does.
+fn bound_name(walk: PatternWalk, name: String, type_: ty.Type) -> PatternWalk {
+  let entry = ValueConstructor(ty.Scheme([], type_), LocalValue(name))
+  let narrowed = case walk.first {
+    None -> dict.delete(walk.narrowed, name)
+    Some(_) -> walk.narrowed
+  }
+  PatternWalk(
+    ..walk,
+    env: install_entry(walk.env, name, entry),
+    bound: dict.insert(walk.bound, name, entry),
+    narrowed:,
+  )
+}
+
+// Narrow the subject variable `name` to `variant` for the rest of the walk,
+// unless the walk has already bound `name` itself (`pattern.rs:197-205`). A
+// pattern's own binding is a different value. One made before the narrowing
+// blocks it; one made after it replaces the narrowed entry (`bound_name`). So
+// which wins depends on the walk order and on what was actually bound, and a
+// sub-pattern a speculative walk skips binds nothing: in
+// `case t, r.field { B, #(t) -> .. }` with `r.field` no tuple, `t` is narrowed.
+fn narrow_subject(
+  walk: PatternWalk,
+  st: State,
+  name: String,
+  variant: Int,
+) -> PatternWalk {
+  use <- bool.guard(when: dict.has_key(walk.bound, name), return: walk)
+  PatternWalk(
+    ..walk,
+    env: narrow(walk.env, st, name, variant),
+    narrowed: dict.upsert(walk.narrowed, name, fn(earlier) {
+      [variant, ..option.unwrap(earlier, [])]
+    }),
+  )
+}
+
+// The type a list pattern matches its elements against: the expected type's
+// own argument where it already is a list, as the compiler's
+// `named_type_arguments` reads it (`pattern.rs:880-896`, `type_.rs:421-470`),
+// so an element binds at that type as it stands; otherwise a fresh element
+// variable the expected type is unified with.
+fn list_element(
+  st: State,
+  expected: ty.Type,
+) -> Result(#(ty.Type, State), Failure) {
+  case resolve(st, expected) {
+    ty.Named(module, "List", [element], _) if module == prelude_module ->
+      Ok(#(element, st))
+    _ -> {
+      let #(element, st) = fresh(st)
+      use st <- result.map(unify(st, expected, prelude_list(element)))
+      #(element, st)
+    }
+  }
+}
+
+// A pattern arm's result where the pattern's own type is already known.
 fn typed(
-  env: Env,
+  walk: PatternWalk,
   type_: ty.Type,
   st: Result(State, Failure),
-) -> Result(#(Env, ty.Type, State), Failure) {
-  result.map(st, fn(st) { #(env, type_, st) })
+) -> Result(#(PatternWalk, ty.Type, State), Failure) {
+  result.map(st, fn(st) { #(walk, type_, st) })
 }
 
 // A tuple pattern's element types: the expected type's own elements where it
@@ -5230,37 +5605,59 @@ fn tuple_elements(
   }
 }
 
-// Check one bit-array *pattern* segment: bind the segment pattern and check
-// its size option, threading the environment for any bound variables.
+// Check one bit-array *pattern* segment in the compiler's order
+// (`infer_pattern_segment`, `pattern.rs:489-514, 609`): its size option is
+// typed first, reading `sizes`, and then the segment's pattern binds. Returns
+// `sizes` with what the segment bound added, for the segments after it.
 fn infer_bit_pattern_segment(
-  env: Env,
+  walk: PatternWalk,
+  sizes: Dict(String, ValueConstructor),
   st: State,
   segment: #(
     glance.Pattern,
     List(glance.BitStringSegmentOption(glance.BitArraySize)),
   ),
-) -> Result(#(Env, State), Failure) {
+) -> Result(#(PatternWalk, Dict(String, ValueConstructor), State), Failure) {
   let #(pattern, options) = segment
   let default = case pattern {
     glance.PatternString(..) -> prelude_string()
     glance.PatternFloat(..) -> prelude_float()
     _ -> prelude_int()
   }
-  use #(env, _, st) <- result.try(infer_pattern(
-    env,
+  use st <- result.try(
+    list.try_fold(options, st, fn(st, option) {
+      case option {
+        // Read-only: a size lookup reads `values` and nothing else.
+        glance.SizeValueOption(size) ->
+          check_bit_array_size(Env(..walk.env, values: sizes), st, size)
+        _ -> Ok(st)
+      }
+    }),
+  )
+  // The segment is walked with no binding of its own yet, so what its walk
+  // holds after is exactly what it bound, and a segment costs only what it
+  // binds; the walk's earlier bindings are merged back in after it.
+  use #(after, _, st) <- result.try(walk_pattern(
+    PatternWalk(..walk, bound: dict.new()),
     st,
     pattern,
     segment_value_type(options, default),
     None,
   ))
-  list.try_fold(options, #(env, st), fn(acc, option) {
-    let #(env, st) = acc
-    case option {
-      glance.SizeValueOption(size) ->
-        with_env(env, check_bit_array_size(env, st, size))
-      _ -> Ok(#(env, st))
-    }
-  })
+  let made = after.bound
+  let after = PatternWalk(..after, bound: dict.merge(walk.bound, made))
+  // In a later alternative a binding of a name the first alternative bound
+  // is unified with the first's, and the compiler adds no variable of its
+  // own (`pattern.rs:163-184, 394-415`): a size after it reads the first's
+  // entry (`pattern.rs:1405-1419`).
+  let for_sizes = case walk.first {
+    None -> made
+    Some(first) ->
+      dict.map_values(made, fn(name, entry) {
+        result.unwrap(dict.get(first, name), entry)
+      })
+  }
+  Ok(#(after, dict.merge(sizes, for_sizes), st))
 }
 
 // Check a bit-array *pattern* segment size (glance 7.0+): a restricted
@@ -5285,14 +5682,6 @@ fn check_bit_array_size(
     }
     glance.BitArraySizeBlock(_, inner) -> check_bit_array_size(env, st, inner)
   }
-}
-
-// Pair a (possibly failed) new state with an unchanged environment.
-fn with_env(
-  env: Env,
-  st: Result(State, Failure),
-) -> Result(#(Env, State), Failure) {
-  result.map(st, fn(st) { #(env, st) })
 }
 
 // Resolve a constructor name (optionally module-qualified) to its scope entry.

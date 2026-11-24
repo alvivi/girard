@@ -1785,15 +1785,35 @@ pub fn shadowing_binding_clears_variant_narrowing_test() {
 pub fn record_update_non_shared_field_test() {
   // Updating via the `Branch` constructor copies the kept field `kids`, which
   // exists only in `Branch`. The kept field's type is derived from the named
-  // constructor, not a field accessor shared by every variant.
+  // constructor, not a field accessor shared by every variant. The spread is
+  // known to be a `Branch`, as the compiler requires of a type with several
+  // variants.
+  let source =
+    "pub type Node(a) {\n"
+    <> "  Branch(value: a, kids: List(Node(a)))\n"
+    <> "  Leaf(value: a)\n"
+    <> "}\n"
+    <> "pub fn relabel(b: Node(a), v: a) -> Node(a) {\n"
+    <> "  case b {\n"
+    <> "    Branch(..) -> Branch(..b, value: v)\n"
+    <> "    Leaf(..) -> Leaf(value: v)\n"
+    <> "  }\n"
+    <> "}"
+  signature(source, "relabel")
+  |> should.equal("fn(Node(a), a) -> Node(a)")
+}
+
+pub fn record_update_of_an_unknown_variant_is_rejected_test() {
+  // The spread could be a `Leaf`, so the compiler rejects the update as unsafe
+  // (`infer_record_update_variant`, `expression.rs:3096-3170`).
   let source =
     "pub type Node(a) {\n"
     <> "  Branch(value: a, kids: List(Node(a)))\n"
     <> "  Leaf(value: a)\n"
     <> "}\n"
     <> "pub fn relabel(b: Node(a), v: a) -> Node(a) { Branch(..b, value: v) }"
-  signature(source, "relabel")
-  |> should.equal("fn(Node(a), a) -> Node(a)")
+  let assert Error(girard.TypeMismatch(_, _)) =
+    girard.annotate(source, girard.default_options())
 }
 
 pub fn self_recursive_with_imports_generalizes_test() {
@@ -4165,7 +4185,7 @@ pub fn annotate_package_publishes_an_early_reader_as_the_compiler_does_test() {
 
   let int = girard.Named("gleam", "Int", [])
   let string = girard.Named("gleam", "String", [])
-  m.skipped |> should.equal([#("later", girard.TypeMismatch(int, string))])
+  m.skipped |> should.equal([#("later", girard.TypeMismatch(string, int))])
   package_signature(m, "early") |> should.equal("fn(Result(Int, Nil)) -> Int")
   list.map(m.annotated.resolutions, fn(r) { r.resolution })
   |> should.equal([girard.ModuleFn("app/m", "later")])
