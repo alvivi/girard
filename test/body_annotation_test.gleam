@@ -134,10 +134,9 @@ pub fn run() {
 
 pub fn failed_speculation_keeps_a_direct_field_shape_test() {
   // Probe `k_r6_spec_shape`.
-  // The callback fails to type while it is speculated, so the whole pass is
-  // rewound; the real pass types it. (1.19.2 resolves
-  // `callback(Row(0)).field` as a record field at the access; girard
-  // defers it, a difference left to the speculation recovery follow-up.)
+  // The callback's `r.field + 1` fails while it is speculated and recovers,
+  // so the callback still returns `Row`; the real pass types it.
+  // (speculation_test pins the record field the callee's access resolves to.)
   let source =
     "import helper as r
 
@@ -193,11 +192,14 @@ pub fn run() {
   repeated_spans(source, modules) |> should.equal([])
 }
 
-pub fn failed_speculation_rewinds_the_whole_pass_test() {
+pub fn speculated_argument_recovers_inside_and_keeps_its_links_test() {
   // Probe `k_r8_spec_fold_poison`.
-  // The first speculated argument fails, so the whole pass is rewound: a
-  // fold that kept the second argument's speculation would read the module
-  // constant's `String` and reject the real pass.
+  // The first speculated argument's `r.field + 1` fails on the module's
+  // `String` and recovers inside the argument, where the operator records
+  // the mismatch, after `take(outer)` linked `r` to `Row`. The link is kept,
+  // so the second argument's `r.field` is the record's. Dropping the first
+  // argument's effects would read the module constant's `String` there and
+  // reject the real pass.
   let source =
     "import helper as r
 
@@ -1083,9 +1085,10 @@ pub fn run(x) {
 
 pub fn failed_speculative_callback_leaves_names_to_the_real_pass_test() {
   // Probe `k_r6_spec_stmt`.
-  // The speculated callback fails, so its names are created again by the
-  // real pass, after the callee's own have left scope. `main`:
-  // `fn(a, b) -> #(a, b)`.
+  // The speculated callback's `r.field + 1` fails and recovers, and its body
+  // ties `x` and `y` through `t`; `t` is created inside the callback's body,
+  // so it leaves scope with it, and the real pass creates it again.
+  // `main`: `fn(a, b) -> #(a, b)`.
   let source =
     "import helper as r
 
@@ -1117,7 +1120,8 @@ pub fn run(x, y) {
 
 pub fn failed_speculative_header_leaves_names_to_the_real_pass_test() {
   // Probe `k_r7_spec_header`.
-  // The speculated lambda fails, so its `t` is created by the real pass and
+  // The speculated lambda's header stops at `_i: Int`, which the module's
+  // `String` fails, before `v: t`, so its `t` is created by the real pass and
   // ties `x`; the callee's body generic on `y` leaves scope. `main`:
   // `fn(a, b, Row) -> #(a, b)`.
   let source =

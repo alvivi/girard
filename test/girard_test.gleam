@@ -200,7 +200,7 @@ pub fn printer_skips_reserved_words_test() {
 
 pub fn report_error_test() {
   girard.report("pub fn f() { 1 +. 2 }")
-  |> should.equal("// error: type mismatch: Int vs Float")
+  |> should.equal("// error: type mismatch: Float vs Int")
 }
 
 // Function signature inference
@@ -586,11 +586,12 @@ pub fn wrapped_piped_echo_is_rejected_test() {
 // pattern binds, outside the pattern's scope. A message glance parsed with an
 // operator at its root is declined (see `check_message`).
 
-// What a message of `42` gives: its type, then the `String` it is checked at.
+// What a message of `42` gives: the `String` it is checked at, then its type,
+// as the compiler reports it (`expression.rs:1801-1803`).
 const int_message =
   girard.TypeMismatch(
-    girard.Named("gleam", "Int", []),
     girard.Named("gleam", "String", []),
+    girard.Named("gleam", "Int", []),
   )
 
 const declined_message = girard.Unsupported("an operator after an `as` message")
