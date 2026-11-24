@@ -761,10 +761,19 @@ type State {
     // The annotation names in scope where inference is, and the generics this
     // scope owns: see `Scope`.
     scope: Scope,
-    // The type each module constant has in a clause guard once generalized,
-    // by module and name: one copy per constant, shared by every guard read
-    // of it, as the compiler's stored literal is (see `guard_constant_read`).
-    literals: Dict(#(String, String), ty.Type),
+    // The one local id standing for each variable of another module's
+    // constant literal met in this module, by its identity: see `LiteralVar`.
+    // Two literals that share a variable in their exporter share it here, and
+    // a generic reached through two imports is one rigid id here.
+    identities: Dict(LiteralVar, Int),
+    // Each local id that replaying an imported binding bound to a type, with
+    // that binding's origin (`literal_links`). A variable bound to a type is
+    // never bound again, so the id holds that binding for good.
+    bound_from: Dict(Int, LiteralVar),
+    // The term each imported constant's literal was translated to in this
+    // module, by the constant's module and name. Its variables are local ids
+    // from `identities`, so it sees every binding made after it was built.
+    imported_literals: Dict(#(String, String), ty.Type),
   )
 }
 
@@ -916,14 +925,26 @@ type ValueVariant {
 
 // A module constant's stored literal, which the compiler keeps beside its
 // generalized type (`ValueConstructorVariant::ModuleConstant`,
-// `analyse.rs:473-485`) and a clause guard reads instead of instantiating the
-// type (`guard.rs:322-324`): the type as inferred, before generalization
-// erased its variants, and which of its ids are generics an annotation
-// created. A snapshot taken when the constant is inferred: a guard that later
-// pins one of its variables in the defining module does not reach an
-// importer, where the compiler's literal is one live type.
+// `analyse.rs:473-485`) and a literal reader reads instead of instantiating
+// the type: a bare guard name (`guard.rs:322-324`) and a constant record
+// update's spread (`constant.rs:186-221`). It is the type as inferred, before
+// generalization erased its variants, and it is live: the compiler's cells
+// are shared by every module of a build, so a reader that binds one changes
+// what later readers see, here and in the modules that import this one.
+//
+// In its own module a literal is its type, with the ids its group left
+// unbound, and `vars` is empty. An exported literal is zonked with its
+// module's final state, and `vars` names each variable in it — the key is its
+// id in `type_` — by its identity, with `True` for a generic, so an importer
+// maps every variable to its one local id (`State.identities`).
 type ConstantLiteral {
-  ConstantLiteral(type_: ty.Type, generics: Set(Int))
+  ConstantLiteral(type_: ty.Type, vars: Dict(Int, #(LiteralVar, Bool)))
+}
+
+// A variable of a constant's literal, named by the module whose state created
+// it and its id there: the identity of a compiler cell across modules.
+type LiteralVar {
+  LiteralVar(module: String, id: Int)
 }
 
 // The label of each of a callable's positional parameters, `None` where the
@@ -1071,6 +1092,13 @@ type ModuleInterface {
     // interface, so an importer that reuses it from a cache inherits the same
     // set as one that infers it fresh.
     unavailable: Dict(String, Unavailability),
+    // Each variable of another module's literal that this module's final
+    // state has bound, with the origin of its binding and what it is bound
+    // to, exported as a literal: the bindings a guard or a constant record
+    // update here made, and those it inherited from its own imports. An
+    // importer replays them before inferring its own definitions
+    // (`replay_links`).
+    literal_links: List(#(LiteralVar, LiteralVar, ConstantLiteral)),
   )
 }
 
@@ -1083,7 +1111,9 @@ fn new_state() -> State {
     pending: [],
     rigid: set.new(),
     scope: empty_scope(),
-    literals: dict.new(),
+    identities: dict.new(),
+    bound_from: dict.new(),
+    imported_literals: dict.new(),
   )
 }
 
@@ -1305,6 +1335,7 @@ fn prelude_interface() -> ModuleInterface {
     modules: dict.new(),
     reachable: dict.new(),
     unavailable: dict.new(),
+    literal_links: [],
   )
 }
 
@@ -1479,8 +1510,9 @@ fn infer_module(
   let #(prelude_env, st) = prelude()
   let env = set_module(prelude_env, module_name)
 
-  // 1. Imports.
-  use #(env, cache) <- result.try(process_imports(
+  // 1. Imports, then the bindings of literal variables their interfaces carry,
+  //    replayed in source order before anything of this module is inferred.
+  use #(env, cache, imported) <- result.try(process_imports(
     options,
     loading,
     cache,
@@ -1488,6 +1520,7 @@ fn infer_module(
     module.imports,
     best_effort:,
   ))
+  let st = list.fold(imported, st, replay_links)
 
   // 2. Pre-declare local type names so forward references resolve, then
   //    register aliases and custom-type constructors/accessors. An alias on a
@@ -1770,7 +1803,9 @@ fn infer_group(
   // Generalized as the compiler's `generalise` does, over every variable still
   // free: against the environment before any registration, so the registered
   // functions of later groups do not hold a variable back.
-  // A constant's literal is its type as inferred, before the erasure.
+  // A constant's literal is its type as inferred, before the erasure, with
+  // the ids generalization quantified: live, for every literal reader after
+  // it (`constant_view`).
   let env =
     list.fold(list.reverse(rev_inferred), env, fn(env, member) {
       case member {
@@ -1789,8 +1824,7 @@ fn infer_group(
 }
 
 // A member's type as its group inferred it, to generalize once every member
-// is inferred: a constant's is its literal's, which also marks the ids its
-// annotation made generics.
+// is inferred: a constant's is its literal's.
 type Member {
   FunctionMember(function: glance.Function, type_: ty.Type)
   ConstantMember(constant: glance.Constant, literal: ConstantLiteral)
@@ -1849,7 +1883,9 @@ fn register(env: Env, st: State, def: Def) -> #(#(Env, State), GroupItem) {
 // the failures each loaded interface carries from its own imports.
 
 // Imports are met in the order glance stores them, which is the reverse of
-// source order: glance prepends each import as it parses it.
+// source order: glance prepends each import as it parses it. Returns the
+// interfaces imported, in source order, which is the reverse of the order
+// they were met in.
 fn process_imports(
   options: Options,
   loading: Set(String),
@@ -1857,15 +1893,15 @@ fn process_imports(
   env: Env,
   imports: List(glance.Definition(glance.Import)),
   best_effort best_effort: Bool,
-) -> Result(#(Env, InterfaceCache), Error) {
-  list.try_fold(imports, #(env, cache), fn(acc, definition) {
-    let #(env, cache) = acc
+) -> Result(#(Env, InterfaceCache, List(ModuleInterface)), Error) {
+  list.try_fold(imports, #(env, cache, []), fn(acc, definition) {
+    let #(env, cache, imported) = acc
     let import_ = definition.definition
     let path = import_.module
     // Cyclic import: break the cycle by skipping.
     use <- bool.guard(
       when: set.contains(loading, path),
-      return: Ok(#(env, cache)),
+      return: Ok(#(env, cache, imported)),
     )
     use #(resolved, cache) <- result.try(resolve_interface(
       options,
@@ -1877,10 +1913,13 @@ fn process_imports(
     case resolved {
       // Unresolvable or unparsable: best effort, skip (uses of it surface later
       // as unbound variables), but say so.
-      Error(reason) -> Ok(#(record_unavailable(env, path, reason), cache))
+      Error(reason) ->
+        Ok(#(record_unavailable(env, path, reason), cache, imported))
       Ok(interface) -> {
         let env = import_items(env, import_, interface)
-        Ok(#(inherit_unavailable(env, interface), cache))
+        Ok(
+          #(inherit_unavailable(env, interface), cache, [interface, ..imported]),
+        )
       }
     }
   })
@@ -2024,13 +2063,24 @@ fn build_interface(
   type_names: List(String),
   accessor_type_names: List(String),
 ) -> ModuleInterface {
+  // The identity each local id stands for, to name an exported literal's
+  // variables by.
+  let origins =
+    dict.fold(st.identities, dict.new(), fn(origins, identity, local) {
+      dict.insert(origins, local, identity)
+    })
   ModuleInterface(
     name: name,
-    // The scope entry each public name holds, verbatim. In best-effort mode a
-    // public definition girard declined leaves the entry of whatever it
-    // shadowed — an unqualified import, say — and exporting that entry whole
-    // is what tells an importer the identity it was actually typed against.
-    values: take(env.values, value_names),
+    // The scope entry each public name holds, verbatim but for a constant of
+    // this module, whose literal is exported as this module's final state has
+    // it. In best-effort mode a public definition girard declined leaves the
+    // entry of whatever it shadowed — an unqualified import, say — and
+    // exporting that entry whole is what tells an importer the identity it
+    // was actually typed against.
+    values: take(env.values, value_names)
+      |> dict.map_values(fn(_name, entry) {
+        export_entry(st, name, origins, entry)
+      }),
     types: take(env.local_types, type_names),
     aliases: resolve_aliases(env, st, type_names),
     // Only non-opaque public types expose their field accessors: an opaque
@@ -2039,7 +2089,260 @@ fn build_interface(
     modules: env.modules,
     reachable: env.module_index,
     unavailable: env.unavailable,
+    literal_links: literal_links(st, name, origins),
   )
+}
+
+// An exported scope entry: a constant of `module` carries its literal as the
+// module's final state has it.
+fn export_entry(
+  st: State,
+  module: String,
+  origins: Dict(Int, LiteralVar),
+  entry: ValueConstructor,
+) -> ValueConstructor {
+  case entry.variant {
+    ConstantValue(module: owner, literal:, ..) as variant if owner == module ->
+      ValueConstructor(
+        ..entry,
+        variant: ConstantValue(
+          ..variant,
+          literal: export_literal(st, module, origins, literal.type_),
+        ),
+      )
+    ConstantValue(..)
+    | LocalValue(..)
+    | FunctionValue(..)
+    | ConstructorValue(..) -> entry
+  }
+}
+
+// `type_` as a literal of `module`, zonked with its final state, each
+// variable named by the identity it stands for (`origins`), or as one of
+// `module`'s own, and marked when it is a generic.
+fn export_literal(
+  st: State,
+  module: String,
+  origins: Dict(Int, LiteralVar),
+  type_: ty.Type,
+) -> ConstantLiteral {
+  let zonked = zonk(st, type_)
+  let vars =
+    set.fold(type_var_ids(zonked, set.new()), dict.new(), fn(vars, id) {
+      let identity =
+        result.unwrap(dict.get(origins, id), LiteralVar(module, id))
+      dict.insert(vars, id, #(identity, is_rigid(st, id)))
+    })
+  ConstantLiteral(zonked, vars)
+}
+
+// The ids of the variables a zonked type mentions, in one pass, in no
+// particular order: an exported literal's `vars` is keyed by id.
+fn type_var_ids(type_: ty.Type, ids: Set(Int)) -> Set(Int) {
+  case type_ {
+    ty.Var(id) -> set.insert(ids, id)
+    ty.Named(_, _, args, _) ->
+      list.fold(args, ids, fn(ids, arg) { type_var_ids(arg, ids) })
+    ty.Fn(args, ret) ->
+      list.fold(args, type_var_ids(ret, ids), fn(ids, arg) {
+        type_var_ids(arg, ids)
+      })
+    ty.Tuple(elements) ->
+      list.fold(elements, ids, fn(ids, element) { type_var_ids(element, ids) })
+  }
+}
+
+// The bindings `module`'s final state holds for other modules' literal
+// variables, in the order of their identities. An unbound one has none, so
+// the list is empty unless a literal reader in this module, or in one it
+// imports, bound a variable of another module's literal. Identities whose
+// chains end at the same variable share one binding, as the compiler's linked
+// cells share one: the first of them in that order carries it, and each of
+// the others a link to the first, so a type N identities are bound to is
+// exported, and replayed, once rather than N times.
+//
+// Each goes with its binding's origin: the module whose state made the
+// binding at the end of the identity's chain, and the variable it bound
+// there. A binding that replay installed keeps the origin it came with
+// (`State.bound_from`): its type stays the one that module made, and what
+// this module bound inside it is exported by the variables it bound. Any
+// other is this module's own. So a module that only relays an import's
+// binding passes its origin on, and an importer that meets the binding
+// through several relays replays it once.
+fn literal_links(
+  st: State,
+  module: String,
+  origins: Dict(Int, LiteralVar),
+) -> List(#(LiteralVar, LiteralVar, ConstantLiteral)) {
+  let #(_, links) =
+    dict.to_list(st.identities)
+    |> list.filter(fn(pair) { dict.has_key(st.subst, pair.1) })
+    |> list.sort(fn(a, b) {
+      string.compare({ a.0 }.module, { b.0 }.module)
+      |> order.break_tie(int.compare({ a.0 }.id, { b.0 }.id))
+    })
+    // The first identity met for each last variable, by that variable.
+    |> list.map_fold(dict.new(), fn(firsts, pair) {
+      let #(identity, local) = pair
+      let #(_, last) = chain_last(st.subst, local, [])
+      let origin =
+        result.unwrap(dict.get(st.bound_from, last), LiteralVar(module, last))
+      case dict.get(firsts, last) {
+        Ok(#(first_identity, first)) -> {
+          let vars =
+            dict.from_list([#(first, #(first_identity, is_rigid(st, first)))])
+          #(firsts, #(identity, origin, ConstantLiteral(ty.Var(first), vars)))
+        }
+        Error(Nil) -> #(
+          dict.insert(firsts, last, pair),
+          #(
+            identity,
+            origin,
+            export_literal(st, module, origins, ty.Var(local)),
+          ),
+        )
+      }
+    })
+  links
+}
+
+// The one local id standing for `identity`, made the first time it is met: a
+// rigid one for a generic.
+fn identity_var(
+  st: State,
+  identity: LiteralVar,
+  generic: Bool,
+) -> #(Int, State) {
+  case dict.get(st.identities, identity) {
+    Ok(local) -> #(local, st)
+    Error(_) -> {
+      let #(local, st) = fresh_id(st)
+      let st = case generic {
+        True -> mark_rigid(st, [local])
+        False -> st
+      }
+      #(
+        local,
+        State(..st, identities: dict.insert(st.identities, identity, local)),
+      )
+    }
+  }
+}
+
+// An exported literal, read in this module: each variable mapped to the one
+// local id standing for its identity.
+fn import_literal(st: State, literal: ConstantLiteral) -> #(ty.Type, State) {
+  let #(mapping, st) =
+    dict.to_list(literal.vars)
+    |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
+    |> list.fold(#(dict.new(), st), fn(acc, entry) {
+      let #(mapping, st) = acc
+      let #(id, #(identity, generic)) = entry
+      let #(local, st) = identity_var(st, identity, generic)
+      #(dict.insert(mapping, id, ty.Var(local)), st)
+    })
+  #(substitute(mapping, literal.type_), st)
+}
+
+// Replay an imported interface's bindings of literal variables, each as a
+// unification of the variable's local id with what it was bound to, so a
+// binding any module of the import closure made reaches this one through
+// whichever interface carries it, the same variable reached twice meeting in
+// one unification. A binding that does not unify with what is already
+// replayed is dropped and its state with it: the first import in source order
+// wins. Two modules that bind one variable incompatibly can both be accepted
+// by the compiler only when neither imports the other, and then which binds
+// first is its module schedule, which girard does not reproduce.
+//
+// An identity met here for the first time stands for a variable just made,
+// which nothing mentions yet, so it is bound to what it was bound to as that
+// stands, as `bind_var` would bind it but with no occurs check, which could
+// not fail. A link to a shared binding's first identity then stays a link,
+// one step rather than a walk of the type, and this module's own interface
+// shares the binding again.
+//
+// An identity already met whose imported binding is a link ending at the same
+// last variable as its own local's chain already holds that binding, as when
+// two imports relay one module's shared binding: unifying the two would walk
+// the shared type for nothing, and `unify` would then rebind the identity
+// straight to that type, out of the binding it shares. So it is skipped. A
+// binding that differs still unifies, and on a conflict the first import
+// still wins.
+//
+// An identity whose chain already ends at the binding a link's origin names
+// got that binding from an earlier import, as when several imports relay one
+// module's binding, so the link is skipped before it is translated. A later
+// copy can differ only inside, where its module bound the binding's
+// variables further, and each variable an interface's module bound has a
+// link of its own there. A binding that gives an identity its type records
+// its origin, for this check and for this module's own interface. Two
+// modules that bind one variable on their own give two origins, so their
+// bindings still meet in a unification.
+fn replay_links(st: State, interface: ModuleInterface) -> State {
+  list.fold(interface.literal_links, st, fn(st, link) {
+    let #(identity, origin, literal) = link
+    use <- bool.guard(when: holds_binding(st, identity, origin), return: st)
+    let met = dict.has_key(st.identities, identity)
+    let #(local, replayed) = identity_var(st, identity, False)
+    let #(bound, replayed) = import_literal(replayed, literal)
+    use <- bool.lazy_guard(when: !met, return: fn() {
+      let subst = dict.insert(replayed.subst, local, erase_variant(bound))
+      record_origin(State(..replayed, subst:), local, bound, origin)
+    })
+    use <- bool.guard(
+      when: holds_link(replayed, local, bound),
+      return: replayed,
+    )
+    // Whether the binding gives the identity its type, rather than meeting
+    // the type it has.
+    let untyped = case resolve(replayed, ty.Var(local)) {
+      ty.Var(_) -> True
+      ty.Named(..) | ty.Fn(..) | ty.Tuple(..) -> False
+    }
+    case unify(replayed, ty.Var(local), bound) {
+      Ok(replayed) if untyped -> record_origin(replayed, local, bound, origin)
+      Ok(replayed) -> replayed
+      Error(_) -> st
+    }
+  })
+}
+
+// Whether `identity`'s chain already ends at the binding `origin` names,
+// which replaying an earlier import installed.
+fn holds_binding(st: State, identity: LiteralVar, origin: LiteralVar) -> Bool {
+  case dict.get(st.identities, identity) {
+    Ok(local) ->
+      dict.get(st.bound_from, chain_last(st.subst, local, []).1) == Ok(origin)
+    Error(Nil) -> False
+  }
+}
+
+// `st` with `local`, which replay has just bound to `bound`, recorded as
+// holding the binding `origin` names when `bound` is a type. `local` is then
+// bound to that type itself, directly or by `unify`, which rebinds a link to
+// the end of its chain, so it is the last variable of its own chain. A link
+// records nothing: it holds whatever the variable it links to holds here.
+fn record_origin(
+  st: State,
+  local: Int,
+  bound: ty.Type,
+  origin: LiteralVar,
+) -> State {
+  case bound {
+    ty.Var(_) -> st
+    ty.Named(..) | ty.Fn(..) | ty.Tuple(..) ->
+      State(..st, bound_from: dict.insert(st.bound_from, local, origin))
+  }
+}
+
+// Whether `bound` is a variable whose chain ends at the same last variable as
+// `local`'s.
+fn holds_link(st: State, local: Int, bound: ty.Type) -> Bool {
+  case bound {
+    ty.Var(id) ->
+      chain_last(st.subst, id, []).1 == chain_last(st.subst, local, []).1
+    ty.Named(..) | ty.Fn(..) | ty.Tuple(..) -> False
+  }
 }
 
 // Resolve each named public alias to a concrete type, in this module's full
@@ -2315,25 +2618,29 @@ fn resolve(st: State, type_: ty.Type) -> ty.Type {
   }
 }
 
-// The substitution with every bound id mapped straight to the end of its
-// chain, for publication. The compiler's order links each new variable to the
-// next, as the elements of `[[], [], ..]` are, and `unify`'s compression
-// re-links only its left variable, as the compiler's does, so a chain can
-// still be long, and zonking every recorded type through it would be
-// quadratic. Each chain is walked once and every id on it rebound to its end,
-// so the whole pass is linear in the substitution's size: an id bound to a
-// type is the end of its chain already and is skipped, and an id is rebound
-// only where it does not point at the end yet. It is the same substitution
-// with its chains shortened: every type zonks the same, and the same ids are
-// bound (`literal_links` reads which). It runs once inference is done, never
-// on the inference path.
+// The substitution with every id bound to a variable mapped straight to the
+// last variable of its chain, for publication. The compiler's order links each
+// new variable to the next, as the elements of `[[], [], ..]` are, and
+// `unify`'s compression re-links only its left variable, as the compiler's
+// does, so a chain can still be long, and zonking every recorded type through
+// it would be quadratic. Each chain is walked once and every id on it rebound
+// to its last variable, so the whole pass is linear in the substitution's
+// size: an id bound to a type is the last of its chain already and is skipped,
+// and an id is rebound only where it does not point at the last variable yet.
+// The last variable is kept, rather than the type it may be bound to, because
+// the bindings that end there share it: that is how `literal_links` exports
+// them once. It is the same substitution with its chains shortened: every
+// type zonks the same, and the same ids are bound (`literal_links` reads
+// which). It runs once inference is done, never on the inference path.
 fn compress_substitution(st: State) -> State {
   let subst =
     dict.fold(st.subst, st.subst, fn(subst, id, bound) {
       case bound {
         ty.Var(_) -> {
-          let #(chain, end) = chain_end(subst, id, [])
-          list.fold(chain, subst, fn(subst, id) { dict.insert(subst, id, end) })
+          let #(chain, last) = chain_last(subst, id, [])
+          list.fold(chain, subst, fn(subst, id) {
+            dict.insert(subst, id, ty.Var(last))
+          })
         }
         ty.Named(..) | ty.Fn(..) | ty.Tuple(..) -> subst
       }
@@ -2341,22 +2648,28 @@ fn compress_substitution(st: State) -> State {
   State(..st, subst:)
 }
 
-// The ids from `id` along its chain that do not point at its end yet, and the
-// end: a type that is no variable, or an unbound variable. A loop, so a long
-// chain needs no deep stack.
-fn chain_end(
+// The ids from `id` along its chain that do not point at its last variable
+// yet, and that variable: the first one bound to a type that is no variable,
+// or unbound, `id` itself when it is. A loop, so a long chain needs no deep
+// stack.
+fn chain_last(
   subst: Dict(Int, ty.Type),
   id: Int,
   chain: List(Int),
-) -> #(List(Int), ty.Type) {
+) -> #(List(Int), Int) {
   case dict.get(subst, id) {
-    Ok(ty.Var(next) as link) ->
-      case dict.has_key(subst, next) {
-        True -> chain_end(subst, next, [id, ..chain])
-        False -> #(chain, link)
+    Ok(ty.Var(next)) ->
+      case dict.get(subst, next) {
+        Ok(ty.Var(_)) -> chain_last(subst, next, [id, ..chain])
+        Ok(ty.Named(..)) | Ok(ty.Fn(..)) | Ok(ty.Tuple(..)) | Error(Nil) -> #(
+          chain,
+          next,
+        )
       }
-    Ok(end) -> #(chain, end)
-    Error(Nil) -> #(chain, ty.Var(id))
+    Ok(ty.Named(..)) | Ok(ty.Fn(..)) | Ok(ty.Tuple(..)) | Error(Nil) -> #(
+      chain,
+      id,
+    )
   }
 }
 
@@ -2634,8 +2947,16 @@ fn bind_var(st: State, id: Int, type_: ty.Type) -> Result(State, Failure) {
   Ok(State(..st, subst: dict.insert(st.subst, id, erase_variant(type_))))
 }
 
+// Whether `id` occurs in `type_`, through the substitution: a search that
+// stops at the first occurrence, where collecting the type's free variables
+// first was quadratic in how many distinct ones it has.
 fn occurs(st: State, id: Int, type_: ty.Type) -> Bool {
-  list.contains(free_vars(st, type_), id)
+  case resolve(st, type_) {
+    ty.Var(other) -> other == id
+    ty.Named(_, _, args, _) -> list.any(args, occurs(st, id, _))
+    ty.Fn(args, ret) -> list.any(args, occurs(st, id, _)) || occurs(st, id, ret)
+    ty.Tuple(elements) -> list.any(elements, occurs(st, id, _))
+  }
 }
 
 // Generalization and instantiation
@@ -2754,38 +3075,35 @@ fn reaches_unowned_loop(st: State, type_: ty.Type) -> Bool {
   }
 }
 
-// A module constant named by a bare variable in a clause guard. The compiler
-// takes the constant's stored literal (`infer_clause_guard_variable`,
-// `type_/guard.rs:322-324`) rather than instantiating its scheme, so the read
-// is not copied, and the literal keeps the variants its value was built with.
-// A constant of the current group, or one with no variable to copy, is read at
-// its literal as it stands. One already generalized is read at a single copy
-// of its literal, made on its first guard read and shared by every later one,
-// as the literal's cells are shared: a fresh variable for each variable its
-// scheme quantifies, and for each generic one a fresh generic, made here so it
-// can never collide with an id of the module that inferred the literal.
-fn guard_constant_read(
+// The type a literal reader reads a module constant at: its stored literal,
+// live, not a copy (see `ConstantLiteral`). A constant of this module is read
+// at its original literal — the type its group inferred, with the ids
+// generalization quantified — so every reader binds the cells the
+// expressions that hold the same ids hold, as the compiler's readers do. That
+// is safe because nothing re-zonks a generalized scheme: `instantiate`
+// replaces the quantified ids before anything resolves them, and a closed
+// scheme is never scanned for free variables. An imported constant's literal
+// is read through `State.identities` (`import_literal`), translated once per
+// constant in this module and kept in `State.imported_literals`: the
+// translation is a term over local ids, so later reads that reuse it still
+// see every binding made after it.
+fn constant_view(
+  env: Env,
   st: State,
-  scheme: ty.Scheme,
   module: String,
   name: String,
   literal: ConstantLiteral,
 ) -> #(ty.Type, State) {
-  use <- bool.guard(when: scheme.vars == [], return: #(literal.type_, st))
-  case dict.get(st.literals, #(module, name)) {
-    Ok(view) -> #(view, st)
-    Error(_) -> {
-      let #(mapping, st) = copy_vars(st, scheme.vars)
-      let generics =
-        list.filter_map(set.to_list(literal.generics), fn(id) {
-          result.try(dict.get(mapping, id), var_id)
-        })
-      let view = substitute(mapping, literal.type_)
-      let st = mark_rigid(st, generics)
-      #(
-        view,
-        State(..st, literals: dict.insert(st.literals, #(module, name), view)),
-      )
+  use <- bool.guard(when: module == env.current_module, return: #(
+    literal.type_,
+    st,
+  ))
+  case dict.get(st.imported_literals, #(module, name)) {
+    Ok(type_) -> #(type_, st)
+    Error(Nil) -> {
+      let #(type_, st) = import_literal(st, literal)
+      let imported = dict.insert(st.imported_literals, #(module, name), type_)
+      #(type_, State(..st, imported_literals: imported))
     }
   }
 }
@@ -2920,16 +3238,17 @@ fn check_body(
   }
 }
 
-// Infer a module constant, returning its literal: its type (an annotation, if
-// present, is applied) and the ids its annotation made generics. A constant is
-// inferred with a hydrator of its own (`analyse.rs:446-453`), so its scope
-// starts empty: every read in it copies every generic, and its annotation's
+// Infer a module constant, returning its literal: its type, an annotation, if
+// present, applied. A constant is inferred with a hydrator of its own
+// (`analyse.rs:446-453`), so its scope starts empty, whatever the state it is
+// handed holds: every read in it copies every generic, and its annotation's
 // names create generics of its own.
 fn infer_constant(
   env: Env,
   st: State,
   constant: glance.Constant,
 ) -> Result(#(ConstantLiteral, State), Failure) {
+  let st = State(..st, scope: empty_scope())
   use #(value_type, st) <- result.try(infer_expr(
     Env(..env, syntax: ConstantSyntax),
     st,
@@ -2939,10 +3258,10 @@ fn infer_constant(
     Some(ann) -> {
       let #(t, st) = hydrate_scoped(env, st, ann)
       use st <- result.try(unify(st, t, value_type))
-      let literal = ConstantLiteral(value_type, st.scope.owned)
+      let literal = ConstantLiteral(value_type, dict.new())
       Ok(#(literal, State(..st, scope: empty_scope())))
     }
-    None -> Ok(#(ConstantLiteral(value_type, set.new()), st))
+    None -> Ok(#(ConstantLiteral(value_type, dict.new()), st))
   }
 }
 
@@ -3428,7 +3747,7 @@ fn infer_expr_inner(
 
 // A bare name in a guard. The compiler's guard-variable lookup
 // (`guard.rs:303-324`) accepts a local, read as any value is, and a module
-// constant, read as its literal (`guard_constant_read`). It rejects a module
+// constant, read as its literal (`constant_view`). It rejects a module
 // function or a constructor as if the name were unbound, and a lowercase name
 // it rejects, or cannot find, fails: the compiler records the error and the
 // name is a fresh variable (`guard.rs:36-46`), as it is in a speculative walk
@@ -3449,8 +3768,8 @@ fn guard_variable(
 ) -> Result(#(ty.Type, State), Failure) {
   let lowercase = !reference.is_upper(name)
   let read = case dict.get(env.values, name) {
-    Ok(ValueConstructor(scheme, ConstantValue(module, name, literal))) ->
-      Ok(guard_constant_read(st, scheme, module, name, literal))
+    Ok(ValueConstructor(_, ConstantValue(module:, name:, literal:))) ->
+      Ok(constant_view(env, st, module, name, literal))
     Ok(ValueConstructor(_, FunctionValue(..)))
       | Ok(ValueConstructor(_, ConstructorValue(..)))
       | Error(_)
@@ -3550,7 +3869,7 @@ fn update_field(
     }),
   )
   let checked = case dict.get(label_types, field.label) {
-    Ok(expected) -> unify(st, value_type, expected)
+    Ok(expected) -> unify(st, expected, value_type)
     Error(_) -> fail(st, NoSuchField(type_name, field.label))
   }
   case env.syntax {
@@ -3891,23 +4210,20 @@ fn infer_record_update(
       // Fix the record's head to this type with independent parameters, so its
       // own type variables aren't conflated with the result's.
       let #(record_parameters, st) = fresh_n(st, list.length(type_parameters))
-      // The spread is typed through `infer` in an expression; a constant's
-      // fails the whole update when it is invalid itself
-      // (`infer_constant_spread`).
-      use #(record_type, spread_arguments, st) <- result.try(case env.syntax {
-        ConstantSyntax -> infer_constant_spread(env, st, record)
-        ExpressionSyntax | GuardSyntax -> {
-          use #(type_, st) <- result.map(recover_fresh(
-            env,
-            infer_expr(env, st, record),
-          ))
-          #(type_, [], st)
-        }
-      })
+      use #(record_type, spread_arguments, st) <- result.try(infer_spread(
+        env,
+        st,
+        record,
+      ))
+      // Each parameter is bound to the spread's own argument, not the spread's
+      // argument to it: the compiler never unifies the spread with a temporary
+      // instance (`constant.rs:353-363`), and a live literal's variable bound
+      // to every update's fresh parameter would chain through them, and be
+      // exported as a binding of the foreign literal that nothing made.
       use st <- result.try(unify(
         st,
-        record_type,
         ty.Named(type_module, type_name, record_parameters, variant),
+        record_type,
       ))
       use st <- result.try(check_update_variant(
         env,
@@ -3970,6 +4286,60 @@ fn infer_record_update(
       Ok(#(return_type, st))
     }
     _ -> fail(st, NotARecord)
+  }
+}
+
+// A record update's spread. In an expression it is typed through `infer`. A
+// constant's fails the whole update when it is invalid itself
+// (`infer_constant_spread`), and when it names a module constant the update
+// reads its literal, as the constant typer unwraps it (`constant.rs:186-245`):
+// the copied fields then carry the literal's own cells.
+fn infer_spread(
+  env: Env,
+  st: State,
+  record: glance.Expression,
+) -> Result(#(ty.Type, List(Option(ty.Type)), State), Failure) {
+  case env.syntax {
+    ConstantSyntax -> {
+      use #(spread_type, arguments, st) <- result.map(infer_constant_spread(
+        env,
+        st,
+        record,
+      ))
+      case spread_constant(env, record) {
+        Ok(#(module, name, literal)) -> {
+          let #(view, st) = constant_view(env, st, module, name, literal)
+          #(view, arguments, st)
+        }
+        Error(Nil) -> #(spread_type, arguments, st)
+      }
+    }
+    ExpressionSyntax | GuardSyntax -> {
+      use #(type_, st) <- result.map(recover_fresh(
+        env,
+        infer_expr(env, st, record),
+      ))
+      #(type_, [], st)
+    }
+  }
+}
+
+// The module constant a constant record update's spread names, bare or
+// qualified: its module, name and literal.
+fn spread_constant(
+  env: Env,
+  record: glance.Expression,
+) -> Result(#(String, String, ConstantLiteral), Nil) {
+  let entry = case record {
+    glance.Variable(_, name) -> dict.get(env.values, name)
+    glance.FieldAccess(_, glance.Variable(_, alias), label) ->
+      option.to_result(module_access(env, alias, label), Nil)
+    _ -> Error(Nil)
+  }
+  case entry {
+    Ok(ValueConstructor(_, ConstantValue(module:, name:, literal:))) ->
+      Ok(#(module, name, literal))
+    Ok(_) | Error(_) -> Error(Nil)
   }
 }
 
@@ -5926,24 +6296,31 @@ fn subject_of(expr: glance.Expression) -> Option(String) {
 // Rebind `name` to its type narrowed to `variant`. The compiler sets the
 // variant on a link-collapsed copy so the outer scope keeps its type; here the
 // rebinding is the copy, and it lives only as long as the environment it is
-// made in.
+// made in. The copy is a local whatever the subject was, as the compiler's
+// `insert_local_variable` makes it (`pattern.rs:206-235`): a narrowed module
+// constant is no longer read at its literal, and a narrowed module function is
+// no longer a function.
 //
 // The scheme's quantifiers are kept rather than instantiated away. A module
 // constant is generalized like a function, so `const box = Empty` is bound at
 // `Box(a)`, and monomorphizing it here would reject a clause that uses it at
 // two instantiations — which the compiler accepts. Stamping under the
 // quantifier narrows every instantiation instead, and `substitute` carries the
-// variant through. Only a record is narrowed: a name whose type is a function
-// or a tuple stamps to itself and is left alone, which is what excludes a
-// top-level function used as a subject.
+// variant through. Only a record takes the variant: a name whose type is a
+// function or a tuple stamps to itself, as the compiler's
+// `set_custom_type_variant` leaves it, and is still rebound as a local. A
+// constructor pattern rejects such a subject in strict mode before it
+// narrows, so only a speculative walk, which goes on past the mismatch,
+// rebinds one.
 fn narrow(env: Env, st: State, name: String, variant: Int) -> Env {
   case dict.get(env.values, name) {
-    Ok(ValueConstructor(ty.Scheme(vars, type_), value)) ->
-      case stamp(st, type_, variant) {
-        ty.Named(..) as stamped ->
-          install(env, name, ty.Scheme(vars, stamped), value)
-        _ -> env
-      }
+    Ok(ValueConstructor(ty.Scheme(vars, type_), _)) ->
+      install(
+        env,
+        name,
+        ty.Scheme(vars, stamp(st, type_, variant)),
+        LocalValue(name),
+      )
     Error(_) -> env
   }
 }

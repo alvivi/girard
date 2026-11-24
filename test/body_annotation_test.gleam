@@ -11,9 +11,6 @@
 // checks that no expression is annotated twice.
 
 import girard
-import glance
-import gleam/dict
-import gleam/list
 import gleeunit/should
 import probe_support.{
   annotations, callee_annotations, repeated_spans, resolution, scheme_of,
@@ -1237,59 +1234,5 @@ pub fn qualified(x) {
   let assert Ok(cached) = cached
   scheme_of(cached.functions, "run") |> should.equal("fn(List(a)) -> List(b)")
   scheme_of(cached.functions, "qualified")
-  |> should.equal("fn(List(a)) -> List(a)")
-}
-
-pub fn constant_literal_is_a_snapshot_across_modules_test() {
-  // Probe `k_r7_constant_shared_import`, in dependency order through
-  // `annotate_package`. 1.19.2 shares a constant's literal across a package
-  // build, so `pinning`'s guard pins `xs` to `List(Int)` for the consumer too:
-  // `fn(List(Int)) -> List(Int)`. girard's literal is a snapshot taken when
-  // `helper` is inferred, so the consumer keeps `fn(List(a)) -> List(a)`, as
-  // `main` does. Sharing it live is left to the follow-up on speculation
-  // recovery and live constant literals (PR L).
-  let helper =
-    "pub const xs = []
-"
-  let pinning =
-    "import helper.{xs}
-
-pub fn pin() {
-  case True {
-    _ if xs == [1] -> Nil
-    _ -> Nil
-  }
-}
-"
-  let consumer =
-    "import helper.{xs}
-import pinning
-
-pub fn run(x) {
-  pinning.pin()
-  case x {
-    _ if x == xs -> x
-    _ -> x
-  }
-}
-"
-  let assert Ok(helper_module) = glance.module(helper)
-  let assert Ok(pinning_module) = glance.module(pinning)
-  let assert Ok(consumer_module) = glance.module(consumer)
-  let results =
-    girard.annotate_package(
-      [
-        #("helper", helper_module),
-        #("pinning", pinning_module),
-        #("consumer", consumer_module),
-      ],
-      probe_support.options_with([#("helper", helper), #("pinning", pinning)]),
-    )
-  list.each(["helper", "pinning", "consumer"], fn(path) {
-    let assert Ok(result) = dict.get(results, path)
-    girard.is_complete(result) |> should.be_true
-  })
-  let assert Ok(result) = dict.get(results, "consumer")
-  scheme_of(result.annotated.functions, "run")
   |> should.equal("fn(List(a)) -> List(a)")
 }
