@@ -11,9 +11,6 @@
 // checks that no expression is annotated twice.
 
 import girard
-import glance
-import gleam/dict
-import gleam/list
 import gleeunit/should
 import probe_support.{
   annotations, callee_annotations, repeated_spans, resolution, scheme_of,
@@ -134,10 +131,9 @@ pub fn run() {
 
 pub fn failed_speculation_keeps_a_direct_field_shape_test() {
   // Probe `k_r6_spec_shape`.
-  // The callback fails to type while it is speculated, so the whole pass is
-  // rewound; the real pass types it. (1.19.2 resolves
-  // `callback(Row(0)).field` as a record field at the access; girard
-  // defers it, a difference left to the speculation recovery follow-up.)
+  // The callback's `r.field + 1` fails while it is speculated and recovers,
+  // so the callback still returns `Row`; the real pass types it.
+  // (speculation_test pins the record field the callee's access resolves to.)
   let source =
     "import helper as r
 
@@ -193,11 +189,14 @@ pub fn run() {
   repeated_spans(source, modules) |> should.equal([])
 }
 
-pub fn failed_speculation_rewinds_the_whole_pass_test() {
+pub fn speculated_argument_recovers_inside_and_keeps_its_links_test() {
   // Probe `k_r8_spec_fold_poison`.
-  // The first speculated argument fails, so the whole pass is rewound: a
-  // fold that kept the second argument's speculation would read the module
-  // constant's `String` and reject the real pass.
+  // The first speculated argument's `r.field + 1` fails on the module's
+  // `String` and recovers inside the argument, where the operator records
+  // the mismatch, after `take(outer)` linked `r` to `Row`. The link is kept,
+  // so the second argument's `r.field` is the record's. Dropping the first
+  // argument's effects would read the module constant's `String` there and
+  // reject the real pass.
   let source =
     "import helper as r
 
@@ -1083,9 +1082,10 @@ pub fn run(x) {
 
 pub fn failed_speculative_callback_leaves_names_to_the_real_pass_test() {
   // Probe `k_r6_spec_stmt`.
-  // The speculated callback fails, so its names are created again by the
-  // real pass, after the callee's own have left scope. `main`:
-  // `fn(a, b) -> #(a, b)`.
+  // The speculated callback's `r.field + 1` fails and recovers, and its body
+  // ties `x` and `y` through `t`; `t` is created inside the callback's body,
+  // so it leaves scope with it, and the real pass creates it again.
+  // `main`: `fn(a, b) -> #(a, b)`.
   let source =
     "import helper as r
 
@@ -1117,7 +1117,8 @@ pub fn run(x, y) {
 
 pub fn failed_speculative_header_leaves_names_to_the_real_pass_test() {
   // Probe `k_r7_spec_header`.
-  // The speculated lambda fails, so its `t` is created by the real pass and
+  // The speculated lambda's header stops at `_i: Int`, which the module's
+  // `String` fails, before `v: t`, so its `t` is created by the real pass and
   // ties `x`; the callee's body generic on `y` leaves scope. `main`:
   // `fn(a, b, Row) -> #(a, b)`.
   let source =
@@ -1233,59 +1234,5 @@ pub fn qualified(x) {
   let assert Ok(cached) = cached
   scheme_of(cached.functions, "run") |> should.equal("fn(List(a)) -> List(b)")
   scheme_of(cached.functions, "qualified")
-  |> should.equal("fn(List(a)) -> List(a)")
-}
-
-pub fn constant_literal_is_a_snapshot_across_modules_test() {
-  // Probe `k_r7_constant_shared_import`, in dependency order through
-  // `annotate_package`. 1.19.2 shares a constant's literal across a package
-  // build, so `pinning`'s guard pins `xs` to `List(Int)` for the consumer too:
-  // `fn(List(Int)) -> List(Int)`. girard's literal is a snapshot taken when
-  // `helper` is inferred, so the consumer keeps `fn(List(a)) -> List(a)`, as
-  // `main` does. Sharing it live is left to the follow-up on speculation
-  // recovery and live constant literals (PR L).
-  let helper =
-    "pub const xs = []
-"
-  let pinning =
-    "import helper.{xs}
-
-pub fn pin() {
-  case True {
-    _ if xs == [1] -> Nil
-    _ -> Nil
-  }
-}
-"
-  let consumer =
-    "import helper.{xs}
-import pinning
-
-pub fn run(x) {
-  pinning.pin()
-  case x {
-    _ if x == xs -> x
-    _ -> x
-  }
-}
-"
-  let assert Ok(helper_module) = glance.module(helper)
-  let assert Ok(pinning_module) = glance.module(pinning)
-  let assert Ok(consumer_module) = glance.module(consumer)
-  let results =
-    girard.annotate_package(
-      [
-        #("helper", helper_module),
-        #("pinning", pinning_module),
-        #("consumer", consumer_module),
-      ],
-      probe_support.options_with([#("helper", helper), #("pinning", pinning)]),
-    )
-  list.each(["helper", "pinning", "consumer"], fn(path) {
-    let assert Ok(result) = dict.get(results, path)
-    girard.is_complete(result) |> should.be_true
-  })
-  let assert Ok(result) = dict.get(results, "consumer")
-  scheme_of(result.annotated.functions, "run")
   |> should.equal("fn(List(a)) -> List(a)")
 }

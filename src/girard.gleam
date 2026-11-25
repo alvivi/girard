@@ -447,6 +447,13 @@ fn parse(source: String) -> Result(glance.Module, Error) {
 /// and passes them to every importer built over it. After a missing module
 /// appears, invalidate the interfaces built without it and their cached
 /// importers, as for any interface change.
+///
+/// A module's interface can change without any signature changing: a guard
+/// or a constant record update in it may bind a constant of another module,
+/// and its importers see that binding, as the compiler's do. A cached
+/// interface keeps the bindings it was built with, so after any edit to a
+/// module, invalidate it and every cached module that imports it, directly or
+/// transitively.
 pub opaque type Cache {
   Cache(interfaces: InterfaceCache)
 }
@@ -495,9 +502,10 @@ pub fn annotate_with_cache(
 /// that needs it re-infers it from source. Use this when a module changes.
 ///
 /// Only the named module is dropped. A cached module that *imports* the changed
-/// one keeps its own (now possibly stale) interface, so after a change that
-/// alters a module's public surface, also invalidate its importers — or start
-/// from a [`new_cache`](#new_cache).
+/// one keeps its own (now possibly stale) interface, so after any edit also
+/// invalidate every cached module that imports it, directly or transitively —
+/// or start from a [`new_cache`](#new_cache). An edit can change an importer's
+/// interface even when every signature stays the same (see [`Cache`](#Cache)).
 pub fn invalidate(cache: Cache, path: String) -> Cache {
   Cache(dict.delete(cache.interfaces, path))
 }
@@ -761,10 +769,19 @@ type State {
     // The annotation names in scope where inference is, and the generics this
     // scope owns: see `Scope`.
     scope: Scope,
-    // The type each module constant has in a clause guard once generalized,
-    // by module and name: one copy per constant, shared by every guard read
-    // of it, as the compiler's stored literal is (see `guard_constant_read`).
-    literals: Dict(#(String, String), ty.Type),
+    // The one local id standing for each variable of another module's
+    // constant literal met in this module, by its identity: see `LiteralVar`.
+    // Two literals that share a variable in their exporter share it here, and
+    // a generic reached through two imports is one rigid id here.
+    identities: Dict(LiteralVar, Int),
+    // Each local id that replaying an imported binding bound to a type, with
+    // that binding's origin (`literal_links`). A variable bound to a type is
+    // never bound again, so the id holds that binding for good.
+    bound_from: Dict(Int, LiteralVar),
+    // The term each imported constant's literal was translated to in this
+    // module, by the constant's module and name. Its variables are local ids
+    // from `identities`, so it sees every binding made after it was built.
+    imported_literals: Dict(#(String, String), ty.Type),
   )
 }
 
@@ -781,6 +798,79 @@ type Scope {
 
 fn empty_scope() -> Scope {
   Scope(dict.new(), set.new())
+}
+
+// A failed inference step: the error, and the state at the point it failed.
+// The state holds every unification, id, scope change and literal view made
+// before the failure, as the compiler's mutable type cells keep them. A strict
+// caller drops it and reports the error. A best-effort group rolls back to a
+// state it saved itself and ignores it. A site that recovers in a speculative
+// walk, and `speculate` itself, continue from it.
+type Failure {
+  Failure(error: Error, state: State)
+}
+
+// Fail at `st` with `error`.
+fn fail(st: State, error: Error) -> Result(a, Failure) {
+  Error(Failure(error, st))
+}
+
+// A stateless helper's result, its error failing at `st`: the helper changed
+// nothing, so the state its caller holds is the state at the failure.
+fn stateless(st: State, result: Result(a, Error)) -> Result(a, Failure) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(error) -> fail(st, error)
+  }
+}
+
+// In a speculative walk, a failure resumes with `resume` from the state it
+// failed in, at a site the compiler recovers at. Outside one the failure
+// stands, and so does `Unsupported` everywhere: it is girard declining syntax,
+// not a type error, so it abandons the rest of its argument and stops only at
+// the argument itself (`speculate`).
+fn recover_with(
+  env: Env,
+  result: Result(a, Failure),
+  resume: fn(State) -> Result(a, Failure),
+) -> Result(a, Failure) {
+  case result {
+    Error(Failure(Unsupported(_), _)) -> result
+    Error(Failure(_, failed)) if env.recovering -> resume(failed)
+    Ok(_) | Error(_) -> result
+  }
+}
+
+// A sub-expression the compiler types through `infer` (`expression.rs:1780-
+// 1793`): in a speculative walk, a failure is a fresh variable from the
+// failed state.
+fn recover_fresh(
+  env: Env,
+  result: Result(#(ty.Type, State), Failure),
+) -> Result(#(ty.Type, State), Failure) {
+  recover_with(env, result, fn(failed) { Ok(fresh(failed)) })
+}
+
+// An expression the compiler types through `infer`: `infer_expr`, its failure
+// a fresh variable in a speculative walk (`recover_fresh`).
+fn infer_recovering(
+  env: Env,
+  st: State,
+  expr: glance.Expression,
+) -> Result(#(ty.Type, State), Failure) {
+  recover_fresh(env, infer_expr(env, st, expr))
+}
+
+// A unification the compiler records and moves past: in a speculative walk, a
+// failure keeps the links it made before it failed, and the walk goes on with
+// the types it already had.
+fn recover_unify(
+  env: Env,
+  st: State,
+  left: ty.Type,
+  right: ty.Type,
+) -> Result(State, Failure) {
+  recover_with(env, unify(st, left, right), Ok)
 }
 
 // A deferred access awaiting its container's type.
@@ -843,14 +933,26 @@ type ValueVariant {
 
 // A module constant's stored literal, which the compiler keeps beside its
 // generalized type (`ValueConstructorVariant::ModuleConstant`,
-// `analyse.rs:473-485`) and a clause guard reads instead of instantiating the
-// type (`guard.rs:322-324`): the type as inferred, before generalization
-// erased its variants, and which of its ids are generics an annotation
-// created. A snapshot taken when the constant is inferred: a guard that later
-// pins one of its variables in the defining module does not reach an
-// importer, where the compiler's literal is one live type.
+// `analyse.rs:473-485`) and a literal reader reads instead of instantiating
+// the type: a bare guard name (`guard.rs:322-324`) and a constant record
+// update's spread (`constant.rs:186-221`). It is the type as inferred, before
+// generalization erased its variants, and it is live: the compiler's cells
+// are shared by every module of a build, so a reader that binds one changes
+// what later readers see, here and in the modules that import this one.
+//
+// In its own module a literal is its type, with the ids its group left
+// unbound, and `vars` is empty. An exported literal is zonked with its
+// module's final state, and `vars` names each variable in it — the key is its
+// id in `type_` — by its identity, with `True` for a generic, so an importer
+// maps every variable to its one local id (`State.identities`).
 type ConstantLiteral {
-  ConstantLiteral(type_: ty.Type, generics: Set(Int))
+  ConstantLiteral(type_: ty.Type, vars: Dict(Int, #(LiteralVar, Bool)))
+}
+
+// A variable of a constant's literal, named by the module whose state created
+// it and its id there: the identity of a compiler cell across modules.
+type LiteralVar {
+  LiteralVar(module: String, id: Int)
 }
 
 // The label of each of a callable's positional parameters, `None` where the
@@ -949,6 +1051,12 @@ type Env {
     unavailable: Dict(String, Unavailability),
     // What kind of syntax is being inferred: see `Syntax`.
     syntax: Syntax,
+    // Whether this is a speculative walk, where a failure recovers at the
+    // site the compiler recovers at instead of failing the walk: see
+    // `speculate`. Everything walked within one inherits it, an inner
+    // function literal's own speculation and real pass included, because the
+    // compiler discards every diagnostic the pass records.
+    recovering: Bool,
   )
 }
 
@@ -992,6 +1100,13 @@ type ModuleInterface {
     // interface, so an importer that reuses it from a cache inherits the same
     // set as one that infers it fresh.
     unavailable: Dict(String, Unavailability),
+    // Each variable of another module's literal that this module's final
+    // state has bound, with the origin of its binding and what it is bound
+    // to, exported as a literal: the bindings a guard or a constant record
+    // update here made, and those it inherited from its own imports. An
+    // importer replays them before inferring its own definitions
+    // (`replay_links`).
+    literal_links: List(#(LiteralVar, LiteralVar, ConstantLiteral)),
   )
 }
 
@@ -1004,7 +1119,9 @@ fn new_state() -> State {
     pending: [],
     rigid: set.new(),
     scope: empty_scope(),
-    literals: dict.new(),
+    identities: dict.new(),
+    bound_from: dict.new(),
+    imported_literals: dict.new(),
   )
 }
 
@@ -1029,6 +1146,7 @@ fn new_env() -> Env {
     module_index: dict.new(),
     unavailable: dict.new(),
     syntax: ExpressionSyntax,
+    recovering: False,
   )
 }
 
@@ -1225,6 +1343,7 @@ fn prelude_interface() -> ModuleInterface {
     modules: dict.new(),
     reachable: dict.new(),
     unavailable: dict.new(),
+    literal_links: [],
   )
 }
 
@@ -1399,8 +1518,9 @@ fn infer_module(
   let #(prelude_env, st) = prelude()
   let env = set_module(prelude_env, module_name)
 
-  // 1. Imports.
-  use #(env, cache) <- result.try(process_imports(
+  // 1. Imports, then the bindings of literal variables their interfaces carry,
+  //    replayed in source order before anything of this module is inferred.
+  use #(env, cache, imported) <- result.try(process_imports(
     options,
     loading,
     cache,
@@ -1408,6 +1528,7 @@ fn infer_module(
     module.imports,
     best_effort:,
   ))
+  let st = list.fold(imported, st, replay_links)
 
   // 2. Pre-declare local type names so forward references resolve, then
   //    register aliases and custom-type constructors/accessors. An alias on a
@@ -1457,6 +1578,9 @@ fn infer_module(
     aliases,
     best_effort:,
   ))
+  // Inference is done: what is left only reads the final state, to export
+  // the interface and to publish the results.
+  let st = compress_substitution(st)
 
   let interface =
     build_interface(
@@ -1515,7 +1639,9 @@ fn infer_defs(
         list.try_fold(groups, initial, fn(groups, group) {
           use #(env, st) <- result.map(infer_group(groups, group, base))
           inferred(groups, env, st)
-        }),
+        })
+        // The first failure is the module's error; its state is dropped.
+        |> result.map_error(fn(failure) { failure.error }),
       )
       #(#(done.env, done.st), [])
     }
@@ -1555,7 +1681,7 @@ fn best_effort_group(
   case infer_group(groups, group, base), group {
     Ok(#(env, st)), _ -> inferred(groups, env, st)
     Error(_), [_, _, ..] -> split_group(groups, group, base, aliases)
-    Error(error), _ -> skip_group(groups, group, base, error)
+    Error(Failure(error, _)), _ -> skip_group(groups, group, base, error)
   }
 }
 
@@ -1589,7 +1715,7 @@ fn split_group(
     let sub = list.filter_map(names, dict.get(by_name, _))
     case infer_group(groups, sub, base) {
       Ok(#(env, st)) -> inferred(groups, env, st)
-      Error(error) -> skip_group(groups, sub, base, error)
+      Error(Failure(error, _)) -> skip_group(groups, sub, base, error)
     }
   })
 }
@@ -1648,7 +1774,7 @@ fn infer_group(
   groups: Groups,
   group: List(GroupItem),
   base: Env,
-) -> Result(#(Env, State), Error) {
+) -> Result(#(Env, State), Failure) {
   let Groups(env:, st:, ..) = groups
   // Each member's type, in the group's order, to generalize once all are
   // inferred.
@@ -1685,7 +1811,9 @@ fn infer_group(
   // Generalized as the compiler's `generalise` does, over every variable still
   // free: against the environment before any registration, so the registered
   // functions of later groups do not hold a variable back.
-  // A constant's literal is its type as inferred, before the erasure.
+  // A constant's literal is its type as inferred, before the erasure, with
+  // the ids generalization quantified: live, for every literal reader after
+  // it (`constant_view`).
   let env =
     list.fold(list.reverse(rev_inferred), env, fn(env, member) {
       case member {
@@ -1704,8 +1832,7 @@ fn infer_group(
 }
 
 // A member's type as its group inferred it, to generalize once every member
-// is inferred: a constant's is its literal's, which also marks the ids its
-// annotation made generics.
+// is inferred: a constant's is its literal's.
 type Member {
   FunctionMember(function: glance.Function, type_: ty.Type)
   ConstantMember(constant: glance.Constant, literal: ConstantLiteral)
@@ -1764,7 +1891,9 @@ fn register(env: Env, st: State, def: Def) -> #(#(Env, State), GroupItem) {
 // the failures each loaded interface carries from its own imports.
 
 // Imports are met in the order glance stores them, which is the reverse of
-// source order: glance prepends each import as it parses it.
+// source order: glance prepends each import as it parses it. Returns the
+// interfaces imported, in source order, which is the reverse of the order
+// they were met in.
 fn process_imports(
   options: Options,
   loading: Set(String),
@@ -1772,15 +1901,15 @@ fn process_imports(
   env: Env,
   imports: List(glance.Definition(glance.Import)),
   best_effort best_effort: Bool,
-) -> Result(#(Env, InterfaceCache), Error) {
-  list.try_fold(imports, #(env, cache), fn(acc, definition) {
-    let #(env, cache) = acc
+) -> Result(#(Env, InterfaceCache, List(ModuleInterface)), Error) {
+  list.try_fold(imports, #(env, cache, []), fn(acc, definition) {
+    let #(env, cache, imported) = acc
     let import_ = definition.definition
     let path = import_.module
     // Cyclic import: break the cycle by skipping.
     use <- bool.guard(
       when: set.contains(loading, path),
-      return: Ok(#(env, cache)),
+      return: Ok(#(env, cache, imported)),
     )
     use #(resolved, cache) <- result.try(resolve_interface(
       options,
@@ -1792,10 +1921,13 @@ fn process_imports(
     case resolved {
       // Unresolvable or unparsable: best effort, skip (uses of it surface later
       // as unbound variables), but say so.
-      Error(reason) -> Ok(#(record_unavailable(env, path, reason), cache))
+      Error(reason) ->
+        Ok(#(record_unavailable(env, path, reason), cache, imported))
       Ok(interface) -> {
         let env = import_items(env, import_, interface)
-        Ok(#(inherit_unavailable(env, interface), cache))
+        Ok(
+          #(inherit_unavailable(env, interface), cache, [interface, ..imported]),
+        )
       }
     }
   })
@@ -1939,13 +2071,24 @@ fn build_interface(
   type_names: List(String),
   accessor_type_names: List(String),
 ) -> ModuleInterface {
+  // The identity each local id stands for, to name an exported literal's
+  // variables by.
+  let origins =
+    dict.fold(st.identities, dict.new(), fn(origins, identity, local) {
+      dict.insert(origins, local, identity)
+    })
   ModuleInterface(
     name: name,
-    // The scope entry each public name holds, verbatim. In best-effort mode a
-    // public definition girard declined leaves the entry of whatever it
-    // shadowed — an unqualified import, say — and exporting that entry whole
-    // is what tells an importer the identity it was actually typed against.
-    values: take(env.values, value_names),
+    // The scope entry each public name holds, verbatim but for a constant of
+    // this module, whose literal is exported as this module's final state has
+    // it. In best-effort mode a public definition girard declined leaves the
+    // entry of whatever it shadowed — an unqualified import, say — and
+    // exporting that entry whole is what tells an importer the identity it
+    // was actually typed against.
+    values: take(env.values, value_names)
+      |> dict.map_values(fn(_name, entry) {
+        export_entry(st, name, origins, entry)
+      }),
     types: take(env.local_types, type_names),
     aliases: resolve_aliases(env, st, type_names),
     // Only non-opaque public types expose their field accessors: an opaque
@@ -1954,7 +2097,260 @@ fn build_interface(
     modules: env.modules,
     reachable: env.module_index,
     unavailable: env.unavailable,
+    literal_links: literal_links(st, name, origins),
   )
+}
+
+// An exported scope entry: a constant of `module` carries its literal as the
+// module's final state has it.
+fn export_entry(
+  st: State,
+  module: String,
+  origins: Dict(Int, LiteralVar),
+  entry: ValueConstructor,
+) -> ValueConstructor {
+  case entry.variant {
+    ConstantValue(module: owner, literal:, ..) as variant if owner == module ->
+      ValueConstructor(
+        ..entry,
+        variant: ConstantValue(
+          ..variant,
+          literal: export_literal(st, module, origins, literal.type_),
+        ),
+      )
+    ConstantValue(..)
+    | LocalValue(..)
+    | FunctionValue(..)
+    | ConstructorValue(..) -> entry
+  }
+}
+
+// `type_` as a literal of `module`, zonked with its final state, each
+// variable named by the identity it stands for (`origins`), or as one of
+// `module`'s own, and marked when it is a generic.
+fn export_literal(
+  st: State,
+  module: String,
+  origins: Dict(Int, LiteralVar),
+  type_: ty.Type,
+) -> ConstantLiteral {
+  let zonked = zonk(st, type_)
+  let vars =
+    set.fold(type_var_ids(zonked, set.new()), dict.new(), fn(vars, id) {
+      let identity =
+        result.unwrap(dict.get(origins, id), LiteralVar(module, id))
+      dict.insert(vars, id, #(identity, is_rigid(st, id)))
+    })
+  ConstantLiteral(zonked, vars)
+}
+
+// The ids of the variables a zonked type mentions, in one pass, in no
+// particular order: an exported literal's `vars` is keyed by id.
+fn type_var_ids(type_: ty.Type, ids: Set(Int)) -> Set(Int) {
+  case type_ {
+    ty.Var(id) -> set.insert(ids, id)
+    ty.Named(_, _, args, _) ->
+      list.fold(args, ids, fn(ids, arg) { type_var_ids(arg, ids) })
+    ty.Fn(args, ret) ->
+      list.fold(args, type_var_ids(ret, ids), fn(ids, arg) {
+        type_var_ids(arg, ids)
+      })
+    ty.Tuple(elements) ->
+      list.fold(elements, ids, fn(ids, element) { type_var_ids(element, ids) })
+  }
+}
+
+// The bindings `module`'s final state holds for other modules' literal
+// variables, in the order of their identities. An unbound one has none, so
+// the list is empty unless a literal reader in this module, or in one it
+// imports, bound a variable of another module's literal. Identities whose
+// chains end at the same variable share one binding, as the compiler's linked
+// cells share one: the first of them in that order carries it, and each of
+// the others a link to the first, so a type N identities are bound to is
+// exported, and replayed, once rather than N times.
+//
+// Each goes with its binding's origin: the module whose state made the
+// binding at the end of the identity's chain, and the variable it bound
+// there. A binding that replay installed keeps the origin it came with
+// (`State.bound_from`): its type stays the one that module made, and what
+// this module bound inside it is exported by the variables it bound. Any
+// other is this module's own. So a module that only relays an import's
+// binding passes its origin on, and an importer that meets the binding
+// through several relays replays it once.
+fn literal_links(
+  st: State,
+  module: String,
+  origins: Dict(Int, LiteralVar),
+) -> List(#(LiteralVar, LiteralVar, ConstantLiteral)) {
+  let #(_, links) =
+    dict.to_list(st.identities)
+    |> list.filter(fn(pair) { dict.has_key(st.subst, pair.1) })
+    |> list.sort(fn(a, b) {
+      string.compare({ a.0 }.module, { b.0 }.module)
+      |> order.break_tie(int.compare({ a.0 }.id, { b.0 }.id))
+    })
+    // The first identity met for each last variable, by that variable.
+    |> list.map_fold(dict.new(), fn(firsts, pair) {
+      let #(identity, local) = pair
+      let #(_, last) = chain_last(st.subst, local, [])
+      let origin =
+        result.unwrap(dict.get(st.bound_from, last), LiteralVar(module, last))
+      case dict.get(firsts, last) {
+        Ok(#(first_identity, first)) -> {
+          let vars =
+            dict.from_list([#(first, #(first_identity, is_rigid(st, first)))])
+          #(firsts, #(identity, origin, ConstantLiteral(ty.Var(first), vars)))
+        }
+        Error(Nil) -> #(
+          dict.insert(firsts, last, pair),
+          #(
+            identity,
+            origin,
+            export_literal(st, module, origins, ty.Var(local)),
+          ),
+        )
+      }
+    })
+  links
+}
+
+// The one local id standing for `identity`, made the first time it is met: a
+// rigid one for a generic.
+fn identity_var(
+  st: State,
+  identity: LiteralVar,
+  generic: Bool,
+) -> #(Int, State) {
+  case dict.get(st.identities, identity) {
+    Ok(local) -> #(local, st)
+    Error(_) -> {
+      let #(local, st) = fresh_id(st)
+      let st = case generic {
+        True -> mark_rigid(st, [local])
+        False -> st
+      }
+      #(
+        local,
+        State(..st, identities: dict.insert(st.identities, identity, local)),
+      )
+    }
+  }
+}
+
+// An exported literal, read in this module: each variable mapped to the one
+// local id standing for its identity.
+fn import_literal(st: State, literal: ConstantLiteral) -> #(ty.Type, State) {
+  let #(mapping, st) =
+    dict.to_list(literal.vars)
+    |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
+    |> list.fold(#(dict.new(), st), fn(acc, entry) {
+      let #(mapping, st) = acc
+      let #(id, #(identity, generic)) = entry
+      let #(local, st) = identity_var(st, identity, generic)
+      #(dict.insert(mapping, id, ty.Var(local)), st)
+    })
+  #(substitute(mapping, literal.type_), st)
+}
+
+// Replay an imported interface's bindings of literal variables, each as a
+// unification of the variable's local id with what it was bound to, so a
+// binding any module of the import closure made reaches this one through
+// whichever interface carries it, the same variable reached twice meeting in
+// one unification. A binding that does not unify with what is already
+// replayed is dropped and its state with it: the first import in source order
+// wins. Two modules that bind one variable incompatibly can both be accepted
+// by the compiler only when neither imports the other, and then which binds
+// first is its module schedule, which girard does not reproduce.
+//
+// An identity met here for the first time stands for a variable just made,
+// which nothing mentions yet, so it is bound to what it was bound to as that
+// stands, as `bind_var` would bind it but with no occurs check, which could
+// not fail. A link to a shared binding's first identity then stays a link,
+// one step rather than a walk of the type, and this module's own interface
+// shares the binding again.
+//
+// An identity already met whose imported binding is a link ending at the same
+// last variable as its own local's chain already holds that binding, as when
+// two imports relay one module's shared binding: unifying the two would walk
+// the shared type for nothing, and `unify` would then rebind the identity
+// straight to that type, out of the binding it shares. So it is skipped. A
+// binding that differs still unifies, and on a conflict the first import
+// still wins.
+//
+// An identity whose chain already ends at the binding a link's origin names
+// got that binding from an earlier import, as when several imports relay one
+// module's binding, so the link is skipped before it is translated. A later
+// copy can differ only inside, where its module bound the binding's
+// variables further, and each variable an interface's module bound has a
+// link of its own there. A binding that gives an identity its type records
+// its origin, for this check and for this module's own interface. Two
+// modules that bind one variable on their own give two origins, so their
+// bindings still meet in a unification.
+fn replay_links(st: State, interface: ModuleInterface) -> State {
+  list.fold(interface.literal_links, st, fn(st, link) {
+    let #(identity, origin, literal) = link
+    use <- bool.guard(when: holds_binding(st, identity, origin), return: st)
+    let met = dict.has_key(st.identities, identity)
+    let #(local, replayed) = identity_var(st, identity, False)
+    let #(bound, replayed) = import_literal(replayed, literal)
+    use <- bool.lazy_guard(when: !met, return: fn() {
+      let subst = dict.insert(replayed.subst, local, erase_variant(bound))
+      record_origin(State(..replayed, subst:), local, bound, origin)
+    })
+    use <- bool.guard(
+      when: holds_link(replayed, local, bound),
+      return: replayed,
+    )
+    // Whether the binding gives the identity its type, rather than meeting
+    // the type it has.
+    let untyped = case resolve(replayed, ty.Var(local)) {
+      ty.Var(_) -> True
+      ty.Named(..) | ty.Fn(..) | ty.Tuple(..) -> False
+    }
+    case unify(replayed, ty.Var(local), bound) {
+      Ok(replayed) if untyped -> record_origin(replayed, local, bound, origin)
+      Ok(replayed) -> replayed
+      Error(_) -> st
+    }
+  })
+}
+
+// Whether `identity`'s chain already ends at the binding `origin` names,
+// which replaying an earlier import installed.
+fn holds_binding(st: State, identity: LiteralVar, origin: LiteralVar) -> Bool {
+  case dict.get(st.identities, identity) {
+    Ok(local) ->
+      dict.get(st.bound_from, chain_last(st.subst, local, []).1) == Ok(origin)
+    Error(Nil) -> False
+  }
+}
+
+// `st` with `local`, which replay has just bound to `bound`, recorded as
+// holding the binding `origin` names when `bound` is a type. `local` is then
+// bound to that type itself, directly or by `unify`, which rebinds a link to
+// the end of its chain, so it is the last variable of its own chain. A link
+// records nothing: it holds whatever the variable it links to holds here.
+fn record_origin(
+  st: State,
+  local: Int,
+  bound: ty.Type,
+  origin: LiteralVar,
+) -> State {
+  case bound {
+    ty.Var(_) -> st
+    ty.Named(..) | ty.Fn(..) | ty.Tuple(..) ->
+      State(..st, bound_from: dict.insert(st.bound_from, local, origin))
+  }
+}
+
+// Whether `bound` is a variable whose chain ends at the same last variable as
+// `local`'s.
+fn holds_link(st: State, local: Int, bound: ty.Type) -> Bool {
+  case bound {
+    ty.Var(id) ->
+      chain_last(st.subst, id, []).1 == chain_last(st.subst, local, []).1
+    ty.Named(..) | ty.Fn(..) | ty.Tuple(..) -> False
+  }
 }
 
 // Resolve each named public alias to a concrete type, in this module's full
@@ -2230,6 +2626,61 @@ fn resolve(st: State, type_: ty.Type) -> ty.Type {
   }
 }
 
+// The substitution with every id bound to a variable mapped straight to the
+// last variable of its chain, for publication. The compiler's order links each
+// new variable to the next, as the elements of `[[], [], ..]` are, and
+// `unify`'s compression re-links only its left variable, as the compiler's
+// does, so a chain can still be long, and zonking every recorded type through
+// it would be quadratic. Each chain is walked once and every id on it rebound
+// to its last variable, so the whole pass is linear in the substitution's
+// size: an id bound to a type is the last of its chain already and is skipped,
+// and an id is rebound only where it does not point at the last variable yet.
+// The last variable is kept, rather than the type it may be bound to, because
+// the bindings that end there share it: that is how `literal_links` exports
+// them once. It is the same substitution with its chains shortened: every
+// type zonks the same, and the same ids are bound (`literal_links` reads
+// which). It runs once inference is done, never on the inference path.
+fn compress_substitution(st: State) -> State {
+  let subst =
+    dict.fold(st.subst, st.subst, fn(subst, id, bound) {
+      case bound {
+        ty.Var(_) -> {
+          let #(chain, last) = chain_last(subst, id, [])
+          list.fold(chain, subst, fn(subst, id) {
+            dict.insert(subst, id, ty.Var(last))
+          })
+        }
+        ty.Named(..) | ty.Fn(..) | ty.Tuple(..) -> subst
+      }
+    })
+  State(..st, subst:)
+}
+
+// The ids from `id` along its chain that do not point at its last variable
+// yet, and that variable: the first one bound to a type that is no variable,
+// or unbound, `id` itself when it is. A loop, so a long chain needs no deep
+// stack.
+fn chain_last(
+  subst: Dict(Int, ty.Type),
+  id: Int,
+  chain: List(Int),
+) -> #(List(Int), Int) {
+  case dict.get(subst, id) {
+    Ok(ty.Var(next)) ->
+      case dict.get(subst, next) {
+        Ok(ty.Var(_)) -> chain_last(subst, next, [id, ..chain])
+        Ok(ty.Named(..)) | Ok(ty.Fn(..)) | Ok(ty.Tuple(..)) | Error(Nil) -> #(
+          chain,
+          next,
+        )
+      }
+    Ok(ty.Named(..)) | Ok(ty.Fn(..)) | Ok(ty.Tuple(..)) | Error(Nil) -> #(
+      chain,
+      id,
+    )
+  }
+}
+
 // Fully apply the substitution, leaving only unbound variables as `Var`.
 fn zonk(st: State, type_: ty.Type) -> ty.Type {
   case resolve(st, type_) {
@@ -2377,71 +2828,143 @@ fn erase_all(type_: ty.Type) -> ty.Type {
 //
 // Unify two types, binding flexible variables and rejecting rigid ones, with
 // the occurs check that guards against infinite types.
+//
+// When both sides are unbound variables `unify` binds the left one, as
+// 1.19.2's `unify(t1, t2)` links `t1` (`environment.rs:1055-1100`), so every
+// call passes its two types in the compiler's order at that site, the
+// expected type first where the compiler puts it first. The link directions,
+// and the two types a mismatch reports, are then the compiler's; the solution
+// is the same either way.
+//
+// A left argument that is a variable already bound is unified through what it
+// is bound to and then, once that succeeds, rebound to the end of its chain,
+// as the compiler unifies `t1`'s link and re-links `t1`'s cell to
+// `collapse_links` of it (`environment.rs:1103-1117`); bound to a type rather
+// than a variable, it is at the end already. The compiler's order
+// links each new variable to the next, as the elements of `[[], [], ..]` are,
+// and without this every later unification would follow the whole chain from
+// its first variable. It rebinds a bound variable to the same type, so the
+// substitution means the same and no variable becomes bound that was not; the
+// end is what `bind_var` stored, its variant already erased.
+fn unify(st: State, left: ty.Type, right: ty.Type) -> Result(State, Failure) {
+  case left {
+    ty.Var(id) ->
+      case dict.get(st.subst, id) {
+        // A link to another variable: re-linked to the end once unified.
+        Ok(ty.Var(_) as bound) -> {
+          use st <- result.map(unify(st, bound, right))
+          State(..st, subst: dict.insert(st.subst, id, resolve(st, bound)))
+        }
+        // Bound to a type: that type is already the end of the chain.
+        Ok(bound) -> unify(st, bound, right)
+        Error(Nil) -> unify_heads(st, left, resolve(st, right))
+      }
+    ty.Named(..) | ty.Fn(..) | ty.Tuple(..) ->
+      unify_heads(st, left, resolve(st, right))
+  }
+}
 
-fn unify(st: State, left: ty.Type, right: ty.Type) -> Result(State, Error) {
-  let left = resolve(st, left)
-  let right = resolve(st, right)
+// `unify` on two heads: `left` is no bound variable, and `right` is resolved.
+fn unify_heads(
+  st: State,
+  left: ty.Type,
+  right: ty.Type,
+) -> Result(State, Failure) {
   case left, right {
     ty.Var(i), ty.Var(j) if i == j -> Ok(st)
     // A rigid variable never binds; a flexible one may bind to it. Two distinct
     // rigid variables, or a rigid variable against a concrete type, mismatch.
     ty.Var(i), ty.Var(j) ->
       case is_rigid(st, i), is_rigid(st, j) {
-        True, True -> Error(type_mismatch(left, right))
+        True, True -> fail(st, type_mismatch(left, right))
         True, False -> bind_var(st, j, left)
         False, _ -> bind_var(st, i, right)
       }
     ty.Var(i), other ->
       case is_rigid(st, i) {
-        True -> Error(type_mismatch(left, right))
+        True -> fail(st, type_mismatch(left, right))
         False -> bind_var(st, i, other)
       }
     other, ty.Var(j) ->
       case is_rigid(st, j) {
-        True -> Error(type_mismatch(left, right))
+        True -> fail(st, type_mismatch(left, right))
         False -> bind_var(st, j, other)
       }
 
+    // A pair of different lengths fails before any element is unified, as the
+    // compiler checks lengths first (`environment.rs:1147, 1163, 1182-1188`):
+    // a named type or a tuple with a plain mismatch, a function with the arity
+    // reason. Within a pair the elements unify left to right, a function's
+    // parameters before its return, and stop at the first failure, whose state
+    // keeps the links made before it.
     ty.Named(m1, n1, a1, _), ty.Named(m2, n2, a2, _) if m1 == m2 && n1 == n2 ->
-      unify_many(st, a1, a2)
+      case same_length(a1, a2) {
+        True -> unify_many(st, a1, a2)
+        False -> fail(st, type_mismatch(left, right))
+      }
 
-    ty.Fn(args1, r1), ty.Fn(args2, r2) -> {
-      use st <- result.try(unify_many(st, args1, args2))
-      unify(st, r1, r2)
-    }
+    ty.Fn(args1, r1), ty.Fn(args2, r2) ->
+      case same_length(args1, args2) {
+        True -> {
+          use st <- result.try(unify_many(st, args1, args2))
+          unify(st, r1, r2)
+        }
+        False -> fail(st, ArityMismatch)
+      }
 
-    ty.Tuple(e1), ty.Tuple(e2) -> unify_many(st, e1, e2)
+    ty.Tuple(e1), ty.Tuple(e2) ->
+      case same_length(e1, e2) {
+        True -> unify_many(st, e1, e2)
+        False -> fail(st, type_mismatch(left, right))
+      }
 
-    _, _ -> Error(type_mismatch(left, right))
+    _, _ -> fail(st, type_mismatch(left, right))
   }
 }
 
+// Unify two lists of the same length, element by element, left to right.
 fn unify_many(
   st: State,
   left: List(ty.Type),
   right: List(ty.Type),
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   case left, right {
-    [], [] -> Ok(st)
     [x, ..xs], [y, ..ys] -> {
       use st <- result.try(unify(st, x, y))
       unify_many(st, xs, ys)
     }
-    _, _ -> Error(ArityMismatch)
+    // Both lists are empty: every caller checks the lengths first.
+    _, _ -> Ok(st)
   }
 }
 
-fn bind_var(st: State, id: Int, type_: ty.Type) -> Result(State, Error) {
+fn same_length(left: List(a), right: List(b)) -> Bool {
+  case left, right {
+    [], [] -> True
+    [_, ..left], [_, ..right] -> same_length(left, right)
+    [], [_, ..] | [_, ..], [] -> False
+  }
+}
+
+fn bind_var(st: State, id: Int, type_: ty.Type) -> Result(State, Failure) {
   use <- bool.lazy_guard(when: occurs(st, id, type_), return: fn() {
-    Error(recursive_type(id, type_))
+    fail(st, recursive_type(id, type_))
   })
   // A value bound to a type variable is no longer known to be any one variant:
   // this is the compiler's erase, in the one place a variable is ever bound.
   Ok(State(..st, subst: dict.insert(st.subst, id, erase_variant(type_))))
 }
 
+// Whether `id` occurs in `type_`, through the substitution: a search that
+// stops at the first occurrence, where collecting the type's free variables
+// first was quadratic in how many distinct ones it has.
 fn occurs(st: State, id: Int, type_: ty.Type) -> Bool {
-  list.contains(free_vars(st, type_), id)
+  case resolve(st, type_) {
+    ty.Var(other) -> other == id
+    ty.Named(_, _, args, _) -> list.any(args, occurs(st, id, _))
+    ty.Fn(args, ret) -> list.any(args, occurs(st, id, _)) || occurs(st, id, ret)
+    ty.Tuple(elements) -> list.any(elements, occurs(st, id, _))
+  }
 }
 
 // Generalization and instantiation
@@ -2500,13 +3023,22 @@ fn copy_vars(st: State, ids: List(Int)) -> #(Dict(Int, ty.Type), State) {
 // generics once out of scope, and another function's body generics that
 // reached this one through a shared, unannotated part. A generic in scope is
 // left alone.
+//
+// The type a read gives is link-free, zonked through the substitution, as the
+// compiler's `instantiate` collapses every link it meets
+// (`environment.rs:705-715, 758-780`). A binding is stored at the type it was
+// matched against, which is often a read's, and the alternatives compare
+// bindings raw (`erased_by_later`), so a read must be as raw as the
+// compiler's.
 fn read_value(st: State, scheme: ty.Scheme) -> #(ty.Type, State) {
   let #(type_, st) = instantiate(st, scheme)
-  use <- bool.guard(when: !reaches_unowned(st, type_), return: #(type_, st))
   let zonked = zonk(st, type_)
+  // Every read is zonked; one that reaches no unowned generic has nothing to
+  // copy.
+  use <- bool.guard(when: !reaches_unowned(st, zonked), return: #(zonked, st))
   let unowned = list.filter(free_vars_loop(zonked, []), is_unowned(st, _))
   case unowned {
-    [] -> #(type_, st)
+    [] -> #(zonked, st)
     _ -> instantiate(st, ty.Scheme(unowned, zonked))
   }
 }
@@ -2529,8 +3061,9 @@ fn read_type(st: State, type_: ty.Type) -> #(ty.Type, State) {
 
 // Whether `type_`, resolved through the substitution, mentions a generic the
 // current scope does not own: a walk that allocates nothing, so a read that
-// reaches none, which is nearly every read, costs no zonk. Every generic the
-// scope owns is rigid, so when it owns them all there is nothing to walk for.
+// reaches none, which is nearly every read, is its zonked type, with no
+// variables collected and nothing copied. Every generic the scope owns is
+// rigid, so when it owns them all there is nothing to walk for.
 fn reaches_unowned(st: State, type_: ty.Type) -> Bool {
   use <- bool.guard(
     when: set.size(st.rigid) == set.size(st.scope.owned),
@@ -2550,38 +3083,35 @@ fn reaches_unowned_loop(st: State, type_: ty.Type) -> Bool {
   }
 }
 
-// A module constant named by a bare variable in a clause guard. The compiler
-// takes the constant's stored literal (`infer_clause_guard_variable`,
-// `type_/guard.rs:322-324`) rather than instantiating its scheme, so the read
-// is not copied, and the literal keeps the variants its value was built with.
-// A constant of the current group, or one with no variable to copy, is read at
-// its literal as it stands. One already generalized is read at a single copy
-// of its literal, made on its first guard read and shared by every later one,
-// as the literal's cells are shared: a fresh variable for each variable its
-// scheme quantifies, and for each generic one a fresh generic, made here so it
-// can never collide with an id of the module that inferred the literal.
-fn guard_constant_read(
+// The type a literal reader reads a module constant at: its stored literal,
+// live, not a copy (see `ConstantLiteral`). A constant of this module is read
+// at its original literal — the type its group inferred, with the ids
+// generalization quantified — so every reader binds the cells the
+// expressions that hold the same ids hold, as the compiler's readers do. That
+// is safe because nothing re-zonks a generalized scheme: `instantiate`
+// replaces the quantified ids before anything resolves them, and a closed
+// scheme is never scanned for free variables. An imported constant's literal
+// is read through `State.identities` (`import_literal`), translated once per
+// constant in this module and kept in `State.imported_literals`: the
+// translation is a term over local ids, so later reads that reuse it still
+// see every binding made after it.
+fn constant_view(
+  env: Env,
   st: State,
-  scheme: ty.Scheme,
   module: String,
   name: String,
   literal: ConstantLiteral,
 ) -> #(ty.Type, State) {
-  use <- bool.guard(when: scheme.vars == [], return: #(literal.type_, st))
-  case dict.get(st.literals, #(module, name)) {
-    Ok(view) -> #(view, st)
-    Error(_) -> {
-      let #(mapping, st) = copy_vars(st, scheme.vars)
-      let generics =
-        list.filter_map(set.to_list(literal.generics), fn(id) {
-          result.try(dict.get(mapping, id), var_id)
-        })
-      let view = substitute(mapping, literal.type_)
-      let st = mark_rigid(st, generics)
-      #(
-        view,
-        State(..st, literals: dict.insert(st.literals, #(module, name), view)),
-      )
+  use <- bool.guard(when: module == env.current_module, return: #(
+    literal.type_,
+    st,
+  ))
+  case dict.get(st.imported_literals, #(module, name)) {
+    Ok(type_) -> #(type_, st)
+    Error(Nil) -> {
+      let #(type_, st) = import_literal(st, literal)
+      let imported = dict.insert(st.imported_literals, #(module, name), type_)
+      #(type_, State(..st, imported_literals: imported))
     }
   }
 }
@@ -2594,9 +3124,9 @@ fn read_name(
   env: Env,
   st: State,
   name: String,
-) -> Result(#(ValueConstructor, ty.Type, State), Error) {
+) -> Result(#(ValueConstructor, ty.Type, State), Failure) {
   case dict.get(env.values, name) {
-    Error(_) -> Error(UnboundVariable(name))
+    Error(_) -> fail(st, UnboundVariable(name))
     Ok(entry) -> {
       let #(type_, st) = read_value(st, entry.scheme)
       Ok(#(entry, type_, st))
@@ -2702,7 +3232,7 @@ fn check_body(
   st: State,
   function: glance.Function,
   return_type: ty.Type,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   case function.body {
     [] -> Ok(st)
     _ -> {
@@ -2711,21 +3241,22 @@ fn check_body(
         st,
         function.body,
       ))
-      unify(st, body_type, return_type)
+      unify(st, return_type, body_type)
     }
   }
 }
 
-// Infer a module constant, returning its literal: its type (an annotation, if
-// present, is applied) and the ids its annotation made generics. A constant is
-// inferred with a hydrator of its own (`analyse.rs:446-453`), so its scope
-// starts empty: every read in it copies every generic, and its annotation's
+// Infer a module constant, returning its literal: its type, an annotation, if
+// present, applied. A constant is inferred with a hydrator of its own
+// (`analyse.rs:446-453`), so its scope starts empty, whatever the state it is
+// handed holds: every read in it copies every generic, and its annotation's
 // names create generics of its own.
 fn infer_constant(
   env: Env,
   st: State,
   constant: glance.Constant,
-) -> Result(#(ConstantLiteral, State), Error) {
+) -> Result(#(ConstantLiteral, State), Failure) {
+  let st = State(..st, scope: empty_scope())
   use #(value_type, st) <- result.try(infer_expr(
     Env(..env, syntax: ConstantSyntax),
     st,
@@ -2734,11 +3265,11 @@ fn infer_constant(
   case constant.annotation {
     Some(ann) -> {
       let #(t, st) = hydrate_scoped(env, st, ann)
-      use st <- result.try(unify(st, value_type, t))
-      let literal = ConstantLiteral(value_type, st.scope.owned)
+      use st <- result.try(unify(st, t, value_type))
+      let literal = ConstantLiteral(value_type, dict.new())
       Ok(#(literal, State(..st, scope: empty_scope())))
     }
-    None -> Ok(#(ConstantLiteral(value_type, set.new()), st))
+    None -> Ok(#(ConstantLiteral(value_type, dict.new()), st))
   }
 }
 
@@ -2941,7 +3472,7 @@ fn accessors_of_module(env: Env, module: String) -> Dict(String, Accessors) {
 // unknown when first seen. By now inference has fixed the record types; any
 // that are still unknown are genuinely ambiguous (the compiler rejects these
 // too).
-fn resolve_pending(env: Env, st: State) -> Result(State, Error) {
+fn resolve_pending(env: Env, st: State) -> Result(State, Failure) {
   // Process in discovery order so inner accesses of a chain (`a.b.c`) resolve
   // before the outer ones, and loop to a fixpoint for any remaining cross
   // dependencies. Anything still unresolved is genuinely ambiguous.
@@ -2959,10 +3490,10 @@ fn resolve_pending_loop(
   st: State,
   pending: List(Pending),
   fuel: Int,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   case pending, fuel <= 0 {
     [], _ -> Ok(st)
-    [_, ..], True -> Error(NotARecord)
+    [_, ..], True -> fail(st, NotARecord)
     _, False -> {
       use #(st, remaining, progressed) <- result.try(
         list.try_fold(pending, #(st, [], False), fn(acc, item) {
@@ -2976,7 +3507,7 @@ fn resolve_pending_loop(
       )
       case progressed {
         True -> resolve_pending_loop(env, st, list.reverse(remaining), fuel - 1)
-        False -> Error(NotARecord)
+        False -> fail(st, NotARecord)
       }
     }
   }
@@ -2989,12 +3520,12 @@ fn resolve_one(
   env: Env,
   st: State,
   item: Pending,
-) -> Result(#(State, Bool), Error) {
+) -> Result(#(State, Bool), Failure) {
   case item {
     PendingField(container, label, field) ->
       case resolve(st, container) {
         ty.Named(_, _, _, _) as record -> {
-          use scheme <- result.try(accessor(env, record, label))
+          use scheme <- result.try(stateless(st, accessor(env, record, label)))
           let #(accessor_type, st) = instantiate(st, scheme)
           use st <- result.try(unify(
             st,
@@ -3004,20 +3535,20 @@ fn resolve_one(
           Ok(#(st, True))
         }
         ty.Var(_) -> Ok(#(st, False))
-        _ -> Error(NotARecord)
+        _ -> fail(st, NotARecord)
       }
     PendingIndex(container, index, result) ->
       case resolve(st, container) {
         ty.Tuple(elements) ->
           case list_at(elements, index) {
             Ok(element) -> {
-              use st <- result.try(unify(st, element, result))
+              use st <- result.try(unify(st, result, element))
               Ok(#(st, True))
             }
-            Error(_) -> Error(TupleIndexOutOfRange(index))
+            Error(_) -> fail(st, TupleIndexOutOfRange(index))
           }
         ty.Var(_) -> Ok(#(st, False))
-        _ -> Error(NotATuple)
+        _ -> fail(st, NotATuple)
       }
   }
 }
@@ -3048,7 +3579,7 @@ fn infer_expr(
   env: Env,
   st: State,
   expr: glance.Expression,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   // A guard subtree the compiler parses as a constant is typed as one
   // (`type_/guard.rs:164-166`), all the way down.
   let env = case env.syntax == GuardSyntax && reference.guard_constant(expr) {
@@ -3063,39 +3594,40 @@ fn infer_expr_inner(
   env: Env,
   st: State,
   expr: glance.Expression,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   case expr {
     glance.Int(..) -> Ok(#(prelude_int(), st))
     glance.Float(..) -> Ok(#(prelude_float(), st))
     glance.String(..) -> Ok(#(prelude_string(), st))
 
     glance.Variable(_, name) ->
-      case env.syntax, dict.get(env.values, name) {
-        GuardSyntax,
-          Ok(ValueConstructor(scheme, ConstantValue(module, name, literal)))
-        -> Ok(guard_constant_read(st, scheme, module, name, literal))
-        _, _ -> {
-          use #(_, type_, st) <- result.map(read_name(env, st, name))
-          #(type_, st)
-        }
+      case env.syntax {
+        GuardSyntax -> guard_variable(env, st, name)
+        ExpressionSyntax -> read_variable(env, st, name)
+        // A name the constant typer cannot find is an invalid constant, a
+        // fresh variable, at the name itself (`constant.rs:425-441`).
+        ConstantSyntax -> recover_fresh(env, read_variable(env, st, name))
       }
 
+    // An operand, an element and a rest are each a sub-expression the
+    // compiler types through `infer`, and each unification is recorded
+    // (`expression.rs:937-941, 1005-1010, 1244-1298`).
     glance.NegateInt(_, value) -> {
-      use #(t, st) <- result.try(infer_expr(env, st, value))
-      use st <- result.try(unify(st, t, prelude_int()))
+      use #(t, st) <- result.try(infer_recovering(env, st, value))
+      use st <- result.try(recover_unify(env, st, prelude_int(), t))
       Ok(#(prelude_int(), st))
     }
 
     glance.NegateBool(_, value) -> {
-      use #(t, st) <- result.try(infer_expr(env, st, value))
-      use st <- result.try(unify(st, t, prelude_bool()))
+      use #(t, st) <- result.try(infer_recovering(env, st, value))
+      use st <- result.try(recover_unify(env, st, prelude_bool(), t))
       Ok(#(prelude_bool(), st))
     }
 
     glance.Tuple(_, elements) -> {
       use #(elem_types, st) <- result.try(
         infer_each(st, elements, fn(st, element) {
-          infer_expr(env, st, element)
+          infer_recovering(env, st, element)
         }),
       )
       Ok(#(ty.Tuple(elem_types), st))
@@ -3105,14 +3637,14 @@ fn infer_expr_inner(
       let #(elem, st) = fresh(st)
       use st <- result.try(
         list.try_fold(elements, st, fn(st, e) {
-          use #(t, st) <- result.try(infer_expr(env, st, e))
-          unify(st, t, elem)
+          use #(t, st) <- result.try(infer_recovering(env, st, e))
+          recover_unify(env, st, elem, t)
         }),
       )
       use st <- result.try(case rest {
         Some(r) -> {
-          use #(t, st) <- result.try(infer_expr(env, st, r))
-          unify(st, t, prelude_list(elem))
+          use #(t, st) <- result.try(infer_recovering(env, st, r))
+          recover_unify(env, st, prelude_list(elem), t)
         }
         None -> Ok(st)
       })
@@ -3140,22 +3672,16 @@ fn infer_expr_inner(
 
     glance.Case(_, subjects, clauses) -> infer_case(env, st, subjects, clauses)
 
+    // One of the two places that read `Env.recovering` itself rather than
+    // through a recovery helper, because what differs is what succeeds, not
+    // how a failure recovers: a speculative guard index reads its child's
+    // type as produced, while strict mode resolves it (the other place is
+    // `tuple_index`).
     glance.TupleIndex(_, tuple, index) -> {
       use #(t, st) <- result.try(infer_expr(env, st, tuple))
-      case resolve(st, t) {
-        ty.Tuple(elements) ->
-          case list_at(elements, index) {
-            Ok(element) -> Ok(#(element, st))
-            Error(_) -> Error(TupleIndexOutOfRange(index))
-          }
-        // The tuple type is not known yet; defer until inference fixes it.
-        ty.Var(_) -> {
-          let #(element, st) = fresh(st)
-          let st =
-            State(..st, pending: [PendingIndex(t, index, element), ..st.pending])
-          Ok(#(element, st))
-        }
-        _ -> Error(NotATuple)
+      case env.syntax, env.recovering {
+        GuardSyntax, True -> Ok(guard_tuple_index(st, t, index))
+        _, _ -> tuple_index(env, st, t, index)
       }
     }
 
@@ -3172,8 +3698,10 @@ fn infer_expr_inner(
         None -> Ok(fresh(st))
       }
 
+    // The value is typed through `infer`, so its message is walked even
+    // after the value failed (`expression.rs:628-648`).
     glance.Echo(_, Some(expression), message) -> {
-      use #(type_, st) <- result.try(infer_expr(env, st, expression))
+      use #(type_, st) <- result.try(infer_recovering(env, st, expression))
       use st <- result.try(check_message(env, st, message))
       Ok(#(type_, st))
     }
@@ -3196,45 +3724,171 @@ fn infer_expr_inner(
       Ok(#(type_, st))
     }
 
-    glance.RecordUpdate(_, module, constructor, record, fields) ->
-      infer_record_update(env, st, module, constructor, record, fields)
+    glance.RecordUpdate(_, module, constructor, record, fields) -> {
+      let update =
+        infer_record_update(env, st, module, constructor, record, fields)
+      case env.syntax {
+        // The constant typer makes a failed record update a fresh invalid
+        // constant whole (`constant.rs:275-316, 836-843`).
+        ConstantSyntax -> recover_fresh(env, update)
+        ExpressionSyntax | GuardSyntax -> update
+      }
+    }
 
+    // The first segment that fails fails the bit array, and the segments
+    // after it are not walked (`expression.rs:1666-1682`). A constant's bit
+    // array is still a `BitArray` when it fails (`constant.rs:91-101`).
     glance.BitString(_, segments) -> {
-      use st <- result.try(
+      let walked =
         list.try_fold(segments, st, fn(st, segment) {
           infer_bit_segment(env, st, segment)
-        }),
-      )
+        })
+      let walked = case env.syntax {
+        ConstantSyntax -> recover_with(env, walked, Ok)
+        ExpressionSyntax | GuardSyntax -> walked
+      }
+      use st <- result.try(walked)
       Ok(#(prelude_bit_array(), st))
     }
   }
 }
 
+// A bare name in a guard. The compiler's guard-variable lookup
+// (`guard.rs:303-324`) accepts a local, read as any value is, and a module
+// constant, read as its literal (`constant_view`). It rejects a module
+// function or a constructor as if the name were unbound, and a lowercase name
+// it rejects, or cannot find, fails: the compiler records the error and the
+// name is a fresh variable (`guard.rs:36-46`), as it is in a speculative walk
+// here. A bare uppercase name is a constructor the compiler parses as a
+// constant (`parse.rs:1912-1932`), which never meets the lookup, so it is read
+// as one.
+//
+// The read is the type the lookup gives, not zonked: a local's read is
+// already link-free (`read_value`), a name that cannot be read is a fresh
+// variable, and a constant's literal is the one stored, links included, as
+// the compiler's guard reads it (`guard.rs:322-324`). A speculative guard
+// tuple index inspects it as it stands (`guard_tuple_index`), so a link in
+// the stored literal is no tuple there, as in the compiler.
+fn guard_variable(
+  env: Env,
+  st: State,
+  name: String,
+) -> Result(#(ty.Type, State), Failure) {
+  let lowercase = !reference.is_upper(name)
+  let read = case dict.get(env.values, name) {
+    Ok(ValueConstructor(_, ConstantValue(module:, name:, literal:))) ->
+      Ok(constant_view(env, st, module, name, literal))
+    Ok(ValueConstructor(_, FunctionValue(..)))
+      | Ok(ValueConstructor(_, ConstructorValue(..)))
+      | Error(_)
+      if lowercase
+    -> fail(st, UnboundVariable(name))
+    Ok(_) | Error(_) -> read_variable(env, st, name)
+  }
+  recover_fresh(env, read)
+}
+
+// A name read as an ordinary value, its type alone (`read_name`).
+fn read_variable(
+  env: Env,
+  st: State,
+  name: String,
+) -> Result(#(ty.Type, State), Failure) {
+  use #(_, type_, st) <- result.map(read_name(env, st, name))
+  #(type_, st)
+}
+
+// A tuple index in a guard, in a speculative walk. The compiler's guard index
+// matches the child's type as the child produced it, without following
+// links (`guard.rs:49-93`), where an expression index collapses them first
+// (`expression.rs:1577-1591`). girard's node is the type unresolved, since a
+// variable bound in the substitution is the compiler's linked cell: a tuple
+// gives its element as it stands, and anything else — a variable, bound or
+// not, included — is the compiler's recovered `NotATuple`, a fresh variable,
+// as is an index out of range.
+fn guard_tuple_index(
+  st: State,
+  tuple: ty.Type,
+  index: Int,
+) -> #(ty.Type, State) {
+  case tuple {
+    ty.Tuple(elements) ->
+      case list_at(elements, index) {
+        Ok(element) -> #(element, st)
+        Error(_) -> fresh(st)
+      }
+    ty.Var(_) | ty.Named(..) | ty.Fn(..) -> fresh(st)
+  }
+}
+
+// A tuple index on a tuple of type `tuple`. One whose tuple type is not known
+// yet is deferred until inference fixes it, except in a speculative walk,
+// where the compiler fails with `NotATupleUnbound` (`expression.rs:1577-1601`)
+// and so never reaches what deferring would walk next. Strict mode keeps the
+// deferral, which is why this reads `Env.recovering` itself.
+fn tuple_index(
+  env: Env,
+  st: State,
+  tuple: ty.Type,
+  index: Int,
+) -> Result(#(ty.Type, State), Failure) {
+  case resolve(st, tuple), env.recovering {
+    ty.Tuple(elements), _ ->
+      case list_at(elements, index) {
+        Ok(element) -> Ok(#(element, st))
+        Error(_) -> fail(st, TupleIndexOutOfRange(index))
+      }
+    ty.Var(_), False -> {
+      let #(element, st) = fresh(st)
+      let st =
+        State(..st, pending: [PendingIndex(tuple, index, element), ..st.pending])
+      Ok(#(element, st))
+    }
+    ty.Var(_), True | ty.Named(..), _ | ty.Fn(..), _ -> fail(st, NotATuple)
+  }
+}
+
 // Check one record-update field: its new value (or shorthand variable) must
 // match the field's declared type.
+//
+// In a speculative walk an expression's update recovers each field as the
+// compiler does (`expression.rs:2817-2875`): the value through `infer`, then
+// an unknown label is skipped and a mismatch recorded, and the next field
+// continues. A constant's update recovers only the value: the constant typer
+// fails the whole update at its first bad label or mismatch
+// (`constant.rs:275-316`). The compiler also skips a label given twice; a
+// repeated label is checked again here, which can only differ in a program
+// the compiler rejects, since the same update is walked again strictly.
 fn update_field(
   env: Env,
   st: State,
   field: glance.RecordUpdateField(glance.Expression),
   label_types: Dict(String, ty.Type),
   type_name: String,
-) -> Result(State, Error) {
-  use #(value_type, st) <- result.try(case field.item {
-    Some(value) -> infer_expr(env, st, value)
-    // Shorthand `label:` refers to the variable named `label`.
-    None -> {
-      use #(_, type_, st) <- result.map(read_name(env, st, field.label))
-      #(type_, st)
-    }
-  })
-  case dict.get(label_types, field.label) {
-    Ok(expected) -> unify(st, value_type, expected)
-    Error(_) -> Error(NoSuchField(type_name, field.label))
+) -> Result(State, Failure) {
+  use #(value_type, st) <- result.try(
+    recover_fresh(env, case field.item {
+      Some(value) -> infer_expr(env, st, value)
+      // Shorthand `label:` refers to the variable named `label`.
+      None -> {
+        use #(_, type_, st) <- result.map(read_name(env, st, field.label))
+        #(type_, st)
+      }
+    }),
+  )
+  let checked = case dict.get(label_types, field.label) {
+    Ok(expected) -> unify(st, expected, value_type)
+    Error(_) -> fail(st, NoSuchField(type_name, field.label))
+  }
+  case env.syntax {
+    ConstantSyntax -> checked
+    ExpressionSyntax | GuardSyntax -> recover_with(env, checked, Ok)
   }
 }
 
-// Check one bit-array segment's value and its size option against their
-// expected types.
+// Check one bit-array segment in the compiler's order (`infer_bit_segment`,
+// `expression.rs:1700-1757`): its value is inferred, then its size option is
+// checked, then the value is unified with the segment's type.
 fn infer_bit_segment(
   env: Env,
   st: State,
@@ -3242,25 +3896,26 @@ fn infer_bit_segment(
     glance.Expression,
     List(glance.BitStringSegmentOption(glance.Expression)),
   ),
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   let #(value, options) = segment
   let default = case value {
     glance.String(..) -> prelude_string()
     glance.Float(..) -> prelude_float()
     _ -> prelude_int()
   }
-  use st <- result.try(check(
-    env,
-    st,
-    value,
-    segment_value_type(options, default),
-  ))
-  list.try_fold(options, st, fn(st, option) {
-    case option {
-      glance.SizeValueOption(size) -> check(env, st, size, prelude_int())
-      _ -> Ok(st)
-    }
-  })
+  use #(value_type, st) <- result.try(infer_expr(env, st, value))
+  use st <- result.try(
+    list.try_fold(options, st, fn(st, option) {
+      case option {
+        glance.SizeValueOption(size) -> {
+          use #(size_type, st) <- result.try(infer_expr(env, st, size))
+          unify(st, prelude_int(), size_type)
+        }
+        _ -> Ok(st)
+      }
+    }),
+  )
+  unify(st, segment_value_type(options, default), value_type)
 }
 
 // Which branch a `name.label` access took. A call reads it to pick the
@@ -3280,6 +3935,9 @@ type Access {
   // name exports the label, so a `PendingField` was queued and no member was
   // decided here.
   Deferred
+  // Neither: the access failed in a speculative walk and is a fresh variable,
+  // as the compiler's `Invalid` expression is. It names no member.
+  Invalid
 }
 
 // The export `name.label` reaches when `name` is an imported module: the whole
@@ -3303,32 +3961,59 @@ fn module_access(
 // error is reported only when neither exists. Which fields the record grants
 // is the type's business: a value known to be one variant reaches that
 // variant's own fields.
+//
+// A guard decides by the name instead (`guard.rs:96-140`): when the
+// guard-variable lookup accepts it — a local or a module constant
+// (`guard.rs:303-324`) — the access is a record access and nothing else, and
+// only a name it rejects, a function, a constructor or no value at all, is
+// tried as a module, where only a constant can be selected.
 fn infer_field_access(
   env: Env,
   st: State,
   access: glance.Span,
   container: glance.Expression,
   label: String,
-) -> Result(#(ty.Type, Access, State), Error) {
+) -> Result(#(ty.Type, Access, State), Failure) {
   let spans = access_spans(access, container, label)
-  use #(type_, branch, st) <- result.try(case container {
+  let access = case container {
     // In a constant, `name.member` is module access only, whatever else
     // `name` is bound to (`parse.rs:3636`).
     glance.Variable(_, name) if env.syntax == ConstantSyntax -> {
-      use entry <- result.try(qualified_entry(env, name, label))
+      use entry <- result.try(stateless(st, qualified_entry(env, name, label)))
       module_export(st, entry)
     }
     // Only a bare name can also denote a module, so only there is there a
     // module export for a failing record access to fall through to.
     glance.Variable(_, name) -> {
       let export = module_access(env, name, label)
-      case dict.has_key(env.values, name) {
-        True -> value_field(env, st, container, label, export)
-        False -> module_or_record(env, st, container, label, export)
+      case env.syntax, dict.get(env.values, name) {
+        GuardSyntax, Ok(ValueConstructor(_, LocalValue(..)))
+        | GuardSyntax, Ok(ValueConstructor(_, ConstantValue(..)))
+        -> value_field(env, st, container, label, None)
+        // A guard selects only a module's constant: a function or a
+        // constructor is the compiler's `RecordAccessUnknownType`
+        // (`guard.rs:386-419`).
+        GuardSyntax, _ ->
+          case export {
+            Some(ValueConstructor(_, ConstantValue(..))) | None ->
+              module_or_record(env, st, container, label, export)
+            Some(_) -> fail(st, NotARecord)
+          }
+        _, Ok(_) -> value_field(env, st, container, label, export)
+        _, Error(_) -> module_or_record(env, st, container, label, export)
       }
     }
     _ -> module_or_record(env, st, container, label, None)
-  })
+  }
+  // The compiler's field access never fails: whichever branch failed, the
+  // container's included, the error is recorded and the access is a fresh
+  // variable (`expression.rs:1495-1566`; in a guard `guard.rs:126-139`).
+  use #(type_, branch, st) <- result.try(
+    recover_with(env, access, fn(failed) {
+      let #(type_, failed) = fresh(failed)
+      Ok(#(type_, Invalid, failed))
+    }),
+  )
   Ok(#(type_, branch, record_access(st, spans, label, branch)))
 }
 
@@ -3347,6 +4032,7 @@ fn record_access(
     Field(record) -> reference(st, spans, ResolvedField(record, label))
     Export(variant) -> reference(st, spans, ResolvedValue(variant))
     Deferred -> reference(st, spans, ResolvedDeferred)
+    Invalid -> st
   }
 }
 
@@ -3369,7 +4055,7 @@ fn access_spans(
 fn module_export(
   st: State,
   entry: ValueConstructor,
-) -> Result(#(ty.Type, Access, State), Error) {
+) -> Result(#(ty.Type, Access, State), Failure) {
   let #(type_, st) = instantiate(st, entry.scheme)
   Ok(#(type_, Export(entry.variant), st))
 }
@@ -3379,7 +4065,7 @@ fn pending_field(
   st: State,
   container_type: ty.Type,
   label: String,
-) -> Result(#(ty.Type, Access, State), Error) {
+) -> Result(#(ty.Type, Access, State), Failure) {
   let #(field, st) = fresh(st)
   let st =
     State(..st, pending: [
@@ -3397,7 +4083,7 @@ fn value_field(
   container: glance.Expression,
   label: String,
   export: Option(ValueConstructor),
-) -> Result(#(ty.Type, Access, State), Error) {
+) -> Result(#(ty.Type, Access, State), Failure) {
   use #(container_type, st) <- result.try(infer_expr_inner(env, st, container))
   use #(type_, access, st) <- result.try(case resolve(st, container_type) {
     ty.Named(_, _, _, _) as record ->
@@ -3410,7 +4096,7 @@ fn value_field(
         Error(field_error) ->
           case export {
             Some(export) -> module_export(st, export)
-            None -> Error(field_error)
+            None -> fail(st, field_error)
           }
       }
     // The record type is not known yet. Prefer a same-named module export;
@@ -3423,14 +4109,14 @@ fn value_field(
     _ ->
       case export {
         Some(export) -> module_export(st, export)
-        None -> Error(NotARecord)
+        None -> fail(st, NotARecord)
       }
   })
   // The container's span is recorded only while the access stays a record
   // access. One that falls through to a module export is a module select in
   // the compiler's typed AST, with no expression at the container's span.
   let st = case access {
-    Export(_) -> st
+    Export(_) | Invalid -> st
     Field(_) | Deferred -> record(st, span(container), container_type)
   }
   Ok(#(type_, access, st))
@@ -3444,7 +4130,7 @@ fn module_or_record(
   container: glance.Expression,
   label: String,
   export: Option(ValueConstructor),
-) -> Result(#(ty.Type, Access, State), Error) {
+) -> Result(#(ty.Type, Access, State), Failure) {
   case export {
     Some(export) -> module_export(st, export)
     None -> {
@@ -3455,7 +4141,7 @@ fn module_or_record(
           Ok(#(field, Field(record), st))
         }
         ty.Var(_) -> pending_field(st, container_type, label)
-        _ -> Error(NotARecord)
+        _ -> fail(st, NotARecord)
       }
     }
   }
@@ -3467,14 +4153,28 @@ fn field_type(
   st: State,
   record: ty.Type,
   label: String,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   // Resolve through the substitution: a caller may pass a variable that has
   // since been bound to the record type (e.g. record-update's kept fields).
-  use accessor_scheme <- result.try(accessor(env, resolve(st, record), label))
+  use accessor_scheme <- result.try(stateless(
+    st,
+    accessor(env, resolve(st, record), label),
+  ))
   let #(accessor_type, st) = instantiate(st, accessor_scheme)
-  let #(field, st) = fresh(st)
-  use st <- result.try(unify(st, accessor_type, ty.Fn([record], field)))
-  Ok(#(field, st))
+  // The access is the accessor's own field type (`expression.rs:2670-2679`,
+  // `guard.rs:336-362`), as raw as the compiler's where a binding takes it,
+  // and as a speculative guard tuple index inspects it (`guard_tuple_index`).
+  case accessor_type {
+    ty.Fn([parameter], field) -> {
+      use st <- result.map(unify(st, parameter, record))
+      #(field, st)
+    }
+    _ -> {
+      let #(field, st) = fresh(st)
+      use st <- result.map(unify(st, accessor_type, ty.Fn([record], field)))
+      #(field, st)
+    }
+  }
 }
 
 fn infer_record_update(
@@ -3484,13 +4184,19 @@ fn infer_record_update(
   constructor: String,
   record: glance.Expression,
   fields: List(glance.RecordUpdateField(glance.Expression)),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   // A record update produces a *fresh* value of the type: updated fields take
   // their new value's type and kept fields are copied from the record. This is
   // what lets an update change a type parameter, as in
   // `Request(..req, body:)` : `fn(Request(a), b) -> Request(b)` — the kept
-  // fields tie only the parameters they share, not all of them.
-  use entry <- result.try(constructor_entry(env, module, constructor))
+  // fields tie only the parameters they share, not all of them. The steps are
+  // the compiler's, in its order (`infer_record_update`,
+  // `expression.rs:2683-3025`): the spread, its variant, the updated fields,
+  // then the kept ones.
+  use entry <- result.try(stateless(
+    st,
+    constructor_entry(env, module, constructor),
+  ))
   let #(ctor_type, st) = instantiate(st, entry.scheme)
   let #(field_types, return_type) = case ctor_type {
     ty.Fn(arguments, return) -> #(arguments, return)
@@ -3498,9 +4204,10 @@ fn infer_record_update(
   }
   case return_type {
     ty.Named(type_module, type_name, type_parameters, variant) -> {
-      let labels = positional_labels(entry.variant)
+      let fields_by_position =
+        list.zip(positional_labels(entry.variant), field_types)
       let label_types =
-        list.fold(list.zip(labels, field_types), dict.new(), fn(acc, pair) {
+        list.fold(fields_by_position, dict.new(), fn(acc, pair) {
           case pair.0 {
             Some(label) -> dict.insert(acc, label, pair.1)
             None -> acc
@@ -3511,11 +4218,33 @@ fn infer_record_update(
       // Fix the record's head to this type with independent parameters, so its
       // own type variables aren't conflated with the result's.
       let #(record_parameters, st) = fresh_n(st, list.length(type_parameters))
-      use #(record_type, st) <- result.try(infer_expr(env, st, record))
+      use #(record_type, spread_arguments, st) <- result.try(infer_spread(
+        env,
+        st,
+        record,
+      ))
+      // Each parameter is bound to the spread's own argument, not the spread's
+      // argument to it: the compiler never unifies the spread with a temporary
+      // instance (`constant.rs:353-363`), and a live literal's variable bound
+      // to every update's fresh parameter would chain through them, and be
+      // exported as a binding of the foreign literal that nothing made.
       use st <- result.try(unify(
         st,
-        record_type,
         ty.Named(type_module, type_name, record_parameters, variant),
+        record_type,
+      ))
+      use st <- result.try(check_update_variant(
+        env,
+        st,
+        record_type,
+        return_type,
+      ))
+      use bases <- result.try(copy_bases(
+        env,
+        st,
+        record,
+        spread_arguments,
+        list.length(field_types),
       ))
 
       // Updated fields take their new value's type.
@@ -3531,25 +4260,245 @@ fn infer_record_update(
       // ties only the parameters a kept field actually uses, which is what lets
       // an *updated* field change a parameter. Deriving this from the named
       // constructor (rather than a field accessor) means it works even for
-      // fields not shared by every variant of a multi-variant type.
+      // fields not shared by every variant of a multi-variant type. Every field
+      // the update does not name is kept, an unlabelled one included, by
+      // position in declaration order (`expression.rs:2899-3025`). A
+      // constant's inline spread gives a field its own argument's type
+      // instead (`copy_bases`).
       let to_record_params =
         dict.from_list(list.zip(
           list.filter_map(type_parameters, var_id),
           record_parameters,
         ))
-      use st <- result.try(
-        list.try_fold(dict.to_list(label_types), st, fn(st, pair) {
-          let #(label, expected) = pair
-          case list.contains(updated, label) {
-            True -> Ok(st)
-            False -> unify(st, substitute(to_record_params, expected), expected)
+      let kept =
+        list.filter(list.zip(fields_by_position, bases), fn(pair) {
+          case pair.0.0 {
+            Some(label) -> !list.contains(updated, label)
+            None -> True
           }
+        })
+      use st <- result.try(
+        list.try_fold(kept, st, fn(st, pair) {
+          let #(#(_, field), base) = pair
+          let base =
+            option.lazy_unwrap(base, fn() {
+              substitute(to_record_params, field)
+            })
+          // The result's field first, as the compiler unifies it
+          // (`constant.rs:353-363`): its fresh variable is bound to the base,
+          // never the base's, a live literal's for a constant spread, to it.
+          unify(st, field, base)
         }),
       )
 
       Ok(#(return_type, st))
     }
-    _ -> Error(NotARecord)
+    _ -> fail(st, NotARecord)
+  }
+}
+
+// A record update's spread. In an expression it is typed through `infer`. A
+// constant's fails the whole update when it is invalid itself
+// (`infer_constant_spread`), and when it names a module constant the update
+// reads its literal, as the constant typer unwraps it (`constant.rs:186-245`):
+// the copied fields then carry the literal's own cells.
+fn infer_spread(
+  env: Env,
+  st: State,
+  record: glance.Expression,
+) -> Result(#(ty.Type, List(Option(ty.Type)), State), Failure) {
+  case env.syntax {
+    ConstantSyntax -> {
+      use #(spread_type, arguments, st) <- result.map(infer_constant_spread(
+        env,
+        st,
+        record,
+      ))
+      case spread_constant(env, record) {
+        Ok(#(module, name, literal)) -> {
+          let #(view, st) = constant_view(env, st, module, name, literal)
+          #(view, arguments, st)
+        }
+        Error(Nil) -> #(spread_type, arguments, st)
+      }
+    }
+    ExpressionSyntax | GuardSyntax -> {
+      use #(type_, st) <- result.map(recover_fresh(
+        env,
+        infer_expr(env, st, record),
+      ))
+      #(type_, [], st)
+    }
+  }
+}
+
+// The module constant a constant record update's spread names, bare or
+// qualified: its module, name and literal.
+fn spread_constant(
+  env: Env,
+  record: glance.Expression,
+) -> Result(#(String, String, ConstantLiteral), Nil) {
+  let entry = case record {
+    glance.Variable(_, name) -> dict.get(env.values, name)
+    glance.FieldAccess(_, glance.Variable(_, alias), label) ->
+      option.to_result(module_access(env, alias, label), Nil)
+    _ -> Error(Nil)
+  }
+  case entry {
+    Ok(ValueConstructor(_, ConstantValue(module:, name:, literal:))) ->
+      Ok(#(module, name, literal))
+    Ok(_) | Error(_) -> Error(Nil)
+  }
+}
+
+// A constant update's spread, typed so that a failure of its own fails the
+// update: the constant typer needs the spread to be a record, and an invalid
+// one is not (`constant.rs:186-232`). So a name or a module select that
+// cannot be read, a constructor that cannot be found and a nested update that
+// failed each fail the update whole, where elsewhere in a constant they would
+// be fresh. What the spread holds recovers as anywhere else: a constructor's
+// arguments, a nested update's fields. The spread's span is recorded once, as
+// `infer_expr` records it. A constructor call also gives each of its
+// arguments' own types, in the order they were placed, which the update
+// copies its fields from (`copy_bases`); any other spread gives none.
+fn infer_constant_spread(
+  env: Env,
+  st: State,
+  spread: glance.Expression,
+) -> Result(#(ty.Type, List(Option(ty.Type)), State), Failure) {
+  let strict = Env(..env, recovering: False)
+  let no_arguments = fn(typed) {
+    result.map(typed, fn(typed: #(ty.Type, State)) { #(typed.0, [], typed.1) })
+  }
+  let typed = case spread {
+    glance.Variable(..) | glance.FieldAccess(..) ->
+      no_arguments(infer_expr_inner(strict, st, spread))
+    glance.RecordUpdate(_, module, constructor, inner, fields) ->
+      no_arguments(infer_record_update(
+        env,
+        st,
+        module,
+        constructor,
+        inner,
+        fields,
+      ))
+    glance.Call(_, function, arguments) -> {
+      use #(fn_type, labels, st) <- result.try(infer_callee(
+        strict,
+        st,
+        function,
+      ))
+      place_constant_arguments(
+        env,
+        st,
+        fn_type,
+        labels,
+        list.map(arguments, map_field(_, Written)),
+      )
+    }
+    _ -> no_arguments(infer_expr_inner(env, st, spread))
+  }
+  use #(type_, arguments, st) <- result.map(typed)
+  #(type_, arguments, record(st, span(spread), type_))
+}
+
+// The type a record update copies each field from, where it is not the
+// spread constructor's field type: in a constant whose spread is an inline
+// constructor call, each field the call's own argument for it, as the
+// constant typer copies the base record's arguments (`constant.rs:212-230,
+// 353-390`).
+// It differs from the field type only where the argument recovered a
+// mismatch, so only in a speculative walk. Each argument's type is the one
+// its own walk inferred, before the unification with its field, passed out of
+// the spread's walk (`spread_arguments`, from `place_constant_arguments`), so
+// nothing is walked twice or looked up; one that failed is the fresh variable
+// it recovered to, which that unification bound to the field. A spread whose
+// argument count is not the constructor's fails the update, as the constant
+// typer checks before any updated field is walked (`constant.rs:257-273`).
+fn copy_bases(
+  env: Env,
+  st: State,
+  record: glance.Expression,
+  spread_arguments: List(Option(ty.Type)),
+  fields: Int,
+) -> Result(List(Option(ty.Type)), Failure) {
+  let by_field = fn() { Ok(list.repeat(None, fields)) }
+  use <- bool.lazy_guard(when: env.syntax != ConstantSyntax, return: by_field)
+  case inline_spread(env, record) {
+    Ok(arguments) -> {
+      use <- bool.lazy_guard(
+        when: list.length(arguments) != fields,
+        return: fn() { fail(st, ArityMismatch) },
+      )
+      let missing = fields - list.length(spread_arguments)
+      Ok(list.append(spread_arguments, list.repeat(None, missing)))
+    }
+    Error(Nil) -> by_field()
+  }
+}
+
+// A record update's spread that is a constructor call: its arguments in the
+// constructor's field order, placed as `place_arguments` placed them.
+fn inline_spread(
+  env: Env,
+  record: glance.Expression,
+) -> Result(List(CallArg), Nil) {
+  use #(entry, arguments) <- result.try(case record {
+    glance.Call(_, glance.Variable(_, name), arguments) ->
+      dict.get(env.values, name)
+      |> result.map(fn(entry) { #(entry, arguments) })
+    glance.Call(
+      _,
+      glance.FieldAccess(_, glance.Variable(_, alias), name),
+      arguments,
+    ) ->
+      qualified_entry(env, alias, name)
+      |> result.replace_error(Nil)
+      |> result.map(fn(entry) { #(entry, arguments) })
+    _ -> Error(Nil)
+  })
+  case entry.variant {
+    ConstructorValue(field_map: labels, ..) -> {
+      let arguments = list.map(arguments, map_field(_, Written))
+      order_fields(labels, arguments, fn(label, location) {
+        Written(glance.Variable(location, label))
+      })
+      |> result.lazy_unwrap(fn() { call_order(labels, arguments) })
+      |> Ok
+    }
+    LocalValue(..) | FunctionValue(..) | ConstantValue(..) -> Error(Nil)
+  }
+}
+
+// A record update of a type with several variants needs the spread to be
+// known to be the constructor's own variant (`infer_record_update_variant`,
+// `expression.rs:3096-3170`): a spread known to be another variant, or not
+// known to be any, is the compiler's unsafe update. A constant's update is
+// not checked here: the compiler's constant typer compares the variant of the
+// constant the spread names, through its stored literal
+// (`constant.rs:164-245`), which the spread's generalized type no longer
+// carries.
+fn check_update_variant(
+  env: Env,
+  st: State,
+  record_type: ty.Type,
+  return_type: ty.Type,
+) -> Result(State, Failure) {
+  case env.syntax, return_type {
+    ExpressionSyntax, ty.Named(module, name, _, Some(index))
+    | GuardSyntax, ty.Named(module, name, _, Some(index))
+    -> {
+      let record_type = resolve(st, record_type)
+      case
+        dict.get(accessors_of_module(env, module), name),
+        variant_of(record_type) == Some(index)
+      {
+        Ok(Accessors(by_variant: [_, _, ..], ..)), False ->
+          fail(st, type_mismatch(record_type, return_type))
+        _, _ -> Ok(st)
+      }
+    }
+    _, _ -> Ok(st)
   }
 }
 
@@ -3565,8 +4514,8 @@ fn positional_labels(variant: ValueVariant) -> FieldMap {
 fn infer_each(
   st: State,
   items: List(a),
-  infer: fn(State, a) -> Result(#(ty.Type, State), Error),
-) -> Result(#(List(ty.Type), State), Error) {
+  infer: fn(State, a) -> Result(#(ty.Type, State), Failure),
+) -> Result(#(List(ty.Type), State), Failure) {
   use #(rev, st) <- result.try(
     list.try_fold(items, #([], st), fn(acc, item) {
       let #(types_, st) = acc
@@ -3636,7 +4585,7 @@ fn infer_seeded(
   st: State,
   literal: FnLiteral,
   seeds: List(ty.Type),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   use #(fn_type, st) <- result.try(case literal {
     Lambda(_, params, return_annotation, body) ->
       infer_lambda(env, st, params, return_annotation, body, Some(seeds))
@@ -3661,14 +4610,30 @@ fn infer_lambda(
   return_annotation: Option(glance.Type),
   body: List(glance.Statement),
   seeds: Option(List(ty.Type)),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   let annotations = list.map(params, fn(param) { param.type_ })
-  use #(param_types, st) <- result.try(parameter_types(
-    env,
-    st,
-    annotations,
-    seeds,
-  ))
+  case parameter_types(env, st, annotations, seeds) {
+    Ok(#(param_types, st)) ->
+      lambda_body(env, st, params, param_types, return_annotation, body)
+    // A parameter whose seed does not unify stops the header, and the lambda
+    // is a fresh variable (`expression.rs:1099-1110, 4041-4060`). The names
+    // hydrated before it, its own included, stay in the failed state.
+    Error(failure) -> recover_fresh(env, Error(failure))
+  }
+}
+
+// A lambda once its parameters are typed: the return annotation, hydrated in
+// the enclosing scope, then the body, with the return check, in a scope of
+// its own. A failed return check is recorded and the lambda's return is a
+// fresh variable (`expression.rs:4141-4170`).
+fn lambda_body(
+  env: Env,
+  st: State,
+  params: List(glance.FnParameter),
+  param_types: List(ty.Type),
+  return_annotation: Option(glance.Type),
+  body: List(glance.Statement),
+) -> Result(#(ty.Type, State), Failure) {
   let #(return_type, st) = case return_annotation {
     Some(ann) -> {
       let #(t, st) = hydrate_scoped(env, st, ann)
@@ -3681,11 +4646,14 @@ fn infer_lambda(
   use #(body_type, st) <- result.try({
     use st <- scoped(st)
     use #(body_type, st) <- result.try(infer_statements(body_env, st, body))
-    use st <- result.map(case return_type {
-      Some(t) -> unify(st, body_type, t)
-      None -> Ok(st)
-    })
-    #(body_type, st)
+    case return_type {
+      Some(t) ->
+        recover_fresh(
+          env,
+          result.map(unify(st, t, body_type), fn(st) { #(body_type, st) }),
+        )
+      None -> Ok(#(body_type, st))
+    }
   })
   Ok(#(ty.Fn(param_types, body_type), st))
 }
@@ -3701,7 +4669,7 @@ fn parameter_types(
   st: State,
   annotations: List(Option(glance.Type)),
   seeds: Option(List(ty.Type)),
-) -> Result(#(List(ty.Type), State), Error) {
+) -> Result(#(List(ty.Type), State), Failure) {
   let seeds = case seeds {
     Some(seeds) -> list.map(seeds, Some)
     None -> list.repeat(None, list.length(annotations))
@@ -3723,7 +4691,7 @@ fn unify_seed(
   st: State,
   seed: Option(ty.Type),
   own: ty.Type,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   case seed {
     Some(seed) -> unify(st, seed, own)
     None -> Ok(st)
@@ -3741,7 +4709,19 @@ fn infer_callee(
   env: Env,
   st: State,
   function: glance.Expression,
-) -> Result(#(ty.Type, Option(FieldMap), State), Error) {
+) -> Result(#(ty.Type, Option(FieldMap), State), Failure) {
+  // A callee the compiler cannot type is recorded and is an invalid
+  // expression, a fresh variable with no field map (`expression.rs:3550-3640`).
+  use failed <- recover_with(env, resolve_callee(env, st, function))
+  let #(type_, failed) = fresh(failed)
+  Ok(#(type_, None, failed))
+}
+
+fn resolve_callee(
+  env: Env,
+  st: State,
+  function: glance.Expression,
+) -> Result(#(ty.Type, Option(FieldMap), State), Failure) {
   case function {
     // Resolved here rather than through `infer_expr`, which would drop the
     // branch; the callee's span is recorded once, as `infer_expr` would.
@@ -3755,7 +4735,7 @@ fn infer_callee(
       ))
       let labels = case access {
         Export(variant) -> field_map(variant)
-        Field(_) | Deferred -> None
+        Field(_) | Deferred | Invalid -> None
       }
       Ok(#(type_, labels, record(st, span(function), type_)))
     }
@@ -3792,7 +4772,7 @@ fn infer_call(
   st: State,
   function: glance.Expression,
   arguments: List(glance.Field(CallArg)),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   use #(fn_type, labels, st) <- result.try(infer_called(
     env,
     st,
@@ -3820,24 +4800,313 @@ fn place_arguments(
   fn_type: ty.Type,
   labels: Option(FieldMap),
   arguments: List(glance.Field(CallArg)),
-) -> Result(#(ty.Type, State), Error) {
-  use ordered <- result.try(
-    order_fields(labels, arguments, fn(label, location) {
-      Written(glance.Variable(location, label))
-    }),
-  )
+) -> Result(#(ty.Type, State), Failure) {
+  use ordered <- result.try(ordered_arguments(env, st, labels, arguments))
   let #(holes, st) = fresh_n(st, list.length(ordered))
   let #(result, st) = fresh(st)
-  use st <- result.try(unify(st, fn_type, ty.Fn(holes, result)))
-  use st <- result.try(
-    list.try_fold(list.zip(ordered, holes), st, fn(st, pair) {
-      check_argument(env, st, pair.0, pair.1)
+  case unify(st, fn_type, ty.Fn(holes, result)) {
+    Ok(st) -> {
+      use st <- result.map(check_each(env, st, ordered, holes))
+      // The call's value is the callee's own return type, not the hole
+      // unified against it: the two are the same type, but only the callee's
+      // carries the variant a constructor's return was built with.
+      #(call_return(st, fn_type, result), st)
+    }
+    Error(failure) ->
+      recover_with(env, Error(failure), fn(failed) {
+        misshapen_call(env, failed, fn_type, labels, arguments, ordered)
+      })
+  }
+}
+
+// A call's arguments in the order its field map places them. In a speculative
+// walk a reorder that fails leaves the arguments as the compiler's
+// `FieldMap::reorder` leaves them (`call_order`).
+fn ordered_arguments(
+  env: Env,
+  st: State,
+  labels: Option(FieldMap),
+  arguments: List(glance.Field(CallArg)),
+) -> Result(List(CallArg), Failure) {
+  let reordered =
+    order_fields(labels, arguments, fn(label, location) {
+      Written(glance.Variable(location, label))
+    })
+  case reordered {
+    Ok(ordered) -> Ok(ordered)
+    Error(error) ->
+      recover_with(env, fail(st, error), fn(_) {
+        Ok(call_order(labels, arguments))
+      })
+  }
+}
+
+// A constant's constructor call, placed as `place_arguments` places a call,
+// also giving each argument's own type in the order it was placed: the type
+// it was inferred at, before the unification with its parameter, which a
+// recovered mismatch leaves apart. A constant update copies its fields from
+// them (`copy_bases`). A constant holds no function literal, so each written
+// argument is inferred through `infer` and unified with its parameter, as
+// `check` checks one. A call of another arity gives no types: its argument
+// count fails the update before any is read.
+fn place_constant_arguments(
+  env: Env,
+  st: State,
+  fn_type: ty.Type,
+  labels: Option(FieldMap),
+  arguments: List(glance.Field(CallArg)),
+) -> Result(#(ty.Type, List(Option(ty.Type)), State), Failure) {
+  use ordered <- result.try(ordered_arguments(env, st, labels, arguments))
+  let #(holes, st) = fresh_n(st, list.length(ordered))
+  let #(result, st) = fresh(st)
+  case unify(st, fn_type, ty.Fn(holes, result)) {
+    Ok(st) -> {
+      use #(types, st) <- result.map(check_constant_arguments(
+        env,
+        st,
+        ordered,
+        holes,
+      ))
+      #(call_return(st, fn_type, result), types, st)
+    }
+    Error(failure) ->
+      recover_with(env, Error(failure), fn(failed) {
+        use #(return, st) <- result.map(misshapen_call(
+          env,
+          failed,
+          fn_type,
+          labels,
+          arguments,
+          ordered,
+        ))
+        #(return, [], st)
+      })
+  }
+}
+
+// Check a constant call's arguments against their parameters, giving each
+// written one's own type.
+fn check_constant_arguments(
+  env: Env,
+  st: State,
+  arguments: List(CallArg),
+  parameters: List(ty.Type),
+) -> Result(#(List(Option(ty.Type)), State), Failure) {
+  use #(rev_types, st) <- result.map(
+    list.try_fold(list.zip(arguments, parameters), #([], st), fn(acc, pair) {
+      let #(types, st) = acc
+      case pair.0 {
+        Written(expression) -> {
+          use #(type_, st) <- result.try(infer_recovering(env, st, expression))
+          use st <- result.map(recover_unify(env, st, pair.1, type_))
+          #([Some(type_), ..types], st)
+        }
+        Read(..) | Callback(..) -> {
+          use st <- result.map(check_argument(env, st, pair.0, pair.1))
+          #([None, ..types], st)
+        }
+      }
     }),
   )
-  // The call's value is the callee's own return type, not the hole unified
-  // against it: the two are the same type, but only the callee's carries the
-  // variant a constructor's return was built with.
-  Ok(#(call_return(st, fn_type, result), st))
+  #(list.reverse(rev_types), st)
+}
+
+// A call whose callee is no function of its arity, in a speculative walk. The
+// callee's resolved type decides which parameters the arguments are checked
+// against, as the compiler's `fault_tolerant_match_function_type` does
+// (`expression.rs:4346-4440`): a function of another arity keeps its own
+// parameters and return, and the arguments are checked against the common
+// prefix — against the parameters before the first labelled argument when the
+// field map rejected the arity, and with a `use` call's placeholders; a
+// generic or any other type is not a function, so no argument is walked and
+// the call is a fresh variable. (An unbound variable is a function of the
+// call's arity, so it never reaches here.)
+fn misshapen_call(
+  env: Env,
+  st: State,
+  fn_type: ty.Type,
+  labels: Option(FieldMap),
+  arguments: List(glance.Field(CallArg)),
+  ordered: List(CallArg),
+) -> Result(#(ty.Type, State), Failure) {
+  case resolve(st, fn_type) {
+    ty.Fn(params, return) -> {
+      let kept = case arity_rejected(labels, arguments) {
+        True -> list.take(params, positional_prefix(arguments))
+        False -> params
+      }
+      let ordered =
+        use_placeholders(
+          arguments,
+          ordered,
+          list.length(params) - list.length(ordered),
+        )
+      use st <- result.map(check_each(env, st, ordered, kept))
+      #(return, st)
+    }
+    ty.Var(_) | ty.Named(..) | ty.Tuple(..) -> Ok(fresh(st))
+  }
+}
+
+// Check each argument against the parameter beside it, as far as both lists
+// go.
+fn check_each(
+  env: Env,
+  st: State,
+  arguments: List(CallArg),
+  parameters: List(ty.Type),
+) -> Result(State, Failure) {
+  list.try_fold(list.zip(arguments, parameters), st, fn(st, pair) {
+    check_argument(env, st, pair.0, pair.1)
+  })
+}
+
+// How many arguments come before the first labelled one.
+fn positional_prefix(arguments: List(glance.Field(CallArg))) -> Int {
+  list.length(list.take_while(arguments, is_unlabelled))
+}
+
+// A `use` call short of arguments gets a placeholder for each missing one
+// before its last argument, so the callback reaches its own parameter
+// (`expression.rs:3760-3787`). A placeholder is the compiler's: a bare
+// `panic`, which types as a fresh variable.
+fn use_placeholders(
+  arguments: List(glance.Field(CallArg)),
+  ordered: List(CallArg),
+  missing: Int,
+) -> List(CallArg) {
+  let is_use =
+    list.any(arguments, fn(field) {
+      case field_argument(field) {
+        Callback(..) -> True
+        Written(..) | Read(..) -> False
+      }
+    })
+  case is_use && missing > 0, list.reverse(ordered) {
+    True, [last, ..rest] -> {
+      let placeholder = Written(glance.Panic(glance.Span(0, 0), None))
+      list.flatten([
+        list.reverse(rest),
+        list.repeat(placeholder, missing),
+        [last],
+      ])
+    }
+    _, _ -> ordered
+  }
+}
+
+// The arguments in the order the compiler's `FieldMap::reorder` leaves them,
+// errors included (`fields.rs:48-150`):
+// - a callee with no field map leaves them in source order, labels and all;
+// - a wrong number of arguments, or a positional one after a labelled one,
+//   leaves them in source order;
+// - a label met twice ends the reorder there, the labelled arguments already
+//   taken from the end gone;
+// - otherwise each known label goes to its position, and an unknown one stays
+//   among the rest.
+// A `use` callback is implicit, so it may follow a labelled argument.
+fn call_order(
+  labels: Option(FieldMap),
+  fields: List(glance.Field(CallArg)),
+) -> List(CallArg) {
+  case labels {
+    None -> list.map(fields, field_argument)
+    Some(labels) ->
+      case same_length(fields, labels), positional_after_labelled(fields) {
+        True, False -> reorder_labelled(fields, labels)
+        False, _ | True, True -> list.map(fields, field_argument)
+      }
+  }
+}
+
+// Whether the callee's field map rejects the number of arguments
+// (`fields.rs:59-67`).
+fn arity_rejected(
+  labels: Option(FieldMap),
+  fields: List(glance.Field(CallArg)),
+) -> Bool {
+  case labels {
+    Some(labels) -> !same_length(fields, labels)
+    None -> False
+  }
+}
+
+fn positional_after_labelled(fields: List(glance.Field(CallArg))) -> Bool {
+  list.drop_while(fields, is_unlabelled)
+  |> list.any(fn(field) {
+    case field {
+      glance.UnlabelledField(Callback(..)) -> False
+      glance.UnlabelledField(_) -> True
+      glance.LabelledField(..) | glance.ShorthandField(..) -> False
+    }
+  })
+}
+
+// `FieldMap::reorder`'s walk from the last argument to the first: a known
+// label is taken out to its position, until a label repeats. Each label has a
+// position of its own, so a repeated label is a position already taken.
+fn reorder_labelled(
+  fields: List(glance.Field(CallArg)),
+  labels: FieldMap,
+) -> List(CallArg) {
+  let index_of = label_indices(labels)
+  let indexed = list.index_map(fields, fn(field, index) { #(index, field) })
+  // Each position taken, with the index of the argument that took it.
+  let #(placed, repeated) =
+    list.fold(list.reverse(indexed), #(dict.new(), False), fn(acc, pair) {
+      let #(placed, repeated) = acc
+      let #(index, field) = pair
+      case repeated, result.try(field_label(field), dict.get(index_of, _)) {
+        False, Ok(position) ->
+          case dict.has_key(placed, position) {
+            True -> #(placed, True)
+            False -> #(dict.insert(placed, position, #(index, field)), False)
+          }
+        _, _ -> acc
+      }
+    })
+  let taken =
+    dict.fold(placed, set.new(), fn(taken, _, by) { set.insert(taken, by.0) })
+  let rest =
+    list.filter_map(indexed, fn(pair) {
+      case set.contains(taken, pair.0) {
+        True -> Error(Nil)
+        False -> Ok(field_argument(pair.1))
+      }
+    })
+  use <- bool.guard(when: repeated, return: rest)
+  let arguments = dict.map_values(placed, fn(_, by) { field_argument(by.1) })
+  fill_positions(arguments, rest, 0, list.length(fields))
+}
+
+fn field_label(field: glance.Field(a)) -> Result(String, Nil) {
+  case field {
+    glance.LabelledField(label, ..) | glance.ShorthandField(label, ..) ->
+      Ok(label)
+    glance.UnlabelledField(..) -> Error(Nil)
+  }
+}
+
+// Positions `from` to `count - 1`: the argument placed at each, or else the
+// next of `rest`.
+fn fill_positions(
+  placed: Dict(Int, CallArg),
+  rest: List(CallArg),
+  from: Int,
+  count: Int,
+) -> List(CallArg) {
+  use <- bool.guard(when: from >= count, return: rest)
+  case dict.get(placed, from), rest {
+    Ok(argument), _ -> [
+      argument,
+      ..fill_positions(placed, rest, from + 1, count)
+    ]
+    Error(_), [next, ..rest] -> [
+      next,
+      ..fill_positions(placed, rest, from + 1, count)
+    ]
+    Error(_), [] -> fill_positions(placed, [], from + 1, count)
+  }
 }
 
 // Infer the callee of a call on `arguments`, as the compiler's `do_infer_call`
@@ -3858,7 +5127,7 @@ fn infer_called(
   st: State,
   function: glance.Expression,
   arguments: List(glance.Field(CallArg)),
-) -> Result(#(ty.Type, Option(FieldMap), State), Error) {
+) -> Result(#(ty.Type, Option(FieldMap), State), Failure) {
   case fn_literal_of_arity(function, list.length(arguments)) {
     Ok(literal) -> {
       let #(seeds, st) = speculate(env, st, list.map(arguments, field_argument))
@@ -3899,12 +5168,12 @@ fn check_argument(
   st: State,
   argument: CallArg,
   expected: ty.Type,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   case argument {
     Written(expression) -> check(env, st, expression, expected)
     Read(type_) -> {
       let #(read, st) = read_type(st, type_)
-      unify(st, expected, read)
+      recover_unify(env, st, expected, read)
     }
     Callback(patterns, body) ->
       check_callback(env, st, patterns, body, expected)
@@ -3918,7 +5187,7 @@ fn speculate_argument(
   env: Env,
   st: State,
   argument: CallArg,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   case argument {
     Written(expression) -> infer_expr(env, st, expression)
     Read(type_) -> Ok(read_type(st, type_))
@@ -3932,46 +5201,55 @@ fn speculate_argument(
 
 // Infer each argument only to learn its type, keeping what unification learned
 // and putting back everything the pass *reported*. The compiler does the same
-// in `infer_fn_with_call_context`, where the restore is of the diagnostics the
-// speculative pass recorded rather than of the substitution: a binding this
-// pass makes to a variable already in the environment is one the real pass
-// would make too. `next_id` is kept for the mirror-image reason — reissuing an
-// id this pass spent would hand two different variables one name.
+// in `infer_fn_with_call_context` (`expression.rs:3642-3690`), where the
+// restore is of the diagnostics the speculative pass recorded rather than of
+// the substitution. The pass keeps every effect it had, some of which the
+// real pass would not make — it can read, and pin, an outer name that the
+// real pass finds bound by a pattern the speculative walk skipped — and
+// keeping them is what gives the compiler's answer.
 //
 // Restoring the three lists is what keeps the pass invisible: no span is
 // annotated twice, no reference recorded twice, and no deferral is left behind
 // holding a result variable nothing will ever read.
 //
-// The whole pass is one checkpoint, generated arguments included: if any
-// argument cannot be typed, every argument is left as a fresh variable rather
-// than failing the call. The real pass infers them again and reports the
-// failure there, so speculating never decides whether a program is accepted.
-// That path rewinds the id counter along with everything else, which is safe
-// for the reason keeping it is necessary above: nothing from a failed pass
-// survives, so its ids name no variable anything can still reach. (The
-// compiler instead recovers inside the failing argument and keeps going; that
-// recovery differs by site and is not reproduced here.)
+// The pass is a speculative walk (`Env.recovering`): inside an argument, each
+// site the compiler recovers at recovers as it does, keeping every effect so
+// far. An argument that still fails is a fresh variable, its effects kept,
+// and the next argument continues from there (`expression.rs:3665-3671`), so
+// the pass itself never fails: the real pass walks every argument again,
+// strictly, and only it rejects. The effects this pass keeps can still decide
+// what the real pass accepts: a binding it made can be what lets the real
+// pass type an argument (`speculated_unification_keeps_its_prefix_test`).
+// `Unsupported` stops here too, so the real pass reports whatever it meets
+// first. Nothing rewinds, the
+// id counter included: an id a failed argument spent may be reachable from a
+// link it kept.
 fn speculate(
   env: Env,
   st: State,
   arguments: List(CallArg),
 ) -> #(List(ty.Type), State) {
-  let pass =
-    infer_each(st, arguments, fn(st, argument) {
-      speculate_argument(env, st, argument)
+  let env = Env(..env, recovering: True)
+  let #(rev, spent) =
+    list.fold(arguments, #([], st), fn(acc, argument) {
+      let #(types_, st) = acc
+      case speculate_argument(env, st, argument) {
+        Ok(#(type_, st)) -> #([type_, ..types_], st)
+        Error(Failure(_, failed)) -> {
+          let #(type_, failed) = fresh(failed)
+          #([type_, ..types_], failed)
+        }
+      }
     })
-  case pass {
-    Error(_) -> fresh_n(st, list.length(arguments))
-    Ok(#(types_, spent)) -> #(
-      types_,
-      State(
-        ..spent,
-        annotations: st.annotations,
-        references: st.references,
-        pending: st.pending,
-      ),
-    )
-  }
+  #(
+    list.reverse(rev),
+    State(
+      ..spent,
+      annotations: st.annotations,
+      references: st.references,
+      pending: st.pending,
+    ),
+  )
 }
 
 // A call's result: the callee's own return where the callee is known to be a
@@ -4049,6 +5327,12 @@ fn reorder(
   labels: FieldMap,
   shorthand: fn(String, glance.Span) -> t,
 ) -> Result(List(t), Error) {
+  // More arguments than the callee declares is the compiler's arity error
+  // (`fields.rs:59-67`), and it leaves the arguments in source order.
+  use <- bool.guard(
+    when: list.length(fields) > list.length(labels),
+    return: Error(ArityMismatch),
+  )
   let index_of = label_indices(labels)
   // Labelled and shorthand arguments are placed at their declared index;
   // positional arguments then fill the remaining positions in order.
@@ -4109,7 +5393,7 @@ fn infer_capture(
   before: List(glance.Field(glance.Expression)),
   after: List(glance.Field(glance.Expression)),
   seeds: Option(List(ty.Type)),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   // `f(a, _, b)` is `fn(_capture) { f(a, _capture, b) }` (`parse.rs:5376-5417`),
   // and it is inferred as that lambda. Its one parameter takes its own type,
   // unified with the type it is called at where that is known, as a lambda
@@ -4151,57 +5435,89 @@ fn infer_binop(
   op: glance.BinaryOperator,
   left: glance.Expression,
   right: glance.Expression,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   case op {
     glance.Pipe -> infer_pipe(env, st, left, right)
 
-    glance.And | glance.Or -> {
-      use st <- result.try(check(env, st, left, prelude_bool()))
-      use st <- result.try(check(env, st, right, prelude_bool()))
-      Ok(#(prelude_bool(), st))
-    }
+    glance.And | glance.Or ->
+      infer_operator(env, st, left, right, prelude_bool(), prelude_bool())
 
     glance.Eq | glance.NotEq -> {
-      use #(lt, st) <- result.try(infer_expr(env, st, left))
-      use #(rt, st) <- result.try(infer_expr(env, st, right))
-      use st <- result.try(unify(st, lt, rt))
+      use #(lt, st) <- result.try(infer_recovering(env, st, left))
+      use #(rt, st) <- result.try(infer_recovering(env, st, right))
+      use st <- result.try(recover_unify(env, st, lt, rt))
       Ok(#(prelude_bool(), st))
     }
 
-    glance.Concatenate -> {
-      use st <- result.try(check(env, st, left, prelude_string()))
-      use st <- result.try(check(env, st, right, prelude_string()))
-      Ok(#(prelude_string(), st))
-    }
+    // The constant typer types `<>` one operand at a time, the left first
+    // (`constant.rs:557-584`).
+    glance.Concatenate ->
+      case env.syntax {
+        ConstantSyntax -> infer_constant_concatenation(env, st, left, right)
+        ExpressionSyntax | GuardSyntax ->
+          infer_operator(
+            env,
+            st,
+            left,
+            right,
+            prelude_string(),
+            prelude_string(),
+          )
+      }
 
     glance.AddInt
     | glance.SubInt
     | glance.MultInt
     | glance.DivInt
-    | glance.RemainderInt -> {
-      use st <- result.try(check(env, st, left, prelude_int()))
-      use st <- result.try(check(env, st, right, prelude_int()))
-      Ok(#(prelude_int(), st))
-    }
+    | glance.RemainderInt ->
+      infer_operator(env, st, left, right, prelude_int(), prelude_int())
 
-    glance.AddFloat | glance.SubFloat | glance.MultFloat | glance.DivFloat -> {
-      use st <- result.try(check(env, st, left, prelude_float()))
-      use st <- result.try(check(env, st, right, prelude_float()))
-      Ok(#(prelude_float(), st))
-    }
+    glance.AddFloat | glance.SubFloat | glance.MultFloat | glance.DivFloat ->
+      infer_operator(env, st, left, right, prelude_float(), prelude_float())
 
-    glance.LtInt | glance.LtEqInt | glance.GtInt | glance.GtEqInt -> {
-      use st <- result.try(check(env, st, left, prelude_int()))
-      use st <- result.try(check(env, st, right, prelude_int()))
-      Ok(#(prelude_bool(), st))
-    }
+    glance.LtInt | glance.LtEqInt | glance.GtInt | glance.GtEqInt ->
+      infer_operator(env, st, left, right, prelude_int(), prelude_bool())
 
-    glance.LtFloat | glance.LtEqFloat | glance.GtFloat | glance.GtEqFloat -> {
-      use st <- result.try(check(env, st, left, prelude_float()))
-      use st <- result.try(check(env, st, right, prelude_float()))
-      Ok(#(prelude_bool(), st))
-    }
+    glance.LtFloat | glance.LtEqFloat | glance.GtFloat | glance.GtEqFloat ->
+      infer_operator(env, st, left, right, prelude_float(), prelude_bool())
   }
+}
+
+// An operator other than `==`, `!=`, `|>` and a constant's `<>`, in the
+// compiler's order (`infer_binop`, `expression.rs:1865-1868`): both operands
+// are inferred, then each is unified with the operator's operand type, left
+// first. Its type is the operator's result type. Each operand is typed
+// through `infer` and each unification is recorded.
+fn infer_operator(
+  env: Env,
+  st: State,
+  left: glance.Expression,
+  right: glance.Expression,
+  operand: ty.Type,
+  result: ty.Type,
+) -> Result(#(ty.Type, State), Failure) {
+  use #(left_type, st) <- result.try(infer_recovering(env, st, left))
+  use #(right_type, st) <- result.try(infer_recovering(env, st, right))
+  use st <- result.try(recover_unify(env, st, operand, left_type))
+  use st <- result.try(recover_unify(env, st, operand, right_type))
+  Ok(#(result, st))
+}
+
+// A constant's `<>`, in the constant typer's order
+// (`infer_string_concatenation`, `constant.rs:557-584`): the left operand is
+// inferred and unified with `String`, then the right one. Each operand is
+// typed through `infer` and each unification is recorded.
+fn infer_constant_concatenation(
+  env: Env,
+  st: State,
+  left: glance.Expression,
+  right: glance.Expression,
+) -> Result(#(ty.Type, State), Failure) {
+  use #(left_type, st) <- result.try(infer_recovering(env, st, left))
+  use st <- result.try(recover_unify(env, st, prelude_string(), left_type))
+  use #(right_type, st) <- result.try(infer_recovering(env, st, right))
+  use st <- result.try(recover_unify(env, st, prelude_string(), right_type))
+  Ok(#(prelude_string(), st))
 }
 
 fn infer_pipe(
@@ -4209,7 +5525,7 @@ fn infer_pipe(
   st: State,
   left: glance.Expression,
   right: glance.Expression,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   case right {
     // `left |> echo` is `echo left`: it prints the piped value and returns it,
     // so the `echo` and the pipe both have its type, as the compiler's pipeline
@@ -4224,7 +5540,8 @@ fn infer_pipe(
     // speculative pass reads the left value to seed the parameter, and the
     // real pass reads it again as the argument.
     _ -> {
-      use #(left_type, st) <- result.try(infer_expr(env, st, left))
+      // The first value is typed through `infer` (`pipe.rs:56-65`).
+      use #(left_type, st) <- result.try(infer_recovering(env, st, left))
       case right, fn_literal_of_arity(right, 1) {
         glance.Call(call_span, function, arguments), _ ->
           infer_pipe_call(env, st, left_type, call_span, function, arguments)
@@ -4248,7 +5565,7 @@ fn infer_pipe_call(
   call_span: glance.Span,
   function: glance.Expression,
   arguments: List(glance.Field(glance.Expression)),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   use #(fn_type, labels, st) <- result.try(infer_callee(env, st, function))
   let left = Read(left_type)
   let written = list.map(arguments, map_field(_, Written))
@@ -4295,23 +5612,30 @@ fn infer_pipe_apply(
   st: State,
   left_type: ty.Type,
   right: glance.Expression,
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   use #(function_type, _labels, st) <- result.try(infer_callee(env, st, right))
   let #(result, st) = fresh(st)
-  use st <- result.try(unify(st, function_type, ty.Fn([left_type], result)))
+  use st <- result.try(recover_unify(
+    env,
+    st,
+    function_type,
+    ty.Fn([left_type], result),
+  ))
   Ok(#(result, st))
 }
 
 // Infer an expression and unify it against an expected type. A function
 // literal — a lambda or a capture — is checked against the expected type so
 // its parameters are seeded from the expected argument types before its body
-// is inferred (`infer_call_argument`, `expression.rs:3942-3985`).
+// is inferred (`infer_call_argument`, `expression.rs:3942-3985`). Any other
+// expression is typed through `infer`, and the unification is recorded, as
+// the compiler checks a call argument, a message and a guard.
 fn check(
   env: Env,
   st: State,
   expr: glance.Expression,
   expected: ty.Type,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   let seeded = {
     use literal <- result.try(as_fn_literal(expr))
     use #(seeds, _return) <- result.map(expected_fn(
@@ -4324,11 +5648,11 @@ fn check(
   case seeded {
     Ok(#(literal, seeds)) -> {
       use #(fn_type, st) <- result.try(infer_seeded(env, st, literal, seeds))
-      unify(st, fn_type, expected)
+      recover_unify(env, st, expected, fn_type)
     }
     Error(Nil) -> {
-      use #(t, st) <- result.try(infer_expr(env, st, expr))
-      unify(st, t, expected)
+      use #(t, st) <- result.try(infer_recovering(env, st, expr))
+      recover_unify(env, st, expected, t)
     }
   }
 }
@@ -4353,10 +5677,10 @@ fn check_message(
   env: Env,
   st: State,
   message: Option(glance.Expression),
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   case message {
     Some(glance.BinaryOperator(..)) ->
-      Error(Unsupported("an operator after an `as` message"))
+      fail(st, Unsupported("an operator after an `as` message"))
     Some(message) -> check(env, st, message, prelude_string())
     None -> Ok(st)
   }
@@ -4371,9 +5695,20 @@ fn infer_statements(
   env: Env,
   st: State,
   statements: List(glance.Statement),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   case statements {
-    [] -> Ok(#(prelude_nil(), st))
+    // No statement is the compiler's implicit `todo`, a fresh type: the parser
+    // puts one in an empty block, at the block's own span
+    // (`TodoKind::EmptyBlock`, `parse.rs:1310-1320`), and in an empty function
+    // body (`TodoKind::EmptyFunction`, `parse.rs:2294-2310`), and the typer
+    // ends a `use` with nothing after it with one, after the callback's
+    // generated assignments (`TodoKind::IncompleteUse`,
+    // `expression.rs:815-822`). A block records its span once, as the block.
+    // The other two record none: an empty function body's `todo` spans from
+    // after its `{`, which glance does not keep, and girard records no
+    // expression at a `use` statement's span, where the compiler records the
+    // call, the callback and this `todo` together.
+    [] -> Ok(fresh(st))
     // `use pats <- rhs` turns the remaining statements into a trailing callback.
     [glance.Use(_, patterns, function), ..rest] ->
       infer_use(env, st, patterns, function, rest)
@@ -4409,7 +5744,7 @@ fn infer_use(
   use_patterns: List(glance.UsePattern),
   function: glance.Expression,
   rest: List(glance.Statement),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   let #(callee, arguments) = case function {
     glance.Call(_, callee, arguments) -> #(callee, arguments)
     // A `use` callee with no argument list is still a callee: the callback is
@@ -4443,7 +5778,7 @@ fn check_callback(
   use_patterns: List(glance.UsePattern),
   rest: List(glance.Statement),
   expected: ty.Type,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   let seeds = case expected_fn(st, expected, list.length(use_patterns)) {
     Ok(#(params, _return)) -> Some(params)
     Error(_) -> None
@@ -4458,12 +5793,27 @@ fn check_callback(
         False -> None
       }
     })
-  use #(param_types, st) <- result.try(parameter_types(
-    env,
-    st,
-    annotations,
-    seeds,
-  ))
+  case parameter_types(env, st, annotations, seeds) {
+    Ok(#(param_types, st)) ->
+      callback_body(env, st, use_patterns, param_types, rest, expected)
+    // As a lambda's: the callback is a fresh variable, checked against the
+    // parameter as any argument is.
+    Error(failure) -> {
+      use #(callback, st) <- result.try(recover_fresh(env, Error(failure)))
+      recover_unify(env, st, expected, callback)
+    }
+  }
+}
+
+// A `use` callback once its parameters are typed.
+fn callback_body(
+  env: Env,
+  st: State,
+  use_patterns: List(glance.UsePattern),
+  param_types: List(ty.Type),
+  rest: List(glance.Statement),
+  expected: ty.Type,
+) -> Result(State, Failure) {
   // The body, a scope of its own: the simple patterns bound as parameters,
   // then each generated assignment in order — a read of its parameter, the
   // pattern against what was read, then the annotation, hydrated in the body's
@@ -4495,7 +5845,7 @@ fn check_callback(
     )
     infer_statements(body_env, st, rest)
   })
-  unify(st, ty.Fn(param_types, body_type), expected)
+  recover_unify(env, st, expected, ty.Fn(param_types, body_type))
 }
 
 // The assignment the compiler generates at the head of a `use` callback's
@@ -4507,7 +5857,7 @@ fn use_assignment(
   st: State,
   use_pattern: glance.UsePattern,
   param_type: ty.Type,
-) -> Result(#(Env, State), Error) {
+) -> Result(#(Env, State), Failure) {
   let #(read, st) = read_type(st, param_type)
   use #(env, _, st) <- result.try(infer_pattern(
     env,
@@ -4519,7 +5869,7 @@ fn use_assignment(
   use st <- result.map(case use_pattern.annotation {
     Some(ann) -> {
       let #(annotated, st) = hydrate_scoped(env, st, ann)
-      unify(st, annotated, read)
+      recover_unify(env, st, annotated, read)
     }
     None -> Ok(st)
   })
@@ -4560,10 +5910,12 @@ fn infer_statement(
   env: Env,
   st: State,
   statement: glance.Statement,
-) -> Result(#(ty.Type, Env, State), Error) {
+) -> Result(#(ty.Type, Env, State), Failure) {
   case statement {
+    // Typed through `infer`, so the next statement continues after a failure
+    // (`expression.rs:763-799`).
     glance.Expression(expr) -> {
-      use #(t, st) <- result.try(infer_expr(env, st, expr))
+      use #(t, st) <- result.try(infer_recovering(env, st, expr))
       Ok(#(t, env, st))
     }
 
@@ -4577,7 +5929,7 @@ fn infer_statement(
     }
 
     // `use` is handled by infer_statements before reaching here.
-    glance.Use(..) -> Error(Unsupported("use in non-tail position"))
+    glance.Use(..) -> fail(st, Unsupported("use in non-tail position"))
   }
 }
 
@@ -4599,10 +5951,10 @@ fn infer_expr_assignment(
   pattern: glance.Pattern,
   annotation: Option(glance.Type),
   value: glance.Expression,
-) -> Result(#(ty.Type, Env, State), Error) {
+) -> Result(#(ty.Type, Env, State), Failure) {
   use #(value_type, st) <- result.try({
     use st <- scoped(st)
-    infer_expr(env, st, value)
+    infer_recovering(env, st, value)
   })
   let message = reference.assignment_message(kind)
   use st <- result.try(check_message(env, st, message))
@@ -4612,12 +5964,12 @@ fn infer_expr_assignment(
     st,
     pattern,
     value_type,
-    subject_variable(value, reference.pattern_names(pattern)),
+    subject_of(value),
   ))
   use st <- result.try(case annotation {
     Some(ann) -> {
       let #(t, st) = hydrate_scoped(env, st, ann)
-      unify(st, value_type, t)
+      recover_unify(env, st, t, value_type)
     }
     None -> Ok(st)
   })
@@ -4635,13 +5987,13 @@ fn infer_case(
   st: State,
   subjects: List(glance.Expression),
   clauses: List(glance.Clause),
-) -> Result(#(ty.Type, State), Error) {
+) -> Result(#(ty.Type, State), Failure) {
   // Each subject is a scope of its own, as the compiler's `infer_case` scopes
   // it (`expression.rs:2285`).
   use #(subject_types, st) <- result.try(
     infer_each(st, subjects, fn(st, subject) {
       use st <- scoped(st)
-      infer_expr(env, st, subject)
+      infer_recovering(env, st, subject)
     }),
   )
   let #(result, st) = fresh(st)
@@ -4660,57 +6012,81 @@ fn infer_clause(
   subjects: List(glance.Expression),
   subject_types: List(ty.Type),
   result: ty.Type,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   // A clause is a scope of its own (`expression.rs:2387`).
   use st <- scoped_state(st)
   // Each clause may have several alternative pattern lists (`a | b ->`); each
-  // binds the same variables and is checked against the subject types. Every
-  // alternative is bound first, so the narrowings they disagree on can be
-  // dropped and the names they bind unified before the guard and body are
-  // checked once, under the first alternative's bindings — as the compiler's
-  // `infer_clause` checks them once, in the first alternative's scope.
-  use #(rev_envs, st) <- result.try(
-    list.try_fold(clause.patterns, #([], st), fn(acc, patterns) {
-      let #(envs, st) = acc
-      use #(clause_env, st) <- result.try(bind_alternative(
+  // binds the same variables and is checked against the subject types. The
+  // first alternative binds in the clause's environment, and its bindings are
+  // installed before any later alternative is typed, as the compiler's
+  // `infer_clause` installs them (`expression.rs:2404-2428`): a later
+  // alternative starts from the clause's environment plus those bindings, and
+  // each of its own bindings of a name is unified with the first's as it is
+  // made. The guard and body are checked once, under the first alternative's
+  // bindings, less the narrowings the alternatives disagree on.
+  case clause.patterns {
+    // A clause glance parsed always has a pattern list; one with none binds
+    // nothing to check a body under.
+    [] -> Ok(st)
+    [first_patterns, ..later] -> {
+      use #(first, st) <- result.try(bind_alternative(
         env,
+        None,
+        st,
+        first_patterns,
+        subjects,
+        subject_types,
+      ))
+      use #(others, st) <- result.try(bind_later_alternatives(
+        env,
+        first.bound,
+        st,
+        later,
+        subjects,
+        subject_types,
+      ))
+      let clause_env = case others {
+        // One alternative agrees with itself, which is every clause that does
+        // not spell `|`.
+        [] -> first.env
+        _ ->
+          // The bindings' agreement compares the types the walks stored for
+          // them, which unifying the bindings cannot have changed.
+          agree_subjects(st, first, others)
+          |> agree_bindings(st, _, first.bound, others)
+      }
+      infer_clause_body(clause_env, st, clause, result)
+    }
+  }
+}
+
+// Bind a clause's later alternatives, each from the clause's environment
+// plus the bindings the first alternative made (`bound`).
+fn bind_later_alternatives(
+  env: Env,
+  bound: Dict(String, ValueConstructor),
+  st: State,
+  later: List(List(glance.Pattern)),
+  subjects: List(glance.Expression),
+  subject_types: List(ty.Type),
+) -> Result(#(List(PatternWalk), State), Failure) {
+  use <- bool.guard(when: later == [], return: Ok(#([], st)))
+  let start = dict.fold(bound, env, install_entry)
+  use #(rev_others, st) <- result.map(
+    list.try_fold(later, #([], st), fn(acc, patterns) {
+      let #(others, st) = acc
+      use #(other, st) <- result.map(bind_alternative(
+        start,
+        Some(bound),
         st,
         patterns,
         subjects,
         subject_types,
       ))
-      Ok(#([clause_env, ..envs], st))
+      #([other, ..others], st)
     }),
   )
-  case list.reverse(rev_envs) {
-    // A clause glance parsed always has a pattern list; one with none binds
-    // nothing to check a body under.
-    [] -> Ok(st)
-    // One alternative agrees with itself, so the names it binds need not even
-    // be collected — which is every clause that does not spell `|`.
-    [clause_env] -> infer_clause_body(clause_env, st, clause, result)
-    [first, ..others] -> {
-      let bound = case clause.patterns {
-        [patterns, ..] -> list.flat_map(patterns, reference.pattern_names)
-        [] -> []
-      }
-      let subjects =
-        option.values(list.map(subjects, subject_variable(_, bound)))
-      // Agreement reads each alternative's variants, so it runs before the
-      // bindings are unified: `unify` ignores a stamp, and binding a variable
-      // erases one, so unifying first could change what agreement reads.
-      let clause_env =
-        agree_subjects(st, first, others, subjects)
-        |> agree_bindings(st, _, others, bound)
-      use st <- result.try(unify_alternative_bindings(
-        st,
-        clause_env,
-        others,
-        bound,
-      ))
-      infer_clause_body(clause_env, st, clause, result)
-    }
-  }
+  #(list.reverse(rev_others), st)
 }
 
 // Check a clause's guard, if it has one, and unify its body with the `case`'s
@@ -4720,91 +6096,127 @@ fn infer_clause_body(
   st: State,
   clause: glance.Clause,
   result: ty.Type,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   use st <- result.try(case clause.guard {
     Some(guard) ->
       check(Env(..env, syntax: GuardSyntax), st, guard, prelude_bool())
     None -> Ok(st)
   })
-  use #(body_type, st) <- result.try(infer_expr(env, st, clause.body))
-  unify(st, body_type, result)
+  use #(body_type, st) <- result.try(infer_recovering(env, st, clause.body))
+  recover_unify(env, st, result, body_type)
 }
 
 // Bind one alternative's patterns against the subjects, narrowing any bare
-// subject variable a variant pattern matches.
+// subject variable a variant pattern matches. `first` is `None` for a
+// clause's first alternative, and the bindings the first alternative made for
+// a later one. Returns the walk, which holds the environment, the bindings
+// the alternative made and the narrowings, and the state.
 fn bind_alternative(
   env: Env,
+  first: Option(Dict(String, ValueConstructor)),
   st: State,
   patterns: List(glance.Pattern),
   subjects: List(glance.Expression),
   subject_types: List(ty.Type),
-) -> Result(#(Env, State), Error) {
-  // Which names the alternative binds is a property of the whole multi-pattern,
-  // not of the column a subject sits in: `case left, io { io, Loud(..) -> .. }`
-  // binds `io` in one column and would narrow it in the other.
-  let bound = list.flat_map(patterns, reference.pattern_names)
-  list.try_fold(
-    list.zip(patterns, list.zip(subjects, subject_types)),
-    #(env, st),
-    fn(acc, pair) {
-      let #(env, st) = acc
-      let #(pattern, #(subject, subject_type)) = pair
-      use #(env, _, st) <- result.map(infer_pattern(
-        env,
-        st,
-        pattern,
-        subject_type,
-        subject_variable(subject, bound),
-      ))
-      #(env, st)
-    },
+) -> Result(#(PatternWalk, State), Failure) {
+  let walk =
+    PatternWalk(
+      env:,
+      start: env.values,
+      first:,
+      bound: dict.new(),
+      narrowed: dict.new(),
+    )
+  use #(walk, st) <- result.map(
+    list.try_fold(
+      list.zip(patterns, list.zip(subjects, subject_types)),
+      #(walk, st),
+      fn(acc, pair) {
+        let #(walk, st) = acc
+        let #(pattern, #(subject, subject_type)) = pair
+        use #(walk, _, st) <- result.map(walk_pattern(
+          walk,
+          st,
+          pattern,
+          subject_type,
+          subject_of(subject),
+        ))
+        #(walk, st)
+      },
+    ),
   )
+  #(walk, st)
 }
 
 // A subject variable's variant across alternatives, the compiler's
-// `set_subject_variable_variant` in alternative mode: the **first** alternative
-// is the only one that may set it, and a later alternative can only take it
-// away, by naming a different variant. One that names none returns early and
-// leaves it alone.
+// `set_subject_variable_variant` in alternative mode (`pattern.rs:236-257`):
+// the **first** alternative is the only one that may set it, and a later
+// alternative can only take it away, by narrowing it to a different variant.
+// One that narrows it to none leaves it alone, and so does every later
+// alternative for a subject the first did not narrow, so a variant the subject
+// had before the `case` is kept.
 //
 // So the rule is order-sensitive, and measured to be: `Loud(..) | _` keeps the
 // narrowing and reads the field, while `_ | Loud(..)` is rejected — the first
-// alternative narrows nothing, and the second is not allowed to. Every
-// alternative's variant is read, but the answer is applied to `first` alone:
-// the guard and body are checked under it, so it is the env that must bind the
-// subject at the variant the compiler ends up with.
+// alternative narrows nothing, and the second is not allowed to. It is decided
+// from the narrowings each alternative's own patterns made, not from the
+// variants its environment holds, which include the inherited ones. A later
+// alternative that narrows to another variant erases it for good, as the
+// compiler drops the subject from the first alternative's narrowings, so one
+// after it naming the first's variant again does not bring it back. The answer
+// is applied to `first`'s environment alone: the guard and body are checked
+// under it, so it is the env that must bind the subject at the variant the
+// compiler ends up with.
 fn agree_subjects(
   st: State,
-  first: Env,
-  others: List(Env),
-  names: List(String),
+  first: PatternWalk,
+  others: List(PatternWalk),
 ) -> Env {
-  list.fold(names, first, fn(env, name) {
-    let variants = list.map([env, ..others], bound_variant(st, _, name))
-    let agreed = case variants {
-      // A later alternative erases only by naming a *different* variant; `None`
-      // from one is silence, not disagreement.
-      [first, ..rest] ->
-        case list.any(rest, fn(v) { v != None && v != first }) {
-          True -> None
-          False -> first
-        }
-      [] -> None
-    }
-    case agreed {
-      Some(index) -> narrow(env, st, name, index)
-      None -> erase_binding(st, env, name)
-    }
+  // Each later narrowing is compared once, with the variant the first
+  // alternative holds.
+  list.fold(others, set.new(), fn(erased, other) {
+    dict.fold(other.narrowed, erased, fn(erased, name, variants) {
+      case disagrees(first.narrowed, name, variants) {
+        True -> set.insert(erased, name)
+        False -> erased
+      }
+    })
   })
+  |> set.fold(first.env, fn(env, name) { erase_binding(st, env, name) })
+}
+
+// Whether a later alternative narrowed `name` to a variant other than the one
+// the first alternative holds, its latest narrowing of it. A subject the first
+// did not narrow is never in disagreement.
+fn disagrees(
+  first: Dict(String, List(Int)),
+  name: String,
+  variants: List(Int),
+) -> Bool {
+  case dict.get(first, name) {
+    Ok([held, ..]) -> list.any(variants, fn(variant) { variant != held })
+    Ok([]) | Error(Nil) -> False
+  }
 }
 
 // A name the patterns *bind* is a different rule, and not the one above: the
 // compiler unifies the alternatives' bindings through
-// `unify_constructor_variants`, which keeps a variant only where every
-// alternative gives it the same one. Measured: `Loud(..) as io | _ as io` is
-// rejected, where the subject form `Loud(..) | _` is accepted, so the two
-// classes genuinely disagree and cannot share a pass. Equal and unstamped is
+// `unify_constructor_variants` (`pattern.rs:163-185, 1654-1668`), which
+// erases the first alternative's variant where a later alternative binds the
+// name at another one. Measured: `Loud(..) as io | _ as io` is rejected,
+// where the subject form `Loud(..) | _` is accepted, so the two classes
+// genuinely disagree and cannot share a pass. Equal and unstamped is
 // agreement too. As above, the answer is applied to `first`.
+//
+// The bindings are the ones the walks made (`bound`), so a name in a
+// sub-pattern a speculative walk skipped is no binding. Each binding's stored
+// type is compared raw, as the compiler compares them: both must be named
+// types, so a binding at a type variable, which is the compiler's link
+// whether the substitution binds it or not, leaves the first's variant alone.
+// That relies on girard's types being as raw as the compiler's: a read is
+// link-free (`read_value`), a field access is the accessor's own field type
+// (`field_type`), and a list pattern's element is the list type's argument
+// (`list_element`).
 //
 // Only a binding's outer type is compared, as `unify_constructor_variants`
 // compares it: a variant inside a tuple binding is not cleared where the
@@ -4813,59 +6225,42 @@ fn agree_subjects(
 fn agree_bindings(
   st: State,
   first: Env,
-  others: List(Env),
-  names: List(String),
+  bound: Dict(String, ValueConstructor),
+  others: List(PatternWalk),
 ) -> Env {
-  list.fold(names, first, fn(env, name) {
-    case list.unique(list.map([env, ..others], bound_variant(st, _, name))) {
-      [_] | [] -> env
-      _ -> erase_binding(st, env, name)
+  dict.fold(bound, first, fn(env, name, entry) {
+    case erased_by_later(entry, name, others) {
+      True -> erase_binding(st, env, name)
+      False -> env
     }
   })
 }
 
-// Unify each name a later alternative binds with the first alternative's
-// binding of it, as the compiler's alternative mode does when it inserts the
-// variable. Checking the body once relates the alternatives' bindings only
-// here: `case a, b { x, _ | _, x -> 0 }` gives `a` and `b` one type even
-// though the body never mentions `x`. A failure is the clause's error, as it
-// is the compiler's.
-fn unify_alternative_bindings(
-  st: State,
-  first: Env,
-  others: List(Env),
-  names: List(String),
-) -> Result(State, Error) {
-  list.try_fold(others, st, fn(st, other) {
-    list.try_fold(names, st, fn(st, name) {
-      unify_binding(st, first, other, name)
-    })
-  })
-}
-
-// Unify `name`'s binding in `other` with its binding in `first`. A name bound
-// by only some alternatives is a compile error in Gleam, so a missing binding
-// has nothing to unify.
-fn unify_binding(
-  st: State,
-  first: Env,
-  other: Env,
+// Whether a later alternative binds `name` at a named type whose variant is
+// not the first alternative's, which must be a named type with a variant.
+fn erased_by_later(
+  entry: ValueConstructor,
   name: String,
-) -> Result(State, Error) {
-  case lookup(first, name), lookup(other, name) {
-    Ok(first_scheme), Ok(other_scheme) ->
-      unify(st, first_scheme.type_, other_scheme.type_)
-    Error(Nil), _ | _, Error(Nil) -> Ok(st)
+  others: List(PatternWalk),
+) -> Bool {
+  case bound_variant(entry) {
+    Ok(Some(_) as variant) ->
+      list.any(others, fn(other) {
+        case result.try(dict.get(other.bound, name), bound_variant) {
+          Ok(later) -> later != variant
+          Error(Nil) -> False
+        }
+      })
+    Ok(None) | Error(Nil) -> False
   }
 }
 
-// The variant a name is bound at in `env`, if it is bound at all. A name bound
-// by only some alternatives is a compile error in Gleam, so an absent binding
-// needs no answer of its own.
-fn bound_variant(st: State, env: Env, name: String) -> Option(Int) {
-  case lookup(env, name) {
-    Ok(scheme) -> variant_of(resolve(st, scheme.type_))
-    Error(_) -> None
+// The variant a binding's stored type carries, read raw: an error unless the
+// type is a named one, without following the substitution.
+fn bound_variant(entry: ValueConstructor) -> Result(Option(Int), Nil) {
+  case entry.scheme.type_ {
+    ty.Named(variant:, ..) -> Ok(variant)
+    ty.Var(_) | ty.Fn(..) | ty.Tuple(..) -> Error(Nil)
   }
 }
 
@@ -4906,45 +6301,34 @@ fn subject_of(expr: glance.Expression) -> Option(String) {
   }
 }
 
-// The subject a pattern may narrow: the bare variable it is matched against,
-// unless the pattern binds that name itself. A pattern's own binding is a
-// different value, and it wins over the narrowing whichever order the two are
-// registered in, so the compiler skips the narrowing outright.
-fn subject_variable(
-  subject: glance.Expression,
-  bound: List(String),
-) -> Option(String) {
-  case subject_of(subject) {
-    Some(name) ->
-      case list.contains(bound, name) {
-        True -> None
-        False -> Some(name)
-      }
-    None -> None
-  }
-}
-
 // Rebind `name` to its type narrowed to `variant`. The compiler sets the
 // variant on a link-collapsed copy so the outer scope keeps its type; here the
 // rebinding is the copy, and it lives only as long as the environment it is
-// made in.
+// made in. The copy is a local whatever the subject was, as the compiler's
+// `insert_local_variable` makes it (`pattern.rs:206-235`): a narrowed module
+// constant is no longer read at its literal, and a narrowed module function is
+// no longer a function.
 //
 // The scheme's quantifiers are kept rather than instantiated away. A module
 // constant is generalized like a function, so `const box = Empty` is bound at
 // `Box(a)`, and monomorphizing it here would reject a clause that uses it at
 // two instantiations — which the compiler accepts. Stamping under the
 // quantifier narrows every instantiation instead, and `substitute` carries the
-// variant through. Only a record is narrowed: a name whose type is a function
-// or a tuple stamps to itself and is left alone, which is what excludes a
-// top-level function used as a subject.
+// variant through. Only a record takes the variant: a name whose type is a
+// function or a tuple stamps to itself, as the compiler's
+// `set_custom_type_variant` leaves it, and is still rebound as a local. A
+// constructor pattern rejects such a subject in strict mode before it
+// narrows, so only a speculative walk, which goes on past the mismatch,
+// rebinds one.
 fn narrow(env: Env, st: State, name: String, variant: Int) -> Env {
   case dict.get(env.values, name) {
-    Ok(ValueConstructor(ty.Scheme(vars, type_), value)) ->
-      case stamp(st, type_, variant) {
-        ty.Named(..) as stamped ->
-          install(env, name, ty.Scheme(vars, stamped), value)
-        _ -> env
-      }
+    Ok(ValueConstructor(ty.Scheme(vars, type_), _)) ->
+      install(
+        env,
+        name,
+        ty.Scheme(vars, stamp(st, type_, variant)),
+        LocalValue(name),
+      )
     Error(_) -> env
   }
 }
@@ -4968,18 +6352,82 @@ fn infer_pattern(
   pattern: glance.Pattern,
   expected: ty.Type,
   subject: Option(String),
-) -> Result(#(Env, ty.Type, State), Error) {
+) -> Result(#(Env, ty.Type, State), Failure) {
+  let walk =
+    PatternWalk(
+      env:,
+      start: env.values,
+      first: None,
+      bound: dict.new(),
+      narrowed: dict.new(),
+    )
+  use #(walk, type_, st) <- result.map(walk_pattern(
+    walk,
+    st,
+    pattern,
+    expected,
+    subject,
+  ))
+  #(walk.env, type_, st)
+}
+
+// A pattern walk: the environment its bindings extend, and what the
+// compiler's pattern typer keeps beside it (`pattern.rs:100-193`).
+type PatternWalk {
+  PatternWalk(
+    env: Env,
+    // The names in scope where the pattern started: the clause's, and for a
+    // later alternative the first alternative's bindings too. A bit-array
+    // size reads a name from here unless an earlier segment of its own bit
+    // array bound it: every other part of the pattern is out of its reach
+    // (`pattern.rs:419-428, 1405-1423`).
+    start: Dict(String, ValueConstructor),
+    // For a later alternative, the bindings the first alternative made;
+    // `None` for a first or only alternative.
+    first: Option(Dict(String, ValueConstructor)),
+    // The bindings this walk has made so far.
+    bound: Dict(String, ValueConstructor),
+    // The subject variables this walk has narrowed, each with every variant
+    // it narrowed it to, latest first. The latest is the one a first
+    // alternative holds, as the compiler's `inferred_variant_variables` keeps
+    // it; any one of a later alternative's that differs takes it away
+    // (`pattern.rs:197-257`).
+    narrowed: Dict(String, List(Int)),
+  )
+}
+
+fn walk_pattern(
+  walk: PatternWalk,
+  st: State,
+  pattern: glance.Pattern,
+  expected: ty.Type,
+  subject: Option(String),
+) -> Result(#(PatternWalk, ty.Type, State), Failure) {
   case pattern {
     glance.PatternInt(..) ->
-      typed(env, prelude_int(), unify(st, expected, prelude_int()))
+      typed(
+        walk,
+        prelude_int(),
+        recover_unify(walk.env, st, expected, prelude_int()),
+      )
     glance.PatternFloat(..) ->
-      typed(env, prelude_float(), unify(st, expected, prelude_float()))
+      typed(
+        walk,
+        prelude_float(),
+        recover_unify(walk.env, st, expected, prelude_float()),
+      )
     glance.PatternString(..) ->
-      typed(env, prelude_string(), unify(st, expected, prelude_string()))
-    glance.PatternDiscard(..) -> Ok(#(env, expected, st))
+      typed(
+        walk,
+        prelude_string(),
+        recover_unify(walk.env, st, expected, prelude_string()),
+      )
+    glance.PatternDiscard(..) -> Ok(#(walk, expected, st))
 
-    glance.PatternVariable(_, name) ->
-      Ok(#(bind_local(env, name, expected), expected, st))
+    glance.PatternVariable(_, name) -> {
+      use #(walk, st) <- result.map(bind_pattern_name(walk, st, name, expected))
+      #(walk, expected, st)
+    }
 
     glance.PatternTuple(_, elements) -> {
       // Destructure a tuple the expected type already is, element by element,
@@ -4988,55 +6436,63 @@ fn infer_pattern(
       // tuple's own type is then rebuilt from what the elements matched, which
       // is where an element's variant survives to an enclosing `as`.
       use #(elem_types, st) <- result.try(tuple_elements(
+        walk.env,
         st,
         expected,
         list.length(elements),
       ))
-      use #(env, rev_types, st) <- result.try(
+      // A tuple pattern against a type that is no tuple of its width walks
+      // no element in a speculative walk, and is the type it was matched
+      // against (`pattern.rs:932-979`).
+      use elem_types <- skip_pattern(elem_types, #(walk, expected, st))
+      use #(walk, rev_types, st) <- result.try(
         list.try_fold(
           list.zip(elements, elem_types),
-          #(env, [], st),
+          #(walk, [], st),
           fn(acc, pair) {
-            let #(env, types_, st) = acc
+            let #(walk, types_, st) = acc
             let #(pattern, t) = pair
-            use #(env, t, st) <- result.map(infer_pattern(
-              env,
+            use #(walk, t, st) <- result.map(walk_pattern(
+              walk,
               st,
               pattern,
               t,
               None,
             ))
-            #(env, [t, ..types_], st)
+            #(walk, [t, ..types_], st)
           },
         ),
       )
-      Ok(#(env, ty.Tuple(list.reverse(rev_types)), st))
+      Ok(#(walk, ty.Tuple(list.reverse(rev_types)), st))
     }
 
     glance.PatternList(_, elements, tail) -> {
-      let #(elem, st) = fresh(st)
-      use st <- result.try(unify(st, expected, prelude_list(elem)))
-      use #(env, st) <- result.try(
-        list.try_fold(elements, #(env, st), fn(acc, p) {
-          let #(env, st) = acc
-          use #(env, _, st) <- result.map(infer_pattern(env, st, p, elem, None))
-          #(env, st)
+      // A list pattern against a type that is no list walks no element in a
+      // speculative walk, and is the type it was matched against
+      // (`pattern.rs:880-929`).
+      use #(shape, st) <- result.try(list_element(walk.env, st, expected))
+      use elem <- skip_pattern(shape, #(walk, expected, st))
+      use #(walk, st) <- result.try(
+        list.try_fold(elements, #(walk, st), fn(acc, p) {
+          let #(walk, st) = acc
+          use #(walk, _, st) <- result.map(walk_pattern(walk, st, p, elem, None))
+          #(walk, st)
         }),
       )
-      use #(env, st) <- result.try(case tail {
+      use #(walk, st) <- result.try(case tail {
         Some(t) -> {
-          use #(env, _, st) <- result.map(infer_pattern(
-            env,
+          use #(walk, _, st) <- result.map(walk_pattern(
+            walk,
             st,
             t,
             prelude_list(elem),
             None,
           ))
-          #(env, st)
+          #(walk, st)
         }
-        None -> Ok(#(env, st))
+        None -> Ok(#(walk, st))
       })
-      Ok(#(env, prelude_list(elem), st))
+      Ok(#(walk, prelude_list(elem), st))
     }
 
     // `Ctor(..) as name` hands the subject on to the pattern inside it, which
@@ -5044,111 +6500,234 @@ fn infer_pattern(
     // pattern's own type, and so is itself that pattern's type. The pattern is
     // inferred first so its narrowing cannot overwrite this binding.
     glance.PatternAssignment(_, pattern, name) -> {
-      use #(env, type_, st) <- result.try(infer_pattern(
-        env,
+      use #(walk, type_, st) <- result.try(walk_pattern(
+        walk,
         st,
         pattern,
         expected,
         subject,
       ))
-      Ok(#(bind_local(env, name, type_), type_, st))
+      use #(walk, st) <- result.map(bind_pattern_name(walk, st, name, type_))
+      #(walk, type_, st)
     }
 
-    glance.PatternConcatenate(_, _prefix, prefix_name, rest_name) -> {
-      use st <- result.try(unify(st, expected, prelude_string()))
+    glance.PatternConcatenate(..) -> {
+      use st <- result.try(recover_unify(
+        walk.env,
+        st,
+        expected,
+        prelude_string(),
+      ))
       // Both the matched prefix (`"a" as c <> rest`) and the remainder bind to
       // String. The prefix binding is optional (`<> rest` with no `as`).
-      let bind_name = fn(env, name) {
-        case name {
-          glance.Named(n) -> bind_local(env, n, prelude_string())
-          glance.Discarded(_) -> env
-        }
-      }
-      let env = case prefix_name {
-        Some(name) -> bind_name(env, name)
-        None -> env
-      }
-      Ok(#(bind_name(env, rest_name), prelude_string(), st))
+      use #(walk, st) <- result.map(
+        list.try_fold(
+          reference.pattern_names(pattern),
+          #(walk, st),
+          fn(acc, name) {
+            bind_pattern_name(acc.0, acc.1, name, prelude_string())
+          },
+        ),
+      )
+      #(walk, prelude_string(), st)
     }
 
     glance.PatternVariant(_, module, constructor, arguments, _spread) -> {
-      use entry <- result.try(constructor_entry(env, module, constructor))
+      use entry <- result.try(stateless(
+        st,
+        constructor_entry(walk.env, module, constructor),
+      ))
       let #(ctor_type, st) = instantiate(st, entry.scheme)
       // A constructor with fields is a function; one without is the value.
       let #(field_types, ret) = case ctor_type {
         ty.Fn(args, ret) -> #(args, ret)
         other -> #([], other)
       }
-      use st <- result.try(unify(st, expected, ret))
+      // A mismatch with the subject is recorded, and the field patterns are
+      // still walked at the constructor's field types (`pattern.rs:1232-1262`).
+      use st <- result.try(recover_unify(walk.env, st, expected, ret))
       // Matching a bare subject variable against this constructor narrows that
       // variable to it, in this scope only: `env` is a value, so the scope the
       // pattern opens carries the rebinding and the caller's does not.
-      let env = case subject, variant_of(ret) {
-        Some(name), Some(index) -> narrow(env, st, name, index)
-        _, _ -> env
+      let walk = case subject, variant_of(ret) {
+        Some(name), Some(index) -> narrow_subject(walk, st, name, index)
+        _, _ -> walk
       }
-      use arg_patterns <- result.try(order_pattern_args(
-        positional_labels(entry.variant),
-        arguments,
-        list.length(field_types),
+      use arg_patterns <- result.try(stateless(
+        st,
+        order_pattern_args(
+          positional_labels(entry.variant),
+          arguments,
+          list.length(field_types),
+        ),
       ))
-      use #(env, st) <- result.try(
+      use #(walk, st) <- result.try(
         list.try_fold(
           list.zip(arg_patterns, field_types),
-          #(env, st),
+          #(walk, st),
           fn(acc, pair) {
-            let #(env, st) = acc
+            let #(walk, st) = acc
             let #(pattern, t) = pair
-            use #(env, _, st) <- result.map(infer_pattern(
-              env,
+            use #(walk, _, st) <- result.map(walk_pattern(
+              walk,
               st,
               pattern,
               t,
               None,
             ))
-            #(env, st)
+            #(walk, st)
           },
         ),
       )
       // The constructor's own return, stamped: the arguments matched above do
       // not re-stamp it, which is the compiler's shape.
-      Ok(#(env, ret, st))
+      Ok(#(walk, ret, st))
     }
 
     glance.PatternBitString(_, segments) -> {
-      use st <- result.try(unify(st, expected, prelude_bit_array()))
-      use #(env, st) <- result.try(
-        list.try_fold(segments, #(env, st), fn(acc, segment) {
-          let #(env, st) = acc
-          infer_bit_pattern_segment(env, st, segment)
+      use st <- result.try(recover_unify(
+        walk.env,
+        st,
+        expected,
+        prelude_bit_array(),
+      ))
+      // A size reads the names the pattern started with, plus those bound by
+      // earlier segments of this bit array.
+      use #(walk, _sizes, st) <- result.try(
+        list.try_fold(segments, #(walk, walk.start, st), fn(acc, segment) {
+          let #(walk, sizes, st) = acc
+          infer_bit_pattern_segment(walk, sizes, st, segment)
         }),
       )
-      Ok(#(env, prelude_bit_array(), st))
+      Ok(#(walk, prelude_bit_array(), st))
     }
   }
 }
 
-// A pattern arm's result where the pattern's own type is already known: the
-// `with_env` of the three-place return.
-fn typed(
-  env: Env,
+// Bind a name the pattern introduces, as the compiler's `insert_variable`
+// does (`pattern.rs:124-193`). A later alternative's binding of a name the
+// first alternative bound is unified with the first's binding as it is made;
+// one of a name the first did not bind is the compiler's
+// `ExtraVarInAlternativePattern`, reported here as the name being unbound. In
+// a speculative walk it is recorded and the name is bound nowhere: neither in
+// the environment nor for a later size to read.
+fn bind_pattern_name(
+  walk: PatternWalk,
+  st: State,
+  name: String,
   type_: ty.Type,
-  st: Result(State, Error),
-) -> Result(#(Env, ty.Type, State), Error) {
-  result.map(st, fn(st) { #(env, type_, st) })
+) -> Result(#(PatternWalk, State), Failure) {
+  case walk.first {
+    None -> Ok(#(bound_name(walk, name, type_), st))
+    Some(first) ->
+      case dict.get(first, name) {
+        Ok(initial) -> {
+          use st <- result.map(recover_unify(
+            walk.env,
+            st,
+            initial.scheme.type_,
+            type_,
+          ))
+          #(bound_name(walk, name, type_), st)
+        }
+        Error(_) ->
+          recover_with(walk.env, fail(st, UnboundVariable(name)), fn(failed) {
+            Ok(#(walk, failed))
+          })
+      }
+  }
+}
+
+// `walk` with `name` bound at `type_`. A first or only alternative's binding
+// of a subject it narrowed takes the narrowing out of `narrowed`, as the
+// compiler's `insert_variable` takes it out of `inferred_variant_variables`
+// (`pattern.rs:133-150`): the name is now the pattern's own value, which a
+// later alternative cannot erase a variant of. A later alternative's binding
+// leaves its narrowings alone, as the compiler's does.
+fn bound_name(walk: PatternWalk, name: String, type_: ty.Type) -> PatternWalk {
+  let entry = ValueConstructor(ty.Scheme([], type_), LocalValue(name))
+  let narrowed = case walk.first {
+    None -> dict.delete(walk.narrowed, name)
+    Some(_) -> walk.narrowed
+  }
+  PatternWalk(
+    ..walk,
+    env: install_entry(walk.env, name, entry),
+    bound: dict.insert(walk.bound, name, entry),
+    narrowed:,
+  )
+}
+
+// Narrow the subject variable `name` to `variant` for the rest of the walk,
+// unless the walk has already bound `name` itself (`pattern.rs:197-205`). A
+// pattern's own binding is a different value. One made before the narrowing
+// blocks it; one made after it replaces the narrowed entry (`bound_name`). So
+// which wins depends on the walk order and on what was actually bound, and a
+// sub-pattern a speculative walk skips binds nothing: in
+// `case t, r.field { B, #(t) -> .. }` with `r.field` no tuple, `t` is narrowed.
+fn narrow_subject(
+  walk: PatternWalk,
+  st: State,
+  name: String,
+  variant: Int,
+) -> PatternWalk {
+  use <- bool.guard(when: dict.has_key(walk.bound, name), return: walk)
+  PatternWalk(
+    ..walk,
+    env: narrow(walk.env, st, name, variant),
+    narrowed: dict.upsert(walk.narrowed, name, fn(earlier) {
+      [variant, ..option.unwrap(earlier, [])]
+    }),
+  )
+}
+
+// The type a list pattern matches its elements against: the expected type's
+// own argument where it already is a list, as the compiler's
+// `named_type_arguments` reads it (`pattern.rs:880-896`, `type_.rs:421-470`),
+// so an element binds at that type as it stands; otherwise a fresh element
+// variable the expected type is unified with. `None` where the expected type
+// is no list, which a speculative walk skips (`shape`).
+fn list_element(
+  env: Env,
+  st: State,
+  expected: ty.Type,
+) -> Result(#(Option(ty.Type), State), Failure) {
+  case resolve(st, expected) {
+    ty.Named(module, "List", [element], _) if module == prelude_module ->
+      Ok(#(Some(element), st))
+    _ -> {
+      let #(element, st) = fresh(st)
+      shape(env, unify(st, expected, prelude_list(element)), element)
+    }
+  }
+}
+
+// A pattern arm's result where the pattern's own type is already known.
+fn typed(
+  walk: PatternWalk,
+  type_: ty.Type,
+  st: Result(State, Failure),
+) -> Result(#(PatternWalk, ty.Type, State), Failure) {
+  result.map(st, fn(st) { #(walk, type_, st) })
 }
 
 // A tuple pattern's element types: the expected type's own elements where it
 // already is a tuple of the right width, else fresh variables unified against
 // it. Destructuring is what keeps an element's variant, which binding it to a
 // fresh variable would erase; the fresh-variable path is also where an arity
-// mismatch is still reported.
+// mismatch is still reported. In a speculative walk, `None` where the
+// expected type is a concrete type that is no tuple of this width, whose
+// elements the compiler does not walk; against a variable, rigid ones
+// included, the shape's unification is recorded and the elements are walked
+// (`pattern.rs:932-979`).
 fn tuple_elements(
+  env: Env,
   st: State,
   expected: ty.Type,
   arity: Int,
-) -> Result(#(List(ty.Type), State), Error) {
-  let destructured = case resolve(st, expected) {
+) -> Result(#(Option(List(ty.Type)), State), Failure) {
+  let resolved = resolve(st, expected)
+  let destructured = case resolved {
     ty.Tuple(elements) ->
       case list.length(elements) == arity {
         True -> Ok(elements)
@@ -5156,47 +6735,107 @@ fn tuple_elements(
       }
     _ -> Error(Nil)
   }
-  case destructured {
-    Ok(elements) -> Ok(#(elements, st))
-    Error(_) -> {
+  case destructured, resolved {
+    Ok(elements), _ -> Ok(#(Some(elements), st))
+    Error(_), ty.Var(_) -> {
       let #(elem_types, st) = fresh_n(st, arity)
-      use st <- result.try(unify(st, expected, ty.Tuple(elem_types)))
-      Ok(#(elem_types, st))
+      use st <- result.map(recover_unify(
+        env,
+        st,
+        ty.Tuple(elem_types),
+        expected,
+      ))
+      #(Some(elem_types), st)
+    }
+    Error(_), ty.Tuple(..) | Error(_), ty.Named(..) | Error(_), ty.Fn(..) -> {
+      let #(elem_types, st) = fresh_n(st, arity)
+      shape(env, unify(st, expected, ty.Tuple(elem_types)), elem_types)
     }
   }
 }
 
-// Check one bit-array *pattern* segment: bind the segment pattern and check
-// its size option, threading the environment for any bound variables.
-fn infer_bit_pattern_segment(
+// A pattern's shape unified: `Some(value)` and the state, or in a speculative
+// walk `None` and the failed state, where the pattern walks none of its
+// children.
+fn shape(
   env: Env,
+  unified: Result(State, Failure),
+  value: a,
+) -> Result(#(Option(a), State), Failure) {
+  unified
+  |> result.map(fn(st) { #(Some(value), st) })
+  |> recover_with(env, _, fn(failed) { Ok(#(None, failed)) })
+}
+
+// Continue a pattern arm with `shape`'s value, or end it with `skipped` where
+// a speculative walk walks none of its children.
+fn skip_pattern(
+  shape: Option(a),
+  skipped: b,
+  continue: fn(a) -> Result(b, Failure),
+) -> Result(b, Failure) {
+  case shape {
+    Some(value) -> continue(value)
+    None -> Ok(skipped)
+  }
+}
+
+// Check one bit-array *pattern* segment in the compiler's order
+// (`infer_pattern_segment`, `pattern.rs:489-514, 609`): its size option is
+// typed first, reading `sizes`, and then the segment's pattern binds. Returns
+// `sizes` with what the segment bound added, for the segments after it.
+fn infer_bit_pattern_segment(
+  walk: PatternWalk,
+  sizes: Dict(String, ValueConstructor),
   st: State,
   segment: #(
     glance.Pattern,
     List(glance.BitStringSegmentOption(glance.BitArraySize)),
   ),
-) -> Result(#(Env, State), Error) {
+) -> Result(#(PatternWalk, Dict(String, ValueConstructor), State), Failure) {
   let #(pattern, options) = segment
   let default = case pattern {
     glance.PatternString(..) -> prelude_string()
     glance.PatternFloat(..) -> prelude_float()
     _ -> prelude_int()
   }
-  use #(env, _, st) <- result.try(infer_pattern(
-    env,
+  // A size that fails is recorded and the walk goes on (`pattern.rs:726-735`).
+  use st <- result.try(
+    list.try_fold(options, st, fn(st, option) {
+      case option {
+        glance.SizeValueOption(size) -> {
+          // Read-only: a size lookup reads `values` and nothing else.
+          let size_env = Env(..walk.env, values: sizes)
+          recover_with(size_env, check_bit_array_size(size_env, st, size), Ok)
+        }
+        _ -> Ok(st)
+      }
+    }),
+  )
+  // The segment is walked with no binding of its own yet, so what its walk
+  // holds after is exactly what it bound, and a segment costs only what it
+  // binds; the walk's earlier bindings are merged back in after it.
+  use #(after, _, st) <- result.try(walk_pattern(
+    PatternWalk(..walk, bound: dict.new()),
     st,
     pattern,
     segment_value_type(options, default),
     None,
   ))
-  list.try_fold(options, #(env, st), fn(acc, option) {
-    let #(env, st) = acc
-    case option {
-      glance.SizeValueOption(size) ->
-        with_env(env, check_bit_array_size(env, st, size))
-      _ -> Ok(#(env, st))
-    }
-  })
+  let made = after.bound
+  let after = PatternWalk(..after, bound: dict.merge(walk.bound, made))
+  // In a later alternative a binding of a name the first alternative bound
+  // is unified with the first's, and the compiler adds no variable of its
+  // own (`pattern.rs:163-184, 394-415`): a size after it reads the first's
+  // entry (`pattern.rs:1405-1419`).
+  let for_sizes = case walk.first {
+    None -> made
+    Some(first) ->
+      dict.map_values(made, fn(name, entry) {
+        result.unwrap(dict.get(first, name), entry)
+      })
+  }
+  Ok(#(after, dict.merge(sizes, for_sizes), st))
 }
 
 // Check a bit-array *pattern* segment size (glance 7.0+): a restricted
@@ -5208,12 +6847,12 @@ fn check_bit_array_size(
   env: Env,
   st: State,
   size: glance.BitArraySize,
-) -> Result(State, Error) {
+) -> Result(State, Failure) {
   case size {
     glance.BitArraySizeInt(..) -> Ok(st)
     glance.BitArraySizeVariable(_, name) -> {
       use #(_, type_, st) <- result.try(read_name(env, st, name))
-      unify(st, type_, prelude_int())
+      recover_unify(env, st, prelude_int(), type_)
     }
     glance.BitArraySizeBinaryOperator(_, _, left, right) -> {
       use st <- result.try(check_bit_array_size(env, st, left))
@@ -5221,14 +6860,6 @@ fn check_bit_array_size(
     }
     glance.BitArraySizeBlock(_, inner) -> check_bit_array_size(env, st, inner)
   }
-}
-
-// Pair a (possibly failed) new state with an unchanged environment.
-fn with_env(
-  env: Env,
-  st: Result(State, Error),
-) -> Result(#(Env, State), Error) {
-  result.map(st, fn(st) { #(env, st) })
 }
 
 // Resolve a constructor name (optionally module-qualified) to its scope entry.
@@ -5379,25 +7010,30 @@ fn hydrate_scoped(env: Env, st: State, ast: glance.Type) -> #(ty.Type, State) {
 // (`expression.rs:381-393`) saves the hydrator's names around a `let` value,
 // each `case` subject, a `case` clause, a function body and a block: a name
 // created inside leaves scope when the boundary closes, though its generic
-// stays rigid, so every later read copies it. On an error the state is
-// discarded whole, its scope with it.
+// stays rigid, so every later read copies it. The compiler's closure returns a
+// value even where something inside it failed, so the boundary closes on a
+// failure too: the failure's state leaves the scope as a success's does.
 fn scoped(
   st: State,
-  infer: fn(State) -> Result(#(a, State), Error),
-) -> Result(#(a, State), Error) {
+  infer: fn(State) -> Result(#(a, State), Failure),
+) -> Result(#(a, State), Failure) {
   let scope = st.scope
-  use #(value, st) <- result.map(infer(st))
-  #(value, State(..st, scope:))
+  case infer(st) {
+    Ok(#(value, st)) -> Ok(#(value, State(..st, scope:)))
+    Error(Failure(error, failed)) ->
+      Error(Failure(error, State(..failed, scope:)))
+  }
 }
 
 // `scoped` for a walk that returns only the state.
 fn scoped_state(
   st: State,
-  infer: fn(State) -> Result(State, Error),
-) -> Result(State, Error) {
-  let scope = st.scope
-  use st <- result.map(infer(st))
-  State(..st, scope:)
+  infer: fn(State) -> Result(State, Failure),
+) -> Result(State, Failure) {
+  use #(Nil, st) <- result.map(
+    scoped(st, fn(st) { result.map(infer(st), fn(st) { #(Nil, st) }) }),
+  )
+  st
 }
 
 // Resolve a (possibly qualified) type name applied to `arg_types` to a concrete

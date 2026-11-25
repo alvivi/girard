@@ -128,7 +128,8 @@ elements', recursively, and stops at a constructor's arguments. Across a
 clause's alternatives the two name classes follow different rules, as they do in
 the compiler: only the first alternative may set a *subject* variable's variant
 and a later one may only take it away by naming a different index, while a name
-the patterns *bind* keeps its variant only where every alternative agrees.
+the patterns *bind* loses its variant where a later alternative binds it at a
+named type of another variant; a binding at a type variable leaves it.
 
 Generalization happens only at the top-level definition boundary, so a local
 `let` binding stays monomorphic. A let-bound annotated lambda is still
@@ -190,17 +191,38 @@ initializer, and in a guard subtree it parses as a constant
 sets `ConstantSyntax`, the clause guard check sets `GuardSyntax`, and
 `infer_expr` switches a guard to `ConstantSyntax` when it meets a constant
 subtree. Under `ConstantSyntax` a bare-name `name.member` is module access only,
-with `UnknownModule` or `NoSuchExport` on a miss. A direct guard field access
-keeps the record-first rule. A bare variable naming a module constant in a
-guard is the constant's stored literal (`type_/guard.rs:322-324`), not a copy.
-A constant's scope entry carries it beside the scheme — the type as inferred,
-variants included, with the generics its annotation created marked — and the
-interface exports the entry. A constant of the current group is read at its
-literal as it stands, and a generalized one at one copy of its literal shared
-by all of its guard reads (`State.literals`): a fresh variable for each
-quantified id, a fresh generic for each generic one. The literal is a snapshot
-taken when the constant is inferred, where the compiler's is one live type a
-later guard can still pin.
+with `UnknownModule` or `NoSuchExport` on a miss. In a guard, `name.label` is
+a record access, and nothing else, when the guard-variable lookup accepts
+`name` — a local or a module constant — and module access otherwise
+(`guard.rs:96-140`).
+
+**Constant literals.** A bare variable naming a module constant in a guard is
+the constant's stored literal (`type_/guard.rs:322-324`), not a copy, and so
+is the spread of a constant record update that names one
+(`constant.rs:186-221`): these two are the literal readers. A constant's scope
+entry carries the literal beside the scheme — the type as inferred, variants
+included — and the literal is live. The compiler shares a literal's cells
+across the whole build; girard shares them within the defining module, and an
+importer replays the bindings its import closure made. In the defining module a
+reader reads the original literal, the type the constant's group inferred with
+the ids generalization quantified, so a binding one reader makes is seen by
+every later reader and by every expression holding the same id; the scheme does
+not change, because nothing re-zonks a generalized scheme. Across modules a
+literal variable keeps its identity, the module whose state created it and its
+id there (`LiteralVar`). An exported literal is zonked with its module's final
+state and names each variable by its identity, marking a generic, and an
+importer maps each identity to one local id (`State.identities`), so a variable
+two literals share in their exporter is shared here and a generic reached
+through two imports is one rigid id. Each interface carries the bindings its
+module's final state holds for other modules' literal variables, inherited
+ones included (`literal_links`), and an importer replays them in source order
+before inferring its own definitions; a replayed binding that does not unify
+is dropped, so the first import wins. So a module sees exactly the bindings
+its import closure made. The compiler infers a module with every binding made
+by a module it scheduled earlier, which can be one outside that closure,
+chosen by module name; girard reproduces neither those bindings nor the
+conflicts between sibling imports the schedule decides, nor the expression
+types the compiler's export reads after the whole build.
 
 Wherever the type a lambda will be called at is already known, it is pushed
 into the lambda's parameters before its body is walked, as the compiler's
@@ -218,10 +240,32 @@ walked first, so girard follows the compiler's order there. A pipe types its
 left side first; a call step infers its callee once, with no call context for a
 literal, and reads the left value at the slot the reorder gives it. A lambda
 or capture callee, `use` included, speculates the call's arguments first, the
-`use` callback with no expected type, and keeps the names they create; if any
-argument fails, the whole pass is rewound (the compiler recovers inside the
-failing argument instead, which girard does not reproduce). A `let` binds its
-pattern before it checks its annotation.
+`use` callback with no expected type, and keeps the names they create. That
+pass is a speculative walk (`Env.recovering`): each site the compiler
+recovers at recovers as it does, keeping every effect so far — a failed
+sub-expression is a fresh variable, a failed unification keeps its partial
+links, and a site with a fallback of its own (an invalid callee, a lambda
+header, a return check, a field access, a pattern, a guard) takes it — and an
+argument that still fails is a fresh variable, the next one continuing from
+its state. Nothing recovers outside a speculative walk, so the real pass
+stays strict. The orders that decide what a failure skips are the compiler's
+in both modes: every operator but `|>` and a constant's `<>` infers both
+operands before unifying either; a constant's `<>` infers and unifies its left
+operand before its right, and `|>` types its left value before it walks its
+step, which takes the value as an argument; an expression bit-array segment
+walks its value, then its size, then unifies the value; a pattern segment types
+its size before it binds, and a size reads only the names the pattern started
+with plus its own bit array's earlier bindings, where in a later alternative a
+binding of a name the first alternative bound reads as the first's; a later
+`case` alternative starts with the first alternative's bindings and unifies
+each of its own with the first's as it binds; an expression record update
+checks the spread's variant before any field; and every record update copies
+every field it does not name, by position. A `let` binds its pattern before it
+checks its annotation. girard does not validate a bit-array segment's options
+as the compiler's `type_options_for_value` does. The compiler rejects an
+invalid option in its real pass, and its speculative walk stops at that
+segment; girard walks on in speculation, and its strict pass may accept the
+segment.
 
 **Resolution.** `Env.values` holds one `ValueConstructor` per name in scope,
 as the compiler's `Environment.scope` does: the value's scheme and a variant
@@ -285,9 +329,15 @@ its own imports was inferred. An importer merges that set into its `Env`
 whether the interface was inferred fresh or reused from a cache — a direct
 failure overwrites, an inherited entry fills only an absent path, and a direct
 success removes nothing — so a cached interface keeps the failures it was built
-with until it and its cached importers are invalidated. The reusable cache
-avoids parsing and inferring a shared import more than once and can invalidate
-a single module when its source changes. A failure to load is not cached.
+with until it and its cached importers are invalidated. It carries the
+bindings of other modules' literal variables its module made or inherited
+(`literal_links`, see "Constant literals"), so a change to a module's body can
+change its interface with no signature changing, and a cached interface keeps
+the bindings it was built with. The reusable cache avoids parsing and
+inferring a shared import more than once and can invalidate a single module
+when its source changes; after an edit, the module and every cached module
+that imports it, directly or transitively, must be invalidated. A failure to
+load is not cached.
 
 ## Differential Testing
 
